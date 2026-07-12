@@ -4,7 +4,8 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "/app/bin/server",
+    "preDeployCommand": "/app/_build/prod/rel/transitmaps/bin/migrate",
+    "startCommand": "/app/_build/prod/rel/transitmaps/bin/server",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",

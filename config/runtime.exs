@@ -55,10 +55,16 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
+  check_origins =
+    System.get_env("PHX_CHECK_ORIGINS", "//#{host}")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+
   config :transitmaps, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :transitmaps, TransitmapsWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
+    check_origin: check_origins,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

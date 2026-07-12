@@ -27,6 +27,12 @@ defmodule TransitmapsWeb.Router do
     get "/stops.geojson", GeoController, :stops
   end
 
+  scope "/", TransitmapsWeb do
+    pipe_through :api
+
+    get "/health", HealthController, :show
+  end
+
   scope "/tiles", TransitmapsWeb do
     get "/*path", TileProxyController, :proxy
   end

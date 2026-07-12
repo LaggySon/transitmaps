@@ -21,6 +21,10 @@ defmodule Transitmaps.Gtfs.Csv do
     if File.exists?(path) do
       path
       |> File.stream!(read_ahead: 100_000)
+      # A few otherwise-valid public feeds leave spaces after the final
+      # quoted field. RFC4180 parsers reject that, so normalize line endings
+      # and trailing whitespace before parsing.
+      |> Stream.map(&(String.trim_trailing(&1) <> "\n"))
       |> __MODULE__.Parser.parse_stream(skip_headers: false)
       |> Stream.transform(nil, &zip_row_with_headers/2)
     else

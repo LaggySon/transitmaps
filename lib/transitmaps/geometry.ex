@@ -16,11 +16,53 @@ defmodule Transitmaps.Geometry do
     points = List.to_tuple(coords)
     last_index = tuple_size(points) - 1
 
-    kept_indexes = keep_significant_points(points, [{0, last_index}], MapSet.new([0, last_index]), tolerance)
+    kept_indexes =
+      keep_significant_points(points, [{0, last_index}], MapSet.new([0, last_index]), tolerance)
 
     kept_indexes
     |> Enum.sort()
     |> Enum.map(&elem(points, &1))
+  end
+
+  @doc """
+  Splits a polyline at implausibly long jumps.
+
+  This prevents malformed or stop-sequence fallback shapes from drawing
+  cross-country connector vectors. `max_km` is the maximum direct distance
+  allowed between adjacent geometry points.
+  """
+  def split_long_segments(coords, max_km) do
+    {lines, current} =
+      Enum.reduce(coords, {[], []}, fn point, {lines, current} ->
+        case current do
+          [] ->
+            {lines, [point]}
+
+          [previous | _] ->
+            if haversine_km(previous, point) > max_km do
+              {[Enum.reverse(current) | lines], [point]}
+            else
+              {lines, [point | current]}
+            end
+        end
+      end)
+
+    [Enum.reverse(current) | lines]
+    |> Enum.filter(&(length(&1) > 1))
+    |> Enum.reverse()
+  end
+
+  defp haversine_km([lon1, lat1], [lon2, lat2]) do
+    lat1 = lat1 * :math.pi() / 180
+    lat2 = lat2 * :math.pi() / 180
+    delta_lat = lat2 - lat1
+    delta_lon = (lon2 - lon1) * :math.pi() / 180
+
+    a =
+      :math.pow(:math.sin(delta_lat / 2), 2) +
+        :math.cos(lat1) * :math.cos(lat2) * :math.pow(:math.sin(delta_lon / 2), 2)
+
+    6_371 * 2 * :math.atan2(:math.sqrt(a), :math.sqrt(1 - a))
   end
 
   defp keep_significant_points(_points, [], kept, _tolerance), do: kept

@@ -29,12 +29,57 @@ mix gtfs.import <name> <url-or-zip-path>
 # Great Britain national rail (updated daily, includes shapes):
 mix gtfs.import gb-rail https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip
 
-# Regional bus/metro/tram feeds from the same project, e.g. South East + London:
-mix gtfs.import se-busmetro https://storage.travelwhiz.app/generated-gtfs/uk-busmetro-SE.gtfs.zip
+# TfL Tube, DLR, London Overground, Elizabeth line, and trams:
+mix tfl.import
+
+# Amtrak, including the complete Boston-Washington Northeast Corridor:
+mix gtfs.import amtrak https://content.amtrak.com/content/gtfs/GTFS.zip
+
+# Northeast Corridor commuter rail systems:
+mix gtfs.import mbta-commuter https://cdn.mbta.com/MBTA_GTFS.zip
+mix gtfs.import metro-north http://web.mta.info/developers/data/mnr/google_transit.zip
+mix gtfs.import nj-transit-rail https://www.njtransit.com/rail_data.zip
+mix gtfs.import septa-regional-rail https://www3.septa.org/developer/gtfs_public.zip
+mix gtfs.import marc https://feeds.mta.maryland.gov/gtfs/marc
+
+# Local rapid transit connecting to the Northeast Corridor:
+mix gtfs.import mbta-rapid https://cdn.mbta.com/MBTA_GTFS.zip
+mix gtfs.import nyc-subway http://web.mta.info/developers/data/nyct/subway/google_transit.zip
+mix gtfs.import path http://data.trilliumtransit.com/gtfs/path-nj-us/path-nj-us.zip
+mix gtfs.import septa-rapid https://www3.septa.org/developer/gtfs_public.zip
+mix gtfs.import baltimore-metro https://feeds.mta.maryland.gov/gtfs/metro
+mix gtfs.import baltimore-light-rail https://feeds.mta.maryland.gov/gtfs/light-rail
+WMATA_API_KEY=your_key mix gtfs.import wmata-rapid https://api.wmata.com/gtfs/rail-gtfs-static.zip
 ```
+
+WMATA requires a free developer key; the importer sends `WMATA_API_KEY` as
+the official feed's `api_key` request header.
+
+The TfL importer uses the public Unified API. Anonymous access works for
+occasional imports; set `TFL_APP_KEY` to a registered API key for a higher
+rate limit.
 
 Re-importing under the same name replaces that feed's data. Downloads are
 cached in `priv/gtfs_cache/`.
+
+## Railway deployment
+
+Railway's standard Phoenix deployment uses Railpack's automatic Elixir
+detection. This project uses Phoenix's generated release scripts to run
+migrations before deployment and start the release, and configures:
+
+```text
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+ECTO_IPV6=true
+LANG=en_US.UTF-8
+LC_CTYPE=en_US.UTF-8
+MIX_ENV=prod
+PHX_HOST=transitmaps.laggi.sh
+SECRET_KEY_BASE=<output of mix phx.gen.secret>
+```
+
+Add `transitmaps.laggi.sh` as the service's custom domain, then create the DNS
+record Railway provides.
 
 The importer is schedule-free: it stores each route with a simplified
 representative geometry (up to 6 most-used service patterns) and each

@@ -8,6 +8,7 @@ defmodule Transitmaps.Gtfs.Stop do
     field :lon, :float
     field :location_type, :integer
     field :categories, {:array, :string}
+    field :lines, {:array, :map}, default: []
 
     belongs_to :feed, Transitmaps.Gtfs.Feed
 

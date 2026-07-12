@@ -31,16 +31,50 @@ defmodule Transitmaps.Gtfs.Importer do
   def import_feed(name, source) do
     dir = fetch_and_extract!(name, source)
 
-    routes = read_routes(dir, read_agencies(dir))
-    trip_index = index_trips(dir, routes)
-    shape_geometries = read_selected_shapes(dir, trip_index.selected_shape_ids)
-    {stop_route_ids, fallback_paths} = scan_stop_times(dir, trip_index)
-    {stations, stop_coords} = read_stations(dir, stop_route_ids)
+    try do
+      routes = read_routes(dir, read_agencies(dir))
+      trip_index = index_trips(dir, routes)
+      shape_geometries = read_selected_shapes(dir, trip_index.selected_shape_ids)
+      {stop_route_ids, fallback_paths} = scan_stop_times(dir, trip_index)
+      {stations, stop_coords} = read_stations(dir, stop_route_ids)
 
-    route_rows = build_route_rows(routes, trip_index, shape_geometries, fallback_paths, stop_coords)
+      route_rows =
+        build_route_rows(routes, trip_index, shape_geometries, fallback_paths, stop_coords)
+        |> normalize_feed_categories(name)
 
-    persist!(name, source, route_rows, station_rows(stations))
+      persist_rows(name, source, route_rows, station_rows(stations, route_rows))
+    after
+      File.rm_rf!(dir)
+    end
   end
+
+  defp normalize_feed_categories(routes, "amtrak") do
+    Enum.map(routes, fn route ->
+      if String.contains?(route.agency_name || "", "Amtrak") do
+        Map.put(route, :category, "intercity")
+      else
+        route
+      end
+    end)
+  end
+
+  defp normalize_feed_categories(routes, name)
+       when name in ~w(mbta-commuter septa-regional-rail) do
+    Enum.filter(routes, &(&1.category == "rail"))
+  end
+
+  # PATH reports itself as conventional rail in GTFS even though it operates
+  # as the New York region's high-frequency rapid-transit system.
+  defp normalize_feed_categories(routes, "path") do
+    Enum.map(routes, &Map.put(&1, :category, "metro"))
+  end
+
+  defp normalize_feed_categories(routes, name)
+       when name in ~w(mbta-rapid nyc-subway septa-rapid baltimore-metro baltimore-light-rail) do
+    Enum.filter(routes, &(&1.category in ~w(metro tram)))
+  end
+
+  defp normalize_feed_categories(routes, _name), do: routes
 
   # -- download / extract ----------------------------------------------------
 
@@ -54,8 +88,33 @@ defmodule Transitmaps.Gtfs.Importer do
     {:ok, _files} =
       :zip.extract(String.to_charlist(zip_path), cwd: String.to_charlist(extract_dir))
 
+    extract_nested_feed!(extract_dir, name)
+
     Logger.info("Extracted #{name} to #{extract_dir}")
     extract_dir
+  end
+
+  defp extract_nested_feed!(dir, name) do
+    if not File.exists?(Path.join(dir, "routes.txt")) do
+      nested_zips = Path.wildcard(Path.join(dir, "*.zip"))
+
+      selected =
+        case name do
+          "septa-regional-rail" ->
+            Path.join(dir, "google_rail.zip")
+
+          "septa-rapid" ->
+            Path.join(dir, "google_bus.zip")
+
+          _ ->
+            List.first(nested_zips)
+        end
+
+      if selected && File.exists?(selected) do
+        {:ok, _files} =
+          :zip.extract(String.to_charlist(selected), cwd: String.to_charlist(dir))
+      end
+    end
   end
 
   defp ensure_local_zip!(name, source) do
@@ -64,7 +123,16 @@ defmodule Transitmaps.Gtfs.Importer do
       zip_path = Path.join(@cache_dir, "#{name}.zip")
 
       Logger.info("Downloading #{source}")
-      %{status: 200} = Req.get!(source, into: File.stream!(zip_path), raw: true)
+
+      request_options =
+        if name == "wmata-rapid" && String.contains?(source, "api.wmata.com") do
+          [headers: [{"api_key", System.fetch_env!("WMATA_API_KEY")}]]
+        else
+          []
+        end
+
+      %{status: 200} =
+        Req.get!(source, [into: File.stream!(zip_path), raw: true] ++ request_options)
 
       zip_path
     else
@@ -169,7 +237,9 @@ defmodule Transitmaps.Gtfs.Importer do
     |> Csv.stream("shapes.txt")
     |> Stream.filter(&MapSet.member?(selected_shape_ids, &1["shape_id"]))
     |> Enum.reduce(%{}, fn row, acc ->
-      point = {parse_int(row["shape_pt_sequence"], 0), parse_float(row["shape_pt_lon"]), parse_float(row["shape_pt_lat"])}
+      point =
+        {parse_int(row["shape_pt_sequence"], 0), parse_float(row["shape_pt_lon"]),
+         parse_float(row["shape_pt_lat"])}
 
       Map.update(acc, row["shape_id"], [point], &[point | &1])
     end)
@@ -198,8 +268,11 @@ defmodule Transitmaps.Gtfs.Importer do
 
       stop_route_ids =
         case route_id do
-          nil -> stop_route_ids
-          _ -> Map.update(stop_route_ids, stop_id, MapSet.new([route_id]), &MapSet.put(&1, route_id))
+          nil ->
+            stop_route_ids
+
+          _ ->
+            Map.update(stop_route_ids, stop_id, MapSet.new([route_id]), &MapSet.put(&1, route_id))
         end
 
       fallback_paths =
@@ -240,8 +313,11 @@ defmodule Transitmaps.Gtfs.Importer do
       stop_route_ids
       |> Enum.reduce(%{}, fn {stop_id, route_ids}, station_routes ->
         case station_for(all_stops, stop_id) do
-          nil -> station_routes
-          station_id -> Map.update(station_routes, station_id, route_ids, &MapSet.union(&1, route_ids))
+          nil ->
+            station_routes
+
+          station_id ->
+            Map.update(station_routes, station_id, route_ids, &MapSet.union(&1, route_ids))
         end
       end)
       |> Map.new(fn {station_id, route_ids} ->
@@ -312,20 +388,30 @@ defmodule Transitmaps.Gtfs.Importer do
   defp non_empty_or_nil([]), do: nil
   defp non_empty_or_nil(lines), do: lines
 
-  defp station_rows(stations) do
+  defp station_rows(stations, route_rows) do
+    retained_route_ids = MapSet.new(route_rows, & &1.route_id)
+
     stations
     |> Map.values()
     |> Enum.filter(&(&1.lat && &1.lon))
     |> Enum.map(&Map.take(&1, [:stop_id, :name, :lat, :lon, :location_type, :route_ids]))
+    |> Enum.map(fn station ->
+      Map.update!(
+        station,
+        :route_ids,
+        &Enum.filter(&1, fn id -> MapSet.member?(retained_route_ids, id) end)
+      )
+    end)
+    |> Enum.reject(&Enum.empty?(&1.route_ids))
   end
 
   # -- persistence -------------------------------------------------------------
 
-  defp persist!(name, source, route_rows, station_rows) do
+  @doc false
+  def persist_rows(name, source, route_rows, station_rows) do
     now = DateTime.utc_now(:second)
 
-    categories_by_route =
-      Map.new(route_rows, fn route -> {route.route_id, route.category} end)
+    routes_by_id = Map.new(route_rows, fn route -> {route.route_id, route} end)
 
     Repo.transaction(
       fn ->
@@ -334,14 +420,20 @@ defmodule Transitmaps.Gtfs.Importer do
         Repo.delete_all(feed_scope(Transitmaps.Gtfs.Route, feed.id))
         Repo.delete_all(feed_scope(Transitmaps.Gtfs.Stop, feed.id))
 
-        insert_batched!(Transitmaps.Gtfs.Route, Enum.map(route_rows, &route_insert(&1, feed.id, now)))
+        insert_batched!(
+          Transitmaps.Gtfs.Route,
+          Enum.map(route_rows, &route_insert(&1, feed.id, now))
+        )
 
         insert_batched!(
           Transitmaps.Gtfs.Stop,
-          Enum.map(station_rows, &stop_insert(&1, feed.id, now, categories_by_route))
+          Enum.map(station_rows, &stop_insert(&1, feed.id, now, routes_by_id))
         )
 
-        Logger.info("Imported #{length(route_rows)} routes, #{length(station_rows)} stops for feed #{name}")
+        Logger.info(
+          "Imported #{length(route_rows)} routes, #{length(station_rows)} stops for feed #{name}"
+        )
+
         feed
       end,
       timeout: :infinity
@@ -355,7 +447,13 @@ defmodule Transitmaps.Gtfs.Importer do
 
   defp upsert_feed!(name, source, now) do
     Repo.insert!(
-      %Transitmaps.Gtfs.Feed{name: name, url: source, imported_at: now, inserted_at: now, updated_at: now},
+      %Transitmaps.Gtfs.Feed{
+        name: name,
+        url: source,
+        imported_at: now,
+        inserted_at: now,
+        updated_at: now
+      },
       on_conflict: [set: [url: source, imported_at: now, updated_at: now]],
       conflict_target: :name,
       returning: true
@@ -364,21 +462,51 @@ defmodule Transitmaps.Gtfs.Importer do
 
   defp route_insert(route, feed_id, now) do
     route
-    |> Map.take([:route_id, :agency_name, :short_name, :long_name, :route_type, :category, :color, :text_color, :geometry])
+    |> Map.take([
+      :route_id,
+      :agency_name,
+      :short_name,
+      :long_name,
+      :route_type,
+      :category,
+      :color,
+      :text_color,
+      :geometry
+    ])
     |> Map.merge(%{feed_id: feed_id, inserted_at: now, updated_at: now})
   end
 
-  defp stop_insert(station, feed_id, now, categories_by_route) do
-    categories =
+  defp stop_insert(station, feed_id, now, routes_by_id) do
+    lines =
       station.route_ids
-      |> Enum.map(&categories_by_route[&1])
+      |> Enum.map(&routes_by_id[&1])
       |> Enum.reject(&is_nil/1)
+      |> Enum.map(fn route ->
+        %{
+          name: route.short_name || route.long_name || route.route_id,
+          color: route.color || RouteTypes.default_color(route.category),
+          category: route.category,
+          agency: route.agency_name
+        }
+      end)
+      |> Enum.uniq_by(&{&1.name, &1.agency})
+      |> Enum.sort_by(&{&1.category, &1.name})
+
+    categories =
+      lines
+      |> Enum.map(& &1.category)
       |> Enum.uniq()
       |> Enum.sort()
 
     station
     |> Map.take([:stop_id, :name, :lat, :lon, :location_type])
-    |> Map.merge(%{feed_id: feed_id, categories: categories, inserted_at: now, updated_at: now})
+    |> Map.merge(%{
+      feed_id: feed_id,
+      categories: categories,
+      lines: lines,
+      inserted_at: now,
+      updated_at: now
+    })
   end
 
   defp insert_batched!(schema, rows) do

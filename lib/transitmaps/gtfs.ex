@@ -131,9 +131,18 @@ defmodule Transitmaps.Gtfs do
 
   defp prepare_geometry(geometry), do: geometry
 
+  # A route's service-pattern strands (up to 6, see Importer) mostly re-trace
+  # the same track; where they reverse or pick different platforms they paint
+  # loops and tangles around stations. Splitting reversal hairpins and
+  # dropping strands that stay within a platform's width of kept geometry
+  # leaves one clean line per genuine branch.
+  @near_duplicate_km 0.15
+
   defp prepare_lines(lines) do
     lines
     |> Enum.flat_map(&Geometry.split_long_segments(&1, 25))
+    |> Enum.flat_map(&Geometry.split_at_reversals/1)
+    |> Geometry.drop_redundant_lines(@near_duplicate_km)
     |> Enum.map(&normalize_direction/1)
   end
 

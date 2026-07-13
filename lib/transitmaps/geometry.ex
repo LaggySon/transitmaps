@@ -52,6 +52,187 @@ defmodule Transitmaps.Geometry do
     |> Enum.reverse()
   end
 
+  @doc """
+  Splits a polyline wherever it reverses back onto itself.
+
+  Shapes for services that change direction mid-route (a train reversing at
+  a station it calls at) double back over the track just travelled. Drawn
+  as one line, the hairpin paints loops and blobs around the station; split
+  at the reversal point, each leg is a clean strand and a leg that merely
+  re-traces another can be dropped with `drop_redundant_lines/2`.
+  """
+  def split_at_reversals([first | _] = line) when length(line) >= 3 do
+    scale = km_scale(first)
+    projected = Enum.map(line, &project_km(&1, scale))
+    points = List.to_tuple(projected)
+    distances = projected |> cumulative_distances() |> List.to_tuple()
+
+    1..(tuple_size(points) - 2)
+    |> Enum.filter(&reversal_at?(points, distances, &1))
+    |> suppress_nearby(distances)
+    |> then(&split_line_at(line, &1))
+  end
+
+  def split_at_reversals(line), do: [line]
+
+  # Headings are measured between anchors this far along the path on either
+  # side of a vertex, so a reversal still registers when the return track sits
+  # a platform's width to the side (two 90-degree corners, no 180 vertex).
+  @heading_window_km 0.2
+
+  # A reversal is a near-180-degree heading change; genuine track and road
+  # corners stay well under this.
+  @reversal_cosine -0.9
+
+  defp reversal_at?(points, distances, i) do
+    {ux, uy} = heading(points, distances, i, -1)
+    {vx, vy} = heading(points, distances, i, +1)
+    norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+
+    norm > 0.0 and (ux * vx + uy * vy) / norm < @reversal_cosine
+  end
+
+  defp heading(points, distances, i, direction) do
+    anchor = anchor_index(distances, i, direction, tuple_size(points))
+    {xi, yi} = elem(points, i)
+    {xa, ya} = elem(points, anchor)
+
+    if direction == -1, do: {xi - xa, yi - ya}, else: {xa - xi, ya - yi}
+  end
+
+  defp anchor_index(distances, i, direction, size) do
+    di = elem(distances, i)
+    last = if direction == -1, do: 0, else: size - 1
+
+    Stream.iterate(i + direction, &(&1 + direction))
+    |> Enum.find(fn j -> j == last or abs(elem(distances, j) - di) >= @heading_window_km end)
+  end
+
+  # Both corners of a sidestep hairpin register; one split at the apex is
+  # enough.
+  defp suppress_nearby(indexes, distances) do
+    indexes
+    |> Enum.reduce([], fn index, accepted ->
+      case accepted do
+        [previous | _] when elem(distances, index) - elem(distances, previous) <
+                              @heading_window_km ->
+          accepted
+
+        _ ->
+          [index | accepted]
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp split_line_at(line, []), do: [line]
+
+  defp split_line_at(line, indexes) do
+    boundaries = MapSet.new(indexes)
+
+    {parts, current} =
+      line
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {point, i}, {parts, current} ->
+        if MapSet.member?(boundaries, i) do
+          {[Enum.reverse([point | current]) | parts], [point]}
+        else
+          {parts, [point | current]}
+        end
+      end)
+
+    Enum.reverse([Enum.reverse(current) | parts])
+  end
+
+  @doc """
+  Drops lines that only re-trace other lines in the list.
+
+  A route's service-pattern strands mostly follow the same track, differing
+  by platform choice or a short terminal approach, so drawn together they
+  weave a tangle around stations. Longest strands win; a line is dropped
+  when its whole path stays near the kept geometry. The distance test is
+  grid-approximate: within `tolerance_km` always counts as near, beyond
+  about three times that never does. Genuine branches deviate by far more
+  and survive.
+  """
+  def drop_redundant_lines(lines, _tolerance_km) when length(lines) < 2, do: lines
+
+  def drop_redundant_lines([[reference | _] | _] = lines, tolerance_km) do
+    scale = km_scale(reference)
+
+    {kept, _cells} =
+      lines
+      |> Enum.sort_by(&(-line_length_km(&1, scale)))
+      |> Enum.reduce({[], MapSet.new()}, fn line, {kept, cells} ->
+        samples = sample_points(line, scale, tolerance_km / 2)
+
+        if kept != [] and Enum.all?(samples, &near_covered_cell?(cells, &1, tolerance_km)) do
+          {kept, cells}
+        else
+          {[line | kept], Enum.into(Enum.map(samples, &cell(&1, tolerance_km)), cells)}
+        end
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  defp km_scale([lon, lat]) when is_number(lon) and is_number(lat) do
+    {111.320 * :math.cos(lat * :math.pi() / 180), 110.574}
+  end
+
+  defp project_km([lon, lat], {kx, ky}), do: {lon * kx, lat * ky}
+
+  defp cumulative_distances([{x0, y0} | rest]) do
+    {reversed, _last} =
+      Enum.reduce(rest, {[0.0], {x0, y0}}, fn {x, y}, {[total | _] = acc, {px, py}} ->
+        dx = x - px
+        dy = y - py
+        {[total + :math.sqrt(dx * dx + dy * dy) | acc], {x, y}}
+      end)
+
+    Enum.reverse(reversed)
+  end
+
+  defp line_length_km(line, scale) do
+    line
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.reduce(0.0, fn [a, b], acc -> acc + km_distance(a, b, scale) end)
+  end
+
+  defp km_distance([lon1, lat1], [lon2, lat2], {kx, ky}) do
+    dx = (lon2 - lon1) * kx
+    dy = (lat2 - lat1) * ky
+    :math.sqrt(dx * dx + dy * dy)
+  end
+
+  # Points along the line every `step_km`, so straight stretches with sparse
+  # vertices are still covered densely enough for the grid test.
+  defp sample_points(line, scale, step_km) do
+    projected = Enum.map(line, &project_km(&1, scale))
+
+    projected
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.flat_map(fn [{x1, y1} = start, {x2, y2}] ->
+      dx = x2 - x1
+      dy = y2 - y1
+      steps = max(1, ceil(:math.sqrt(dx * dx + dy * dy) / step_km))
+
+      [start | for(i <- 1..(steps - 1)//1, do: {x1 + dx * i / steps, y1 + dy * i / steps})]
+    end)
+    |> Kernel.++([List.last(projected)])
+  end
+
+  defp cell({x, y}, cell_km), do: {floor(x / cell_km), floor(y / cell_km)}
+
+  defp near_covered_cell?(cells, point, cell_km) do
+    {cx, cy} = cell(point, cell_km)
+
+    Enum.any?(
+      for(dx <- -1..1, dy <- -1..1, do: {cx + dx, cy + dy}),
+      &MapSet.member?(cells, &1)
+    )
+  end
+
   defp haversine_km([lon1, lat1], [lon2, lat2]) do
     lat1 = lat1 * :math.pi() / 180
     lat2 = lat2 * :math.pi() / 180

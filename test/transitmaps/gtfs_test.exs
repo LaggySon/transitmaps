@@ -103,6 +103,82 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
+  describe "Geometry.split_at_reversals/1" do
+    test "splits an out-and-back hairpin at the reversal point" do
+      out = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4]]
+      back = [[-0.98, 51.4], [-0.99, 51.4], [-1.0, 51.4]]
+      hairpin = out ++ tl(back)
+
+      assert Geometry.split_at_reversals(hairpin) == [out, back]
+    end
+
+    test "leaves ordinary curves and corners alone" do
+      line = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41], [-0.98, 51.42]]
+
+      assert Geometry.split_at_reversals(line) == [line]
+    end
+
+    test "splits a hairpin whose return leg sits a platform's width aside" do
+      out = for i <- 0..10, do: [-1.0 + i * 0.01, 51.4]
+      back = for i <- 10..0//-1, do: [-1.0 + i * 0.01, 51.4001]
+
+      assert [_out, _back] = Geometry.split_at_reversals(out ++ back)
+    end
+
+    test "passes short lines through" do
+      assert Geometry.split_at_reversals([[-1.0, 51.4], [-0.99, 51.4]]) ==
+               [[[-1.0, 51.4], [-0.99, 51.4]]]
+    end
+
+    test "tolerates duplicate consecutive points" do
+      line = [[-1.0, 51.4], [-1.0, 51.4], [-0.99, 51.4]]
+
+      assert Geometry.split_at_reversals(line) == [line]
+    end
+  end
+
+  describe "Geometry.drop_redundant_lines/2" do
+    # ~0.0005 degrees latitude is roughly 55 m: platform-level variance.
+    test "drops strands that re-trace kept geometry" do
+      main = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      platform_variant = for i <- 0..18, do: [-1.0 + i * 0.01, 51.4005]
+
+      assert Geometry.drop_redundant_lines([main, platform_variant], 0.15) == [main]
+    end
+
+    test "drops exact duplicates" do
+      main = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+
+      assert Geometry.drop_redundant_lines([main, main], 0.15) == [main]
+    end
+
+    test "keeps genuinely diverging branches" do
+      main = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      branch = for i <- 0..10, do: [-1.0 + i * 0.01, 51.4 + i * 0.005]
+
+      result = Geometry.drop_redundant_lines([main, branch], 0.15)
+
+      assert main in result
+      assert branch in result
+    end
+
+    test "covers sparse straight stretches via segment sampling" do
+      main = [[-1.0, 51.4], [-0.72, 51.4]]
+      variant = for i <- 5..10, do: [-1.0 + i * 0.01, 51.4004]
+
+      assert Geometry.drop_redundant_lines([main, variant], 0.15) == [main]
+    end
+
+    test "reversal split plus dedupe collapses a hairpin to one strand" do
+      out = for i <- 0..10, do: [-1.0 + i * 0.01, 51.4]
+      back = for i <- 10..0//-1, do: [-1.0 + i * 0.01, 51.4001]
+
+      strands = Geometry.split_at_reversals(out ++ back)
+
+      assert [_single] = Geometry.drop_redundant_lines(strands, 0.15)
+    end
+  end
+
   describe "Geometry.split_long_segments/2" do
     test "removes implausible connector jumps while preserving valid sections" do
       line = [

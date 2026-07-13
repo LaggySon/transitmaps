@@ -35,8 +35,30 @@ defmodule Transitmaps.Gtfs do
     Route
     |> where([r], r.category in ^categories)
     |> Repo.all()
-    |> Enum.map(&route_feature/1)
+    |> assign_offset_slots()
+    |> Enum.map(fn {route, slot} -> route_feature(route, slot) end)
     |> feature_collection()
+  end
+
+  # Routes that share a corridor (Circle/District/Hammersmith through central
+  # London, NEC operators, ...) are near-identical polylines that would
+  # overpaint each other. Each route gets a stable offset slot; the client
+  # renders slots as side-by-side parallel strands, Apple Maps style. Slots
+  # cycle within a category sorted by agency+name, so corridor-sharing
+  # siblings (usually same agency, adjacent names) land on distinct slots.
+  @offset_slots 5
+
+  defp assign_offset_slots(routes) do
+    routes
+    |> Enum.group_by(& &1.category)
+    |> Enum.flat_map(fn {_category, group} ->
+      group
+      |> Enum.sort_by(&{&1.agency_name, &1.short_name || &1.long_name || &1.route_id})
+      |> Enum.with_index()
+      |> Enum.map(fn {route, index} ->
+        {route, rem(index, @offset_slots) - div(@offset_slots, 2)}
+      end)
+    end)
   end
 
   def stop_feature_collection(categories) do
@@ -83,36 +105,47 @@ defmodule Transitmaps.Gtfs do
     Enum.max_by([left, right], &String.length(&1 || ""))
   end
 
-  defp route_feature(%Route{} = route) do
+  defp route_feature(%Route{} = route, offset_slot) do
     %{
       type: "Feature",
-      geometry: remove_connector_jumps(route.geometry),
+      geometry: prepare_geometry(route.geometry),
       properties: %{
         name: route.short_name || route.long_name || route.route_id,
         long_name: route.long_name,
         agency: route.agency_name,
         category: route.category,
         color: route.color || RouteTypes.default_color(route.category),
-        text_color: route.text_color || "#FFFFFF"
+        text_color: route.text_color || "#FFFFFF",
+        offset: offset_slot
       }
     }
   end
 
-  defp remove_connector_jumps(%{"type" => "MultiLineString", "coordinates" => lines}) do
-    %{
-      "type" => "MultiLineString",
-      "coordinates" => Enum.flat_map(lines, &Geometry.split_long_segments(&1, 25))
-    }
+  defp prepare_geometry(%{"type" => "MultiLineString", "coordinates" => lines}) do
+    %{"type" => "MultiLineString", "coordinates" => prepare_lines(lines)}
   end
 
-  defp remove_connector_jumps(%{type: "MultiLineString", coordinates: lines}) do
-    %{
-      type: "MultiLineString",
-      coordinates: Enum.flat_map(lines, &Geometry.split_long_segments(&1, 25))
-    }
+  defp prepare_geometry(%{type: "MultiLineString", coordinates: lines}) do
+    %{type: "MultiLineString", coordinates: prepare_lines(lines)}
   end
 
-  defp remove_connector_jumps(geometry), do: geometry
+  defp prepare_geometry(geometry), do: geometry
+
+  defp prepare_lines(lines) do
+    lines
+    |> Enum.flat_map(&Geometry.split_long_segments(&1, 25))
+    |> Enum.map(&normalize_direction/1)
+  end
+
+  # MapLibre's line-offset shifts perpendicular to travel direction, so a
+  # route's opposite-direction shape variants would fan out to opposite
+  # sides. Give every part one canonical direction so a route's strands all
+  # offset the same way.
+  defp normalize_direction([first | _rest] = line) do
+    if List.last(line) < first, do: Enum.reverse(line), else: line
+  end
+
+  defp normalize_direction(line), do: line
 
   defp stop_feature(%Stop{} = stop) do
     %{

@@ -26,13 +26,16 @@ const LINE_WIDTH = {metro: 3.0, tram: 2.4, intercity: 2.6, rail: 2.2, bus: 1.4, 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
   line: `${cat}-line`,
+  lineLabels: `${cat}-line-labels`,
   stops: `${cat}-stops`,
   labels: `${cat}-station-labels`,
 })
 
-// Global stacking: all line layers (in mode order), then all stop layers.
+// Global stacking: all line layers (in mode order), then line-name labels,
+// then all stop layers.
 const desiredLayerOrder = () =>
   MODE_ORDER.flatMap((cat) => [layerIds(cat).casing, layerIds(cat).line]).concat(
+    MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
   )
@@ -124,6 +127,18 @@ const TransitMap = {
     const width = LINE_WIDTH[cat] || 2.0
     const zoomedWidth = (base) => ["interpolate", ["linear"], ["zoom"], 6, base * 0.6, 10, base, 14, base * 2.2]
 
+    // Apple Maps-style parallel strands: routes sharing a corridor carry
+    // distinct server-assigned offset slots. Slots fan out perpendicular to
+    // the line once zoomed in enough to tell the strands apart; at country
+    // zoom they collapse back onto the corridor.
+    const slot = ["to-number", ["coalesce", ["get", "offset"], 0]]
+    const parallelOffset = [
+      "interpolate", ["linear"], ["zoom"],
+      9, 0,
+      11, ["*", slot, width + 1.2],
+      14, ["*", slot, width * 2.2 + 1.4],
+    ]
+
     this.addLayerInOrder({
       id: ids.casing,
       type: "line",
@@ -131,8 +146,9 @@ const TransitMap = {
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
         "line-color": "#ffffff",
-        "line-width": zoomedWidth(width + 2.5),
-        "line-opacity": 0.85,
+        "line-width": zoomedWidth(width + 2.2),
+        "line-opacity": 0.9,
+        "line-offset": parallelOffset,
       },
     })
 
@@ -144,6 +160,31 @@ const TransitMap = {
       paint: {
         "line-color": ["get", "color"],
         "line-width": zoomedWidth(width),
+        "line-offset": parallelOffset,
+      },
+    })
+
+    // Route names set along the line in the line's own color, as in Apple's
+    // transit view ("Bakerloo line", "Central line", ...).
+    this.addLayerInOrder({
+      id: ids.lineLabels,
+      type: "symbol",
+      source: `${cat}-routes`,
+      minzoom: 11,
+      layout: {
+        "symbol-placement": "line",
+        "symbol-spacing": 450,
+        "text-field": ["get", "name"],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 10, 16, 13],
+        "text-padding": 4,
+        "text-optional": true,
+      },
+      paint: {
+        "text-color": ["get", "color"],
+        "text-halo-color": "rgba(255, 255, 255, 0.95)",
+        "text-halo-width": 1.6,
+        "text-halo-blur": 0.4,
       },
     })
 

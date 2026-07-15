@@ -173,8 +173,11 @@ defmodule Transitmaps.Geometry do
 
       total =
         case kept do
-          [] -> 0.0
-          [{_point, previous, previous_total} | _] -> previous_total + step_km(previous, projected)
+          [] ->
+            0.0
+
+          [{_point, previous, previous_total} | _] ->
+            previous_total + step_km(previous, projected)
         end
 
       case loop_start_index(kept, projected, total) do
@@ -196,7 +199,8 @@ defmodule Transitmaps.Geometry do
   # Index (in the reversed kept list) of the earliest in-window earlier visit
   # the current point closes a loop with; the earliest match removes the
   # whole tangle in one splice.
-  defp loop_start_index(kept, projected, total), do: loop_start_index(kept, projected, total, 0, nil)
+  defp loop_start_index(kept, projected, total),
+    do: loop_start_index(kept, projected, total, 0, nil)
 
   defp loop_start_index([], _projected, _total, _index, best), do: best
 

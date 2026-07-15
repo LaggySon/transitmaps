@@ -6,7 +6,7 @@ defmodule Transitmaps.Gtfs do
   import Ecto.Query
 
   alias Transitmaps.Geometry
-  alias Transitmaps.Gtfs.{Route, RouteTypes, Stop}
+  alias Transitmaps.Gtfs.{OperatorColors, Route, RouteTypes, Stop}
   alias Transitmaps.Repo
 
   @doc """
@@ -114,7 +114,9 @@ defmodule Transitmaps.Gtfs do
         long_name: route.long_name,
         agency: route.agency_name,
         category: route.category,
-        color: route.color || RouteTypes.default_color(route.category),
+        color:
+          OperatorColors.color_for(route.agency_name, route.category) ||
+            route.color || RouteTypes.default_color(route.category),
         text_color: route.text_color || "#FFFFFF",
         offset: offset_slot
       }
@@ -133,16 +135,24 @@ defmodule Transitmaps.Gtfs do
 
   # A route's service-pattern strands (up to 6, see Importer) mostly re-trace
   # the same track; where they reverse or pick different platforms they paint
-  # loops and tangles around stations. Splitting reversal hairpins and
-  # dropping strands that stay within a platform's width of kept geometry
-  # leaves one clean line per genuine branch.
+  # loops and tangles around stations. Splitting reversal hairpins, splicing
+  # out small self-crossing loops, and dropping strands that stay within a
+  # platform's width of kept geometry leaves one clean line per genuine
+  # branch.
   @near_duplicate_km 0.15
+
+  # Strands no longer than this that hug a longer strand the whole way are
+  # platform detours around a station, not branches.
+  @stub_max_km 1.0
+  @stub_shadow_km 0.25
 
   defp prepare_lines(lines) do
     lines
     |> Enum.flat_map(&Geometry.split_long_segments(&1, 25))
     |> Enum.flat_map(&Geometry.split_at_reversals/1)
+    |> Enum.map(&Geometry.remove_small_loops/1)
     |> Geometry.drop_redundant_lines(@near_duplicate_km)
+    |> Geometry.drop_short_shadows(@stub_max_km, @stub_shadow_km)
     |> Enum.map(&normalize_direction/1)
   end
 
@@ -163,10 +173,25 @@ defmodule Transitmaps.Gtfs do
       properties: %{
         name: stop.name,
         categories: stop.categories,
-        lines: stop.lines,
+        lines: Enum.map(stop.lines, &present_line/1),
         # Stations serving rail-family modes get the larger "station" marker.
         station: Enum.any?(stop.categories, &(&1 in ~w(rail metro intercity tram)))
       }
+    }
+  end
+
+  # Stored line entries may be atom- or string-keyed (structs vs jsonb);
+  # normalize the shape and apply operator brand colours, matching what
+  # `route_feature/2` serves for the lines themselves.
+  defp present_line(line) do
+    agency = line_value(line, :agency)
+    category = line_value(line, :category)
+
+    %{
+      name: line_value(line, :name),
+      agency: agency,
+      category: category,
+      color: OperatorColors.color_for(agency, category) || line_value(line, :color)
     }
   end
 

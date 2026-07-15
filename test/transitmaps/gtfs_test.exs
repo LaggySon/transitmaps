@@ -3,6 +3,7 @@ defmodule Transitmaps.GtfsTest do
 
   alias Transitmaps.Geometry
   alias Transitmaps.Gtfs
+  alias Transitmaps.Gtfs.OperatorColors
   alias Transitmaps.Gtfs.Stop
   alias Transitmaps.Gtfs.RouteTypes
 
@@ -176,6 +177,104 @@ defmodule Transitmaps.GtfsTest do
       strands = Geometry.split_at_reversals(out ++ back)
 
       assert [_single] = Geometry.drop_redundant_lines(strands, 0.15)
+    end
+  end
+
+  describe "Geometry.remove_small_loops/1" do
+    test "splices out a station-area loop where the line crosses itself" do
+      # ~0.001 deg is roughly 110 m of latitude / 70 m of longitude here.
+      approach = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4]]
+      loop = [[-0.98, 51.402], [-0.977, 51.402], [-0.977, 51.4], [-0.98, 51.4]]
+      onward = [[-0.97, 51.4], [-0.96, 51.4]]
+
+      assert Geometry.remove_small_loops(approach ++ loop ++ onward) ==
+               approach ++ onward
+    end
+
+    test "leaves straight lines and gentle curves untouched" do
+      line = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41], [-0.98, 51.42]]
+
+      assert Geometry.remove_small_loops(line) == line
+    end
+
+    test "keeps genuine circular routes whose loop is larger than the window" do
+      circle =
+        for i <- 0..12 do
+          angle = i * :math.pi() / 6
+          [-1.0 + 0.012 * :math.cos(angle), 51.4 + 0.008 * :math.sin(angle)]
+        end
+
+      assert Geometry.remove_small_loops(circle) == circle
+    end
+
+    test "passes short lines through" do
+      line = [[-1.0, 51.4], [-0.99, 51.4]]
+
+      assert Geometry.remove_small_loops(line) == line
+    end
+  end
+
+  describe "Geometry.drop_short_shadows/3" do
+    test "drops a short sliver hugging a long strand" do
+      main = for i <- 0..30, do: [-1.0 + i * 0.01, 51.4]
+      sliver = for i <- 0..4, do: [-0.9 + i * 0.001, 51.4008]
+
+      assert Geometry.drop_short_shadows([main, sliver], 1.0, 0.25) == [main]
+    end
+
+    test "keeps short spurs that leave the corridor" do
+      main = for i <- 0..30, do: [-1.0 + i * 0.01, 51.4]
+      spur = [[-0.9, 51.4], [-0.9, 51.404], [-0.9, 51.408]]
+
+      result = Geometry.drop_short_shadows([main, spur], 1.0, 0.25)
+
+      assert main in result
+      assert spur in result
+    end
+
+    test "leaves routes made only of short strands alone" do
+      first = [[-1.0, 51.4], [-0.995, 51.4]]
+      second = [[-1.0, 51.4004], [-0.995, 51.4004]]
+
+      assert Geometry.drop_short_shadows([first, second], 1.0, 0.25) == [first, second]
+    end
+
+    test "passes single lines through" do
+      line = [[-1.0, 51.4], [-0.9, 51.4]]
+
+      assert Geometry.drop_short_shadows([line], 1.0, 0.25) == [line]
+    end
+  end
+
+  describe "OperatorColors.color_for/2" do
+    test "gives corridor-sharing operators distinct colours" do
+      great_western = OperatorColors.color_for("Great Western Railway", "rail")
+      southern = OperatorColors.color_for("Southern", "rail")
+
+      assert great_western =~ ~r/^#[0-9A-F]{6}$/
+      assert southern =~ ~r/^#[0-9A-F]{6}$/
+      refute great_western == southern
+    end
+
+    test "matches the most specific operator name first" do
+      refute OperatorColors.color_for("Great Northern", "rail") ==
+               OperatorColors.color_for("Northern", "rail")
+
+      refute OperatorColors.color_for("South Western Railway", "rail") ==
+               OperatorColors.color_for("Southern", "rail")
+
+      refute OperatorColors.color_for("London North Eastern Railway", "intercity") ==
+               OperatorColors.color_for("Northern", "rail")
+    end
+
+    test "only applies to rail-family categories" do
+      assert OperatorColors.color_for("Southern Vectis", "bus") == nil
+      assert OperatorColors.color_for("Great Western Railway", "ferry") == nil
+    end
+
+    test "unknown operators keep feed colours" do
+      assert OperatorColors.color_for("Acme Trains", "rail") == nil
+      assert OperatorColors.color_for(nil, "rail") == nil
     end
   end
 

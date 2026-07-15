@@ -278,7 +278,6 @@ const TransitMap = {
     const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
     const groups = this.stationServiceGroups(lines)
     const lineCount = groups.reduce((count, group) => count + group.lines.length, 0)
-    const modes = new Set(groups.flatMap((group) => group.lines.map((line) => line.category).filter(Boolean)))
 
     const summary = lineCount
       ? `<div class="station-popup__summary">` +
@@ -287,7 +286,7 @@ const TransitMap = {
       : ""
 
     const body = groups.length
-      ? groups.map((group) => this.serviceGroupHtml(group, modes.size > 1)).join("")
+      ? groups.map((group) => this.serviceGroupHtml(group)).join("")
       : `<div class="station-popup__empty">No service information available</div>`
 
     return (
@@ -299,11 +298,12 @@ const TransitMap = {
     )
   },
 
-  serviceGroupHtml(group, showMode) {
+  serviceGroupHtml(group) {
     const rows = group.lines
       .map((line) => {
+        // Rail is the assumed default; only other modes are called out.
         const mode =
-          showMode && line.category
+          line.category && line.category !== "rail"
             ? `<span class="station-popup__mode">${this.escapeHtml(MODE_LABELS[line.category] || line.category)}</span>`
             : ""
 

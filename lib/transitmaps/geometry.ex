@@ -173,8 +173,11 @@ defmodule Transitmaps.Geometry do
 
       total =
         case kept do
-          [] -> 0.0
-          [{_point, previous, previous_total} | _] -> previous_total + step_km(previous, projected)
+          [] ->
+            0.0
+
+          [{_point, previous, previous_total} | _] ->
+            previous_total + step_km(previous, projected)
         end
 
       case loop_start_index(kept, projected, total) do
@@ -196,7 +199,8 @@ defmodule Transitmaps.Geometry do
   # Index (in the reversed kept list) of the earliest in-window earlier visit
   # the current point closes a loop with; the earliest match removes the
   # whole tangle in one splice.
-  defp loop_start_index(kept, projected, total), do: loop_start_index(kept, projected, total, 0, nil)
+  defp loop_start_index(kept, projected, total),
+    do: loop_start_index(kept, projected, total, 0, nil)
 
   defp loop_start_index([], _projected, _total, _index, best), do: best
 
@@ -220,6 +224,96 @@ defmodule Transitmaps.Geometry do
     dy = y2 - y1
     :math.sqrt(dx * dx + dy * dy)
   end
+
+  # Stitched fragments must carry straight on at the join; a genuine
+  # reversal (near-180 turn) stays split.
+  @stitch_cosine 0.2
+
+  @doc """
+  Joins strands that continue one another end-to-end.
+
+  Splitting (long jumps, reversals, loops) can leave a route's geometry as
+  a chain of fragments sharing endpoints. Each fragment renders with its
+  own caps and its own offset phase, so the chain reads as broken dashes
+  instead of one line. Fragments whose endpoints coincide within
+  `epsilon_km` and whose headings carry straight on are merged back into a
+  single strand; joins that double back (genuine reversals) are left split.
+  """
+  def stitch_lines(lines, _epsilon_km) when length(lines) < 2, do: lines
+
+  def stitch_lines(lines, epsilon_km) do
+    case stitch_once(lines, epsilon_km) do
+      nil -> lines
+      stitched -> stitch_lines(stitched, epsilon_km)
+    end
+  end
+
+  defp stitch_once(lines, epsilon_km) do
+    indexed = Enum.with_index(lines)
+
+    Enum.find_value(indexed, fn {a, i} ->
+      Enum.find_value(indexed, fn {b, j} ->
+        with true <- i < j,
+             joined when is_list(joined) <- join_lines(a, b, epsilon_km) do
+          rest = for {line, k} <- indexed, k != i, k != j, do: line
+          [joined | rest]
+        else
+          _ -> nil
+        end
+      end)
+    end)
+  end
+
+  defp join_lines([reference | _] = a, b, epsilon_km) do
+    scale = km_scale(reference)
+
+    Enum.find_value(
+      [
+        {a, b},
+        {a, Enum.reverse(b)},
+        {Enum.reverse(a), b},
+        {Enum.reverse(a), Enum.reverse(b)}
+      ],
+      fn {left, right} -> maybe_join(left, right, scale, epsilon_km) end
+    )
+  end
+
+  defp maybe_join(left, right, scale, epsilon_km) do
+    if km_distance(List.last(left), hd(right), scale) <= epsilon_km and
+         straight_continuation?(left, right, scale) do
+      Enum.dedup(left ++ right)
+    end
+  end
+
+  defp straight_continuation?(left, right, scale) do
+    with [b, a | _] <- left |> Enum.dedup() |> Enum.reverse(),
+         [c, d | _] <- Enum.dedup(right) do
+      {ux, uy} = km_vector(a, b, scale)
+      {vx, vy} = km_vector(c, d, scale)
+      norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+
+      norm > 0.0 and (ux * vx + uy * vy) / norm > @stitch_cosine
+    else
+      _ -> false
+    end
+  end
+
+  defp km_vector([lon1, lat1], [lon2, lat2], {kx, ky}) do
+    {(lon2 - lon1) * kx, (lat2 - lat1) * ky}
+  end
+
+  @doc """
+  Grid cells of size `cell_km` that `line` passes through, given a `scale`
+  from `km_scale/1`. A coarse corridor fingerprint: two lines sharing a
+  stretch of track share a run of cells.
+  """
+  def covered_cells(line, scale, cell_km) when length(line) >= 2 do
+    line
+    |> sample_points(scale, cell_km / 2)
+    |> MapSet.new(&cell(&1, cell_km))
+  end
+
+  def covered_cells(_line, _scale, _cell_km), do: MapSet.new()
 
   @doc """
   Drops short strands that merely shadow longer kept lines.
@@ -290,7 +384,8 @@ defmodule Transitmaps.Geometry do
     Enum.reverse(kept)
   end
 
-  defp km_scale([lon, lat]) when is_number(lon) and is_number(lat) do
+  @doc "Kilometres per degree of longitude/latitude around a reference point."
+  def km_scale([lon, lat]) when is_number(lon) and is_number(lat) do
     {111.320 * :math.cos(lat * :math.pi() / 180), 110.574}
   end
 

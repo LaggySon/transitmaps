@@ -144,6 +144,120 @@ defmodule Transitmaps.Geometry do
     Enum.reverse([Enum.reverse(current) | parts])
   end
 
+  # A revisit closer than this to an earlier point closes a loop.
+  @loop_proximity_km 0.06
+
+  # Path travelled between the two visits must fall in this window: below it
+  # is ordinary tight curvature, above it the "loop" is a genuine circular
+  # route or city loop that should stay drawn.
+  @loop_min_path_km 0.15
+  @loop_max_path_km 1.2
+
+  @doc """
+  Splices out small loops where a line wanders back over itself.
+
+  Terminal turnbacks and platform tangles in generated shapes circle the
+  station area and return to a point the line already passed, painting
+  loops that make no sense on a map. When the path comes back within
+  `#{@loop_proximity_km}` km of an earlier point after travelling between
+  `#{@loop_min_path_km}` and `#{@loop_max_path_km}` km, the detour between
+  the two visits is cut out. Genuine circular routes travel far more than
+  the window between revisits and are untouched.
+  """
+  def remove_small_loops([first | _] = line) when length(line) >= 4 do
+    scale = km_scale(first)
+
+    line
+    |> Enum.reduce([], fn point, kept ->
+      projected = project_km(point, scale)
+
+      total =
+        case kept do
+          [] -> 0.0
+          [{_point, previous, previous_total} | _] -> previous_total + step_km(previous, projected)
+        end
+
+      case loop_start_index(kept, projected, total) do
+        nil ->
+          [{point, projected, total} | kept]
+
+        index ->
+          [{_point, anchor, anchor_total} | _] = spliced = Enum.drop(kept, index)
+          [{point, projected, anchor_total + step_km(anchor, projected)} | spliced]
+      end
+    end)
+    |> Enum.reverse()
+    |> Enum.map(fn {point, _projected, _total} -> point end)
+    |> Enum.dedup()
+  end
+
+  def remove_small_loops(line), do: line
+
+  # Index (in the reversed kept list) of the earliest in-window earlier visit
+  # the current point closes a loop with; the earliest match removes the
+  # whole tangle in one splice.
+  defp loop_start_index(kept, projected, total), do: loop_start_index(kept, projected, total, 0, nil)
+
+  defp loop_start_index([], _projected, _total, _index, best), do: best
+
+  defp loop_start_index([{_point, visited, visited_total} | rest], projected, total, index, best) do
+    travelled = total - visited_total
+
+    cond do
+      travelled > @loop_max_path_km ->
+        best
+
+      travelled >= @loop_min_path_km and step_km(visited, projected) <= @loop_proximity_km ->
+        loop_start_index(rest, projected, total, index + 1, index)
+
+      true ->
+        loop_start_index(rest, projected, total, index + 1, best)
+    end
+  end
+
+  defp step_km({x1, y1}, {x2, y2}) do
+    dx = x2 - x1
+    dy = y2 - y1
+    :math.sqrt(dx * dx + dy * dy)
+  end
+
+  @doc """
+  Drops short strands that merely shadow longer kept lines.
+
+  After reversal-splitting and dedupe a route can still hold little
+  platform-detour slivers: a few hundred metres that pull out of the shared
+  corridor at a station and rejoin it, rendering as stray arcs floating
+  beside the line. A strand no longer than `max_len_km` is dropped when the
+  whole of it stays within roughly `tolerance_km` of the route's longer
+  strands. Genuine short branches head away from the corridor and survive.
+  """
+  def drop_short_shadows(lines, _max_len_km, _tolerance_km) when length(lines) < 2, do: lines
+
+  def drop_short_shadows([[reference | _] | _] = lines, max_len_km, tolerance_km) do
+    scale = km_scale(reference)
+    {long, short} = Enum.split_with(lines, &(line_length_km(&1, scale) > max_len_km))
+
+    if long == [] or short == [] do
+      lines
+    else
+      cells =
+        long
+        |> Enum.flat_map(&sample_points(&1, scale, tolerance_km / 2))
+        |> MapSet.new(&cell(&1, tolerance_km))
+
+      shadowed =
+        short
+        |> Enum.filter(fn line ->
+          line
+          |> sample_points(scale, tolerance_km / 2)
+          |> Enum.all?(&near_covered_cell?(cells, &1, tolerance_km))
+        end)
+        |> MapSet.new()
+
+      Enum.reject(lines, &MapSet.member?(shadowed, &1))
+    end
+  end
+
   @doc """
   Drops lines that only re-trace other lines in the list.
 

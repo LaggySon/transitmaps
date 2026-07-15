@@ -23,6 +23,16 @@ const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro
 
 const LINE_WIDTH = {metro: 3.0, tram: 2.4, intercity: 2.6, rail: 2.2, bus: 1.4, coach: 1.4, ferry: 1.6}
 
+const MODE_LABELS = {
+  metro: "Metro",
+  tram: "Tram",
+  rail: "Rail",
+  intercity: "Intercity",
+  bus: "Bus",
+  coach: "Coach",
+  ferry: "Ferry",
+}
+
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
   line: `${cat}-line`,
@@ -130,13 +140,16 @@ const TransitMap = {
     // Apple Maps-style parallel strands: routes sharing a corridor carry
     // distinct server-assigned offset slots. Slots fan out perpendicular to
     // the line once zoomed in enough to tell the strands apart; at country
-    // zoom they collapse back onto the corridor.
+    // zoom they collapse back onto the corridor. The offset step matches the
+    // rendered line width at each zoom stop (see zoomedWidth), minus a hair
+    // of overlap, so neighbouring strands sit flush as one solid ribbon with
+    // no gap between them.
     const slot = ["to-number", ["coalesce", ["get", "offset"], 0]]
     const parallelOffset = [
       "interpolate", ["linear"], ["zoom"],
       9, 0,
-      11, ["*", slot, width + 1.2],
-      14, ["*", slot, width * 2.2 + 1.4],
+      11, ["*", slot, width * 1.3 - 0.3],
+      14, ["*", slot, width * 2.2 - 0.3],
     ]
 
     this.addLayerInOrder({
@@ -244,40 +257,14 @@ const TransitMap = {
     const ids = layerIds(cat)
 
     this.map.on("click", ids.stops, (e) => {
-      const props = e.features[0].properties
-      const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
-      const serviceGroups = this.stationServiceGroups(lines)
-      const lineList = serviceGroups.length
-        ? `<div class="station-popup__services"><div class="station-popup__eyebrow">Services</div>${serviceGroups
-            .map(
-              (group) =>
-                `<section class="station-popup__group">` +
-                `<div class="station-popup__operator">${this.escapeHtml(group.agency)}</div>` +
-                `<div class="station-popup__badges">${group.lines
-                  .map(
-                    (line) =>
-                      `<span class="station-popup__badge" style="--line-color:${this.safeColor(line.color)}">` +
-                      `${this.escapeHtml(line.label)}</span>`
-                  )
-                  .join("")}</div></section>`
-            )
-            .join("")}</div>`
-        : `<div class="station-popup__empty">No service information available</div>`
-
-      this.openPopup(
-        e.lngLat,
-        `<div class="station-popup"><div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>${lineList}</div>`
-      )
+      this.openPopup(e.lngLat, this.stationPopupHtml(e.features[0].properties))
     })
 
     this.map.on("click", ids.line, (e) => {
       const stopLayers = MODE_ORDER.map((mode) => layerIds(mode).stops).filter((id) => this.map.getLayer(id))
       if (this.map.queryRenderedFeatures(e.point, {layers: stopLayers}).length > 0) return
 
-      const props = e.features[0].properties
-      const title = props.long_name || props.name
-      const subtitle = props.agency ? `<div class="text-xs opacity-70">${props.agency}</div>` : ""
-      this.openPopup(e.lngLat, `<strong style="color:${props.color}">${title}</strong>${subtitle}`)
+      this.openPopup(e.lngLat, this.linePopupHtml(e.features[0].properties))
     })
 
     const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
@@ -287,8 +274,76 @@ const TransitMap = {
     })
   },
 
+  stationPopupHtml(props) {
+    const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
+    const groups = this.stationServiceGroups(lines)
+    const lineCount = groups.reduce((count, group) => count + group.lines.length, 0)
+    const modes = new Set(groups.flatMap((group) => group.lines.map((line) => line.category).filter(Boolean)))
+
+    const summary = lineCount
+      ? `<div class="station-popup__summary">` +
+        `${lineCount} ${lineCount === 1 ? "line" : "lines"} · ` +
+        `${groups.length} ${groups.length === 1 ? "operator" : "operators"}</div>`
+      : ""
+
+    const body = groups.length
+      ? groups.map((group) => this.serviceGroupHtml(group, modes.size > 1)).join("")
+      : `<div class="station-popup__empty">No service information available</div>`
+
+    return (
+      `<div class="station-popup">` +
+      `<header class="station-popup__header"><div class="station-popup__heading">` +
+      `<div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>${summary}` +
+      `</div></header>` +
+      `<div class="station-popup__body">${body}</div></div>`
+    )
+  },
+
+  serviceGroupHtml(group, showMode) {
+    const rows = group.lines
+      .map((line) => {
+        const mode =
+          showMode && line.category
+            ? `<span class="station-popup__mode">${this.escapeHtml(MODE_LABELS[line.category] || line.category)}</span>`
+            : ""
+
+        return (
+          `<li class="station-popup__line">` +
+          `<span class="station-popup__swatch" style="background:${this.safeColor(line.color)}"></span>` +
+          `<span class="station-popup__line-name">${this.escapeHtml(line.label)}</span>${mode}</li>`
+        )
+      })
+      .join("")
+
+    return (
+      `<section class="station-popup__group">` +
+      `<h3 class="station-popup__operator">${this.escapeHtml(group.agency)}</h3>` +
+      `<ul class="station-popup__lines">${rows}</ul></section>`
+    )
+  },
+
+  linePopupHtml(props) {
+    const agency = props.agency
+      ? `<div class="station-popup__summary">${this.escapeHtml(props.agency)}</div>`
+      : ""
+
+    return (
+      `<div class="station-popup">` +
+      `<header class="station-popup__header">` +
+      `<span class="station-popup__swatch station-popup__swatch--header" style="background:${this.safeColor(props.color)}"></span>` +
+      `<div class="station-popup__heading">` +
+      `<div class="station-popup__title">${this.escapeHtml(props.long_name || props.name || "Route")}</div>${agency}` +
+      `</div></header></div>`
+    )
+  },
+
   openPopup(lngLat, html) {
-    new maplibregl.Popup({closeButton: false, maxWidth: "260px"}).setLngLat(lngLat).setHTML(html).addTo(this.map)
+    if (this.popup) this.popup.remove()
+
+    this.popup = new maplibregl.Popup({closeButton: true, maxWidth: "280px"})
+      .setLngLat(lngLat)
+      .setHTML(html)
+      .addTo(this.map)
   },
 
   escapeHtml(value) {
@@ -310,7 +365,7 @@ const TransitMap = {
 
       const agency = line.agency && line.agency !== label ? line.agency : null
       const key = `${label}:${agency || ""}`
-      if (!services.has(key)) services.set(key, {label, agency, color: line.color})
+      if (!services.has(key)) services.set(key, {label, agency, color: line.color, category: line.category})
     })
 
     return [...services.values()].sort(

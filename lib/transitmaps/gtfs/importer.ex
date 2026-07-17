@@ -23,8 +23,10 @@ defmodule Transitmaps.Gtfs.Importer do
   # many just re-draws the same track and bloats memory/payloads.
   @max_shapes_per_route 6
 
-  # ~15 m at UK latitudes; indistinguishable at map zoom levels we serve.
-  @simplify_tolerance 0.00015
+  # ~2.5 m at UK latitudes. Keeping close-zoom geometry this precise avoids
+  # long angular chords through bends while remaining compact enough to serve
+  # country-wide route collections.
+  @simplify_tolerance 0.000025
 
   @insert_batch 500
 

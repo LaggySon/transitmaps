@@ -1,0 +1,13 @@
+{
+  "name": "transitmaps-visual-tests",
+  "private": true,
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:visual": "playwright test tests/e2e/map-visual.spec.js",
+    "test:visual:update": "playwright test tests/e2e/map-visual.spec.js --update-snapshots=all",
+    "playwright:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.1"
+  }
+}

@@ -14,6 +14,24 @@ mix setup          # deps, database, assets
 mix phx.server     # then visit http://localhost:4000
 ```
 
+## Visual testing
+
+The Playwright suite uses deterministic transit fixtures and captures the map
+at every supported integer zoom level (4 through 17), plus desktop and mobile
+menu states:
+
+```sh
+npm install
+npm run playwright:install
+npm run test:e2e
+
+# Deliberately approve a visual redesign:
+npm run test:visual:update
+```
+
+Approved screenshots live under `tests/e2e/__screenshots__/`. Review snapshot
+changes before committing them; they define the intended map appearance.
+
 The local Postgres data directory lives in `.pgdata/` (no PostGIS required).
 Start it with:
 

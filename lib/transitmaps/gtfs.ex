@@ -48,6 +48,7 @@ defmodule Transitmaps.Gtfs do
 
     Route
     |> where([r], r.category in ^loaded)
+    |> where([r], not is_nil(r.geometry))
     |> Repo.all()
     |> Display.drawn_lines()
     |> Enum.filter(&(&1.category in categories))

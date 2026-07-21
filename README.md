@@ -76,12 +76,18 @@ WMATA_API_KEY=your_key mix gtfs.import wmata-rapid https://api.wmata.com/gtfs/ra
 WMATA requires a free developer key; the importer sends `WMATA_API_KEY` as
 the official feed's `api_key` request header.
 
+For `gb-rail`, only feed-provided shapes are used as drawable track geometry.
+Services without a shape are retained for station and operator metadata, but
+are not rendered as straight stop-to-stop lines.
+
 The TfL importer uses the public Unified API. Anonymous access works for
 occasional imports; set `TFL_APP_KEY` to a registered API key for a higher
 rate limit.
 
 Re-importing under the same name replaces that feed's data. Downloads are
-cached in `priv/gtfs_cache/`.
+cached in `priv/gtfs_cache/`. Railway refreshes Great Britain rail and TfL in
+the background after the web service is healthy; a failed upstream refresh
+leaves the previously imported map data in place.
 
 In a deployed Railway release, run imports from the service shell without
 Mix. Restart the service afterward so its in-memory GeoJSON cache refreshes

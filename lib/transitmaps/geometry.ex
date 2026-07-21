@@ -384,6 +384,120 @@ defmodule Transitmaps.Geometry do
     Enum.reverse(kept)
   end
 
+  @doc """
+  Extracts the unique track sections from overlapping service paths.
+
+  GTFS routes describe services, not a physical network. Several services
+  can share a trunk before taking different branches, so dropping only whole
+  duplicate lines still paints the shared trunk once per service pattern.
+  Longest paths establish the network first; later paths contribute only the
+  sections farther than `tolerance_km` from track already kept.
+
+  Section endpoints are snapped to the nearest retained track sample. This
+  makes a real branch meet its trunk cleanly instead of leaving a platform-
+  sized gap or drawing a short duplicate approach beside it.
+  """
+  def extract_network_lines(lines, _tolerance_km) when length(lines) < 2, do: lines
+
+  def extract_network_lines([[reference | _] | _] = lines, tolerance_km) do
+    scale = km_scale(reference)
+
+    {kept, _coverage} =
+      lines
+      |> Enum.sort_by(&(-line_length_km(&1, scale)))
+      |> Enum.reduce({[], %{}}, fn line, {kept, coverage} ->
+        samples = sample_line(line, scale, tolerance_km / 2)
+
+        sections =
+          if map_size(coverage) == 0 do
+            [line]
+          else
+            samples
+            |> Enum.map(fn {point, projected} ->
+              {point, nearest_covered_point(coverage, projected, tolerance_km)}
+            end)
+            |> novel_sections()
+          end
+
+        {
+          Enum.reverse(sections, kept),
+          add_coverage(coverage, samples, tolerance_km)
+        }
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  defp novel_sections(samples) do
+    {sections, current, before_anchor} =
+      Enum.reduce(samples, {[], [], nil}, fn
+        {_point, covered_point}, {sections, [], _before_anchor}
+        when not is_nil(covered_point) ->
+          {sections, [], covered_point}
+
+        {_point, covered_point}, {sections, current, before_anchor}
+        when not is_nil(covered_point) ->
+          {finish_section(sections, current, before_anchor, covered_point), [], covered_point}
+
+        {point, nil}, {sections, current, before_anchor} ->
+          {sections, [point | current], before_anchor}
+      end)
+
+    sections
+    |> finish_section(current, before_anchor, nil)
+    |> Enum.reverse()
+  end
+
+  defp finish_section(sections, [], _before_anchor, _after_anchor), do: sections
+
+  defp finish_section(sections, reversed_points, before_anchor, after_anchor) do
+    section =
+      [before_anchor | Enum.reverse(reversed_points)]
+      |> Kernel.++([after_anchor])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.dedup()
+
+    if length(section) >= 2, do: [section | sections], else: sections
+  end
+
+  defp add_coverage(coverage, samples, cell_km) do
+    Enum.reduce(samples, coverage, fn {point, projected}, index ->
+      if nearest_covered_point(index, projected, cell_km) do
+        index
+      else
+        Map.update(index, cell(projected, cell_km), [{projected, point}], fn points ->
+          [{projected, point} | points]
+        end)
+      end
+    end)
+  end
+
+  defp nearest_covered_point(coverage, {x, y} = point, cell_km) do
+    {cx, cy} = cell(point, cell_km)
+    max_distance_squared = cell_km * cell_km
+
+    for(dx <- -1..1, dy <- -1..1, candidate <- Map.get(coverage, {cx + dx, cy + dy}, []))
+    |> Enum.reduce(nil, fn {{candidate_x, candidate_y}, coordinate}, best ->
+      distance_squared =
+        (candidate_x - x) * (candidate_x - x) + (candidate_y - y) * (candidate_y - y)
+
+      case best do
+        nil when distance_squared <= max_distance_squared ->
+          {distance_squared, coordinate}
+
+        {best_distance, _best_coordinate} when distance_squared < best_distance ->
+          {distance_squared, coordinate}
+
+        _ ->
+          best
+      end
+    end)
+    |> case do
+      nil -> nil
+      {_distance, coordinate} -> coordinate
+    end
+  end
+
   # Corners gentler than this are already smooth; sharper than the reversal
   # threshold is a hairpin for `split_at_reversals/1`, not a corner.
   @corner_min_turn 0.12
@@ -506,6 +620,28 @@ defmodule Transitmaps.Geometry do
       [start | for(i <- 1..(steps - 1)//1, do: {x1 + dx * i / steps, y1 + dy * i / steps})]
     end)
     |> Kernel.++([List.last(projected)])
+  end
+
+  # Densifies a line while retaining its geographic coordinates. Original
+  # vertices stay in the result, so extracting unique sections does not
+  # coarsen curves from the source shape.
+  defp sample_line(line, scale, step_km) do
+    line
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.flat_map(fn [[lon1, lat1], [lon2, lat2]] ->
+      {x1, y1} = project_km([lon1, lat1], scale)
+      {x2, y2} = project_km([lon2, lat2], scale)
+      dx = x2 - x1
+      dy = y2 - y1
+      steps = max(1, ceil(:math.sqrt(dx * dx + dy * dy) / step_km))
+
+      for i <- 0..(steps - 1) do
+        amount = i / steps
+        coordinate = [lon1 + (lon2 - lon1) * amount, lat1 + (lat2 - lat1) * amount]
+        {coordinate, {x1 + dx * amount, y1 + dy * amount}}
+      end
+    end)
+    |> Kernel.++([{List.last(line), project_km(List.last(line), scale)}])
   end
 
   defp cell({x, y}, cell_km), do: {floor(x / cell_km), floor(y / cell_km)}

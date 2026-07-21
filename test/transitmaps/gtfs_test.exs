@@ -326,6 +326,46 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
+  describe "Geometry.extract_network_lines/2" do
+    test "draws a shared trunk once while retaining a real branch" do
+      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+
+      branch =
+        (for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4004])) ++
+          (for(i <- 1..10, do: [-0.9, 51.4 + i * 0.005]))
+
+      assert [^trunk, unique_branch] = Geometry.extract_network_lines([trunk, branch], 0.15)
+      assert hd(unique_branch) == [-0.9, 51.4]
+      assert List.last(unique_branch) == [-0.9, 51.45]
+      refute Enum.any?(tl(unique_branch), fn [lon, lat] -> lon < -0.899 and lat < 51.405 end)
+    end
+
+    test "keeps only the novel extension of a partly overlapping path" do
+      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      overlapping_extension = for i <- 10..25, do: [-1.0 + i * 0.01, 51.4003]
+
+      assert [^trunk, extension] =
+               Geometry.extract_network_lines([trunk, overlapping_extension], 0.15)
+
+      assert hd(extension) == [-0.8, 51.4]
+      assert List.last(extension) == [-0.75, 51.4003]
+    end
+
+    test "drops fully duplicated paths" do
+      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      platform_variant = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4004]
+
+      assert Geometry.extract_network_lines([trunk, platform_variant], 0.15) == [trunk]
+    end
+
+    test "does not merge genuinely parallel tracks outside the tolerance" do
+      first = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      second = for i <- 0..20, do: [-1.0 + i * 0.01, 51.402]
+
+      assert Geometry.extract_network_lines([first, second], 0.15) == [first, second]
+    end
+  end
+
   describe "Geometry.remove_small_loops/1" do
     test "splices out a station-area loop where the line crosses itself" do
       # ~0.001 deg is roughly 110 m of latitude / 70 m of longitude here.

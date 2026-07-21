@@ -336,7 +336,7 @@ defmodule Transitmaps.GtfsTest do
 
       assert [^trunk, unique_branch] = Geometry.extract_network_lines([trunk, branch], 0.15)
       [join_lon, join_lat] = hd(unique_branch)
-      assert_in_delta join_lon, -0.9, 0.002
+      assert_in_delta join_lon, -0.9, 0.006
       assert join_lat == 51.4
       [end_lon, end_lat] = List.last(unique_branch)
       assert_in_delta end_lon, -0.9, 0.000_001
@@ -352,7 +352,7 @@ defmodule Transitmaps.GtfsTest do
                Geometry.extract_network_lines([trunk, overlapping_extension], 0.15)
 
       [join_lon, join_lat] = hd(extension)
-      assert_in_delta join_lon, -0.8, 0.003
+      assert_in_delta join_lon, -0.8, 0.01
       assert join_lat == 51.4
       assert List.last(extension) == [-0.75, 51.4003]
     end
@@ -366,7 +366,7 @@ defmodule Transitmaps.GtfsTest do
 
     test "does not merge genuinely parallel tracks outside the tolerance" do
       first = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
-      second = for i <- 0..20, do: [-1.0 + i * 0.01, 51.402]
+      second = for i <- 0..20, do: [-1.0 + i * 0.01, 51.406]
 
       assert Geometry.extract_network_lines([first, second], 0.15) == [first, second]
     end

@@ -370,9 +370,10 @@ defmodule Transitmaps.Geometry do
 
     {kept, _cells} =
       lines
+      |> Enum.uniq()
       |> Enum.sort_by(&(-line_length_km(&1, scale)))
       |> Enum.reduce({[], MapSet.new()}, fn line, {kept, cells} ->
-        samples = sample_points(line, scale, tolerance_km / 2)
+        samples = sample_points(line, scale, tolerance_km)
 
         if kept != [] and Enum.all?(samples, &near_covered_cell?(cells, &1, tolerance_km)) do
           {kept, cells}
@@ -393,9 +394,10 @@ defmodule Transitmaps.Geometry do
   Longest paths establish the network first; later paths contribute only the
   sections farther than `tolerance_km` from track already kept.
 
-  Section endpoints are snapped to the nearest retained track sample. This
-  makes a real branch meet its trunk cleanly instead of leaving a platform-
-  sized gap or drawing a short duplicate approach beside it.
+  A fixed-size coverage grid makes the pass linear in the number of shape
+  samples. Section endpoints snap to retained track in the nearest occupied
+  cell, making a real branch meet its trunk cleanly instead of leaving a
+  platform-sized gap or drawing a short duplicate approach beside it.
   """
   def extract_network_lines(lines, _tolerance_km) when length(lines) < 2, do: lines
 
@@ -404,9 +406,10 @@ defmodule Transitmaps.Geometry do
 
     {kept, _coverage} =
       lines
+      |> Enum.uniq()
       |> Enum.sort_by(&(-line_length_km(&1, scale)))
       |> Enum.reduce({[], %{}}, fn line, {kept, coverage} ->
-        samples = sample_line(line, scale, tolerance_km / 2)
+        samples = sample_line(line, scale, tolerance_km)
 
         sections =
           if map_size(coverage) == 0 do
@@ -467,42 +470,25 @@ defmodule Transitmaps.Geometry do
 
   defp add_coverage(coverage, samples, cell_km) do
     Enum.reduce(samples, coverage, fn {point, projected}, index ->
-      if nearest_covered_point(index, projected, cell_km) do
-        index
-      else
-        Map.update(index, cell(projected, cell_km), [{projected, point}], fn points ->
-          [{projected, point} | points]
-        end)
-      end
+      Map.put_new(index, cell(projected, cell_km), {projected, point})
     end)
   end
 
   defp nearest_covered_point(coverage, {x, y} = point, cell_km) do
     {cx, cy} = cell(point, cell_km)
-    max_distance_squared = cell_km * cell_km
-
     (for dx <- -1..1,
          dy <- -1..1,
-         candidate <- Map.get(coverage, {cx + dx, cy + dy}, []),
+         candidate <- List.wrap(Map.get(coverage, {cx + dx, cy + dy})),
          do: candidate)
-    |> Enum.reduce(nil, fn {{candidate_x, candidate_y}, coordinate}, best ->
-      distance_squared =
+    |> Enum.min_by(
+      fn {{candidate_x, candidate_y}, _coordinate} ->
         (candidate_x - x) * (candidate_x - x) + (candidate_y - y) * (candidate_y - y)
-
-      case best do
-        nil when distance_squared <= max_distance_squared ->
-          {distance_squared, coordinate}
-
-        {best_distance, _best_coordinate} when distance_squared < best_distance ->
-          {distance_squared, coordinate}
-
-        _ ->
-          best
-      end
-    end)
+      end,
+      fn -> nil end
+    )
     |> case do
       nil -> nil
-      {_distance, coordinate} -> coordinate
+      {_projected, coordinate} -> coordinate
     end
   end
 

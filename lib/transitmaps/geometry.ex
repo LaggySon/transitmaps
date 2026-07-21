@@ -412,11 +412,16 @@ defmodule Transitmaps.Geometry do
           if map_size(coverage) == 0 do
             [line]
           else
-            samples
-            |> Enum.map(fn {point, projected} ->
-              {point, nearest_covered_point(coverage, projected, tolerance_km)}
-            end)
-            |> novel_sections()
+            annotated =
+              Enum.map(samples, fn {point, projected} ->
+                {point, nearest_covered_point(coverage, projected, tolerance_km)}
+              end)
+
+            if Enum.all?(annotated, fn {_point, covered_point} -> is_nil(covered_point) end) do
+              [line]
+            else
+              novel_sections(annotated)
+            end
           end
 
         {

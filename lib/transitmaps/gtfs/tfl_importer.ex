@@ -14,6 +14,16 @@ defmodule Transitmaps.Gtfs.TflImporter do
   @geometry_cache Path.join(["priv", "gtfs_cache", "tfl-osm-routes.json"])
   @tram_geometry_cache Path.join(["priv", "gtfs_cache", "tfl-osm-tram.json"])
 
+  # OSM route relations are made from short way members. Their endpoints
+  # should coincide, but allow for small edits made independently on either
+  # side of a join.
+  @member_join_km 0.075
+
+  # TfL's station list is the authority for a line's extent. The margin
+  # keeps terminal sidings and approaches while rejecting a mislabeled OSM
+  # relation elsewhere in Britain.
+  @station_margin_degrees 0.08
+
   @colors %{
     "bakerloo" => "#B36305",
     "central" => "#E32017",
@@ -62,7 +72,7 @@ defmodule Transitmaps.Gtfs.TflImporter do
 
   defp route_row(%{line: line, detail: detail}, osm_relations) do
     mode = detail["mode"] || line["modeName"]
-    coordinates = osm_coordinates(line, mode, osm_relations)
+    coordinates = line_coordinates(line, mode, osm_relations, detail["stations"] || [])
 
     if coordinates == [] do
       raise "No geographic OSM geometry found for TfL line #{line["name"]}"
@@ -135,18 +145,117 @@ defmodule Transitmaps.Gtfs.TflImporter do
     end
   end
 
-  defp osm_coordinates(line, mode, relations) do
+  @doc false
+  def line_coordinates(line, mode, relations, stations) do
+    bounds = station_bounds(stations)
+
     relations
     |> Enum.filter(&relation_for_line?(&1, line, mode))
     |> Enum.flat_map(fn relation ->
       relation["members"]
-      |> Enum.filter(&(&1["type"] == "way" && is_list(&1["geometry"])))
-      |> Enum.map(fn member ->
-        Enum.map(member["geometry"], &[&1["lon"], &1["lat"]])
-      end)
+      |> Enum.flat_map(&member_lines(&1, bounds))
+      |> stitch_ordered_members(@member_join_km)
     end)
     |> Enum.filter(&(length(&1) > 1))
     |> Enum.uniq()
+  end
+
+  defp member_lines(%{"type" => "way", "geometry" => geometry}, bounds)
+       when is_list(geometry) do
+    geometry
+    |> Enum.map(&[&1["lon"], &1["lat"]])
+    |> split_inside_bounds(bounds)
+  end
+
+  defp member_lines(_member, _bounds), do: []
+
+  defp station_bounds([]), do: nil
+
+  defp station_bounds(stations) do
+    points =
+      for %{"lon" => lon, "lat" => lat} <- stations,
+          is_number(lon) and is_number(lat),
+          do: {lon, lat}
+
+    case points do
+      [] ->
+        nil
+
+      _ ->
+        {longitudes, latitudes} = Enum.unzip(points)
+
+        %{
+          west: Enum.min(longitudes) - @station_margin_degrees,
+          east: Enum.max(longitudes) + @station_margin_degrees,
+          south: Enum.min(latitudes) - @station_margin_degrees,
+          north: Enum.max(latitudes) + @station_margin_degrees
+        }
+    end
+  end
+
+  defp split_inside_bounds(line, nil), do: [line]
+
+  defp split_inside_bounds(line, bounds) do
+    {lines, current} =
+      Enum.reduce(line, {[], []}, fn point, {lines, current} ->
+        if inside_bounds?(point, bounds) do
+          {lines, [point | current]}
+        else
+          {[Enum.reverse(current) | lines], []}
+        end
+      end)
+
+    [Enum.reverse(current) | lines]
+    |> Enum.filter(&(length(&1) > 1))
+    |> Enum.reverse()
+  end
+
+  defp inside_bounds?([lon, lat], bounds) do
+    lon >= bounds.west and lon <= bounds.east and lat >= bounds.south and lat <= bounds.north
+  end
+
+  # Relation member order records the route traversal. Join consecutive ways
+  # on that evidence alone; the display cleanup's heading-aware stitcher is
+  # deliberately more conservative because it operates on unrelated strands.
+  defp stitch_ordered_members([], _epsilon_km), do: []
+
+  defp stitch_ordered_members([first | rest], epsilon_km) do
+    {stitched, current} =
+      Enum.reduce(rest, {[], first}, fn next, {stitched, current} ->
+        case join_ordered(current, next, epsilon_km) do
+          nil -> {[current | stitched], next}
+          joined -> {stitched, joined}
+        end
+      end)
+
+    Enum.reverse([current | stitched])
+  end
+
+  defp join_ordered(current, next, epsilon_km) do
+    cond do
+      close?(List.last(current), hd(next), epsilon_km) ->
+        current ++ tl(next)
+
+      close?(List.last(current), List.last(next), epsilon_km) ->
+        current ++ tl(Enum.reverse(next))
+
+      close?(hd(current), List.last(next), epsilon_km) ->
+        next ++ tl(current)
+
+      close?(hd(current), hd(next), epsilon_km) ->
+        Enum.reverse(next) ++ tl(current)
+
+      true ->
+        nil
+    end
+  end
+
+  defp close?([lon1, lat1], [lon2, lat2], epsilon_km) do
+    latitude = (lat1 + lat2) / 2
+    kx = 111.320 * :math.cos(latitude * :math.pi() / 180)
+    dx = (lon2 - lon1) * kx
+    dy = (lat2 - lat1) * 110.574
+    :math.sqrt(dx * dx + dy * dy) <= epsilon_km
   end
 
   # A relation only contributes geometry to a line when all three hold: OSM

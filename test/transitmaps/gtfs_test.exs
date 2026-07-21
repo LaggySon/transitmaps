@@ -59,6 +59,28 @@ defmodule Transitmaps.GtfsTest do
 
       refute Enum.any?(List.flatten(coordinates), &(&1 == -2.60))
     end
+
+    test "accepts the Elizabeth line's current National Rail OSM tags" do
+      relations = [
+        %{
+          "tags" => %{
+            "route" => "train",
+            "ref" => "Elizabeth",
+            "name" => "Elizabeth line: Paddington → Abbey Wood",
+            "network" => "National Rail",
+            "network:metro" => "Elizabeth line",
+            "operator" => "GTS Rail Operations"
+          },
+          "members" => [way([[-0.18, 51.52], [0.12, 51.49]])]
+        }
+      ]
+
+      line = %{"id" => "elizabeth", "name" => "Elizabeth line"}
+      stations = [%{"lon" => -0.18, "lat" => 51.52}, %{"lon" => 0.12, "lat" => 51.49}]
+
+      assert [[[-0.18, 51.52], [0.12, 51.49]]] =
+               TflImporter.line_coordinates(line, "elizabeth-line", relations, stations)
+    end
   end
 
   describe "RouteTypes.category/1" do

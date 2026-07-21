@@ -3,6 +3,7 @@ defmodule Transitmaps.GtfsTest do
 
   alias Transitmaps.Geometry
   alias Transitmaps.Gtfs
+  alias Transitmaps.Gtfs.Importer
   alias Transitmaps.Gtfs.Stop
   alias Transitmaps.Gtfs.RouteTypes
   alias Transitmaps.Gtfs.TflImporter
@@ -190,6 +191,42 @@ defmodule Transitmaps.GtfsTest do
       second = %Stop{name: "Second", lat: 40.01, lon: -74.01, categories: ["rail"], lines: []}
 
       assert length(Gtfs.merge_colocated_stops([first, second])) == 2
+    end
+  end
+
+  describe "Importer.route_geometry/4" do
+    test "does not draw Great Britain rail services as straight stop-to-stop chords" do
+      cardiff_to_newport = [
+        [-3.179301702, 51.476023688],
+        [-3.000543440, 51.588787290]
+      ]
+
+      assert Importer.route_geometry("gb-rail", "rail", nil, [cardiff_to_newport]) == nil
+    end
+
+    test "prefers a real track shape over fallback stop coordinates" do
+      track_shape = [
+        [-3.17930, 51.47602],
+        [-3.15000, 51.49000],
+        [-3.10000, 51.51000],
+        [-3.00054, 51.58879]
+      ]
+
+      direct_fallback = [[hd(track_shape), List.last(track_shape)]]
+
+      assert Importer.route_geometry("gb-rail", "rail", [track_shape], direct_fallback) == %{
+               type: "MultiLineString",
+               coordinates: [track_shape]
+             }
+    end
+
+    test "retains fallback geometry for feeds that still rely on it" do
+      fallback = [[[-74.01, 40.71], [-73.98, 40.75]]]
+
+      assert Importer.route_geometry("local-shuttle", "rail", nil, fallback) == %{
+               type: "MultiLineString",
+               coordinates: fallback
+             }
     end
   end
 

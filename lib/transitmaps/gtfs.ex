@@ -36,32 +36,14 @@ defmodule Transitmaps.Gtfs do
     |> Map.new()
   end
 
-  # Rail-family modes bundle side by side on shared corridors, so their
-  # display pipeline must see the whole family even when only one of its
-  # categories is requested — otherwise a tube line and the national-rail
-  # line on the same tracks would both sit on the centreline and
-  # overpaint each other.
-  @rail_family ~w(rail intercity metro tram)
-
   def route_feature_collection(categories) do
-    loaded = loaded_categories(categories)
-
     Route
-    |> where([r], r.category in ^loaded)
+    |> where([r], r.category in ^categories)
     |> where([r], not is_nil(r.geometry))
     |> Repo.all()
     |> Display.drawn_lines()
-    |> Enum.filter(&(&1.category in categories))
     |> Enum.map(&line_feature/1)
     |> feature_collection()
-  end
-
-  defp loaded_categories(categories) do
-    if Enum.any?(categories, &(&1 in @rail_family)) do
-      Enum.uniq(categories ++ @rail_family)
-    else
-      categories
-    end
   end
 
   def stop_feature_collection(categories) do

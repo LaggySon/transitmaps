@@ -9,6 +9,6 @@ cd -P -- "$(dirname -- "$0")"
 # TfL and OSM are third-party services. Refresh the map on every deployment,
 # but keep serving the last successful import when either service is
 # temporarily unavailable.
-if ! ./transitmaps eval 'Transitmaps.Release.import_tfl()'; then
+if ! timeout 20s ./transitmaps eval 'Transitmaps.Release.import_tfl()'; then
   echo "WARNING: TfL refresh failed; deploying with the existing map data." >&2
 fi

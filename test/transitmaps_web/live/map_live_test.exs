@@ -12,6 +12,7 @@ defmodule TransitmapsWeb.MapLiveTest do
     assert has_element?(view, "#explore-menu")
     assert has_element?(view, "#map-search-form")
     assert has_element?(view, "#map-control-stack")
+    assert has_element?(view, ".map-loading [role='progressbar']")
   end
 
   test "switches between explore and layer menus", %{conn: conn} do

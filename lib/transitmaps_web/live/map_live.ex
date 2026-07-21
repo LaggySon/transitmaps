@@ -217,12 +217,38 @@ defmodule TransitmapsWeb.MapLive do
           class="!absolute inset-0"
         >
           <div class="map-loading pointer-events-none absolute inset-0 z-10 grid place-items-center bg-[#f3f2ee] transition-opacity duration-500">
-            <div class="flex items-center gap-3 rounded-2xl border border-white/80 bg-white/85 px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.12)] backdrop-blur-xl">
+            <div
+              role="status"
+              aria-live="polite"
+              class="flex min-w-64 items-start gap-3 rounded-2xl border border-white/80 bg-white/88 px-4 py-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.12)] backdrop-blur-xl"
+            >
               <span class="map-loading__spinner size-5 rounded-full border-2 border-[#007aff]/20 border-t-[#007aff]">
               </span>
-              <span class="text-[13px] font-semibold tracking-[-0.01em] text-[#3a3a3c]">
-                Loading map
-              </span>
+              <div class="min-w-0 flex-1">
+                <p
+                  data-loading-label
+                  class="text-[13px] font-semibold tracking-[-0.01em] text-[#3a3a3c]"
+                >
+                  Loading map
+                </p>
+                <p data-loading-detail class="mt-0.5 text-[11px] font-medium text-[#77777c]">
+                  Preparing basemap
+                </p>
+                <div
+                  data-loading-progress
+                  role="progressbar"
+                  aria-label="Transit data loading progress"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  class="map-loading__progress mt-2"
+                >
+                  <span
+                    data-loading-bar
+                    class="map-loading__bar map-loading__bar--indeterminate"
+                  >
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </div>

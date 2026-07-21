@@ -4,10 +4,13 @@ defmodule Transitmaps.Gtfs.OffsetSlots do
   distinct side-by-side strands.
 
   Two routes drawn at the same offset overpaint each other; the hidden one
-  then shows only as broken fragments wherever the top one deviates. Per
-  category, every route gets a coarse coverage fingerprint (grid cells
-  along its geometry); routes sharing a stretch of corridor are adjacent in
-  an overlap graph, which is greedy-coloured in stable agency+name order.
+  then shows only as broken fragments wherever the top one deviates. Every
+  route gets a coarse coverage fingerprint (grid cells along its
+  geometry); routes sharing a stretch of corridor are adjacent in an
+  overlap graph, which is greedy-coloured in stable agency+name order.
+  Rail-family modes (rail, intercity, metro, tram) share physical
+  corridors and bundle side by side on the map, so their slots are
+  assigned jointly; other modes are slotted per category.
   Colours map to slots fanning out symmetrically (0, +1, -1, +2, -2, ...),
   clamped to ±3, so corridor-sharing routes split apart into a narrow
   ribbon while isolated routes stay centred on their own track. Callers
@@ -35,8 +38,14 @@ defmodule Transitmaps.Gtfs.OffsetSlots do
   """
   def assign(routes) do
     routes
-    |> Enum.group_by(& &1.category)
-    |> Enum.flat_map(fn {_category, group} -> assign_group(group) end)
+    |> Enum.group_by(&offset_group(&1.category))
+    |> Enum.flat_map(fn {_group_key, group} -> assign_group(group) end)
+  end
+
+  @joint_categories ~w(rail intercity metro tram)
+
+  defp offset_group(category) do
+    if category in @joint_categories, do: :rail_family, else: category
   end
 
   defp assign_group(group) do

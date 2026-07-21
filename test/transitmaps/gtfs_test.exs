@@ -551,13 +551,28 @@ defmodule Transitmaps.GtfsTest do
       assert slots |> Enum.map(&abs/1) |> Enum.max() == 3
     end
 
-    test "categories get independent slot assignments" do
+    test "rail-family categories bundle into one slot grid" do
       shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
 
       slots =
         [
           corridor_route("1", "A", [shared], "rail"),
-          corridor_route("2", "B", [shared], "tram")
+          corridor_route("2", "B", [shared], "metro"),
+          corridor_route("3", "C", [shared], "tram")
+        ]
+        |> OffsetSlots.assign()
+        |> Enum.map(fn {_route, slot} -> slot end)
+
+      assert length(Enum.uniq(slots)) == 3
+    end
+
+    test "modes outside the rail family keep independent slot assignments" do
+      shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+
+      slots =
+        [
+          corridor_route("1", "A", [shared], "rail"),
+          corridor_route("2", "B", [shared], "ferry")
         ]
         |> OffsetSlots.assign()
         |> Enum.map(fn {_route, slot} -> slot end)

@@ -38,15 +38,33 @@ defmodule Transitmaps.Gtfs do
     |> Map.new()
   end
 
+  # Rail-family modes bundle side by side on shared corridors, so their
+  # direction alignment and offset slots must be computed across the whole
+  # family even when only one of its categories is requested — otherwise a
+  # tube line and the national-rail line on the same tracks would both sit
+  # in slot 0 and overpaint each other.
+  @rail_family ~w(rail intercity metro tram)
+
   def route_feature_collection(categories) do
+    loaded = loaded_categories(categories)
+
     Route
-    |> where([r], r.category in ^categories)
+    |> where([r], r.category in ^loaded)
     |> Repo.all()
     |> group_display_lines()
     |> CorridorDirections.align()
     |> OffsetSlots.assign()
+    |> Enum.filter(fn {line, _slot} -> line.category in categories end)
     |> Enum.map(fn {line, slot} -> line_feature(line, slot) end)
     |> feature_collection()
+  end
+
+  defp loaded_categories(categories) do
+    if Enum.any?(categories, &(&1 in @rail_family)) do
+      Enum.uniq(categories ++ @rail_family)
+    else
+      categories
+    end
   end
 
   @doc """

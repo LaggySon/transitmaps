@@ -120,7 +120,8 @@ small enough to render the whole country at once.
   oriented the same way (`CorridorDirections`, so line-offset fans always
   open to consistent sides instead of splitting lines into hollow pairs),
   and corridor-sharing lines given small parallel-offset slots (clamped
-  to ±3)
+  to ±3, assigned jointly across rail/intercity/metro/tram so mixed-mode
+  corridors bundle side by side on one uniform slot grid)
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM

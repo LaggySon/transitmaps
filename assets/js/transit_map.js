@@ -31,8 +31,12 @@ const layerIds = (cat) => ({
   labels: `${cat}-station-labels`,
 })
 
+// All casings render below all coloured lines, so in a mixed-mode bundle
+// (a tube line running beside national rail) one mode's white casing can
+// never cut into a neighbouring mode's line.
 const desiredLayerOrder = () =>
-  MODE_ORDER.flatMap((cat) => [layerIds(cat).casing, layerIds(cat).line]).concat(
+  MODE_ORDER.map((cat) => layerIds(cat).casing).concat(
+    MODE_ORDER.map((cat) => layerIds(cat).line),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -329,16 +333,19 @@ const TransitMap = {
       17, base * 1.9,
     ]
     const slot = ["to-number", ["coalesce", ["get", "offset"], 0]]
-    // Lines sharing a corridor sit in small offset slots (the server clamps
-    // them to ±3), drawn on their shared centreline at country zooms and
-    // fanned apart by roughly one line's width once there is room to tell
-    // them apart.
-    const spacing = (width + 2.15) * 1.6
-    const parallelOffset = [
+    // Corridor-sharing lines sit in small offset slots (the server clamps
+    // them to ±3 and assigns them jointly across the rail family), packed
+    // Apple Maps-style: one uniform slot grid for every mode — sized off
+    // the widest line plus a sliver of casing and tracking the width's
+    // zoom curve — so a bundle reads as adjacent parallel lines, collapsed
+    // onto the shared centreline at country zooms.
+    const bundleWidth = 3.2
+    const bundleOffset = [
       "interpolate", ["linear"], ["zoom"],
-      10, 0,
-      13, ["*", slot, spacing],
-      17, ["*", slot, spacing * 1.5],
+      10.5, 0,
+      12.5, ["*", slot, bundleWidth * 1.45 + 2.1],
+      14, ["*", slot, bundleWidth * 1.72 + 2.2],
+      17, ["*", slot, bundleWidth * 1.9 + 2.4],
     ]
 
     this.addLayerInOrder({
@@ -350,7 +357,7 @@ const TransitMap = {
         "line-color": "rgba(255,255,255,0.96)",
         "line-width": zoomedWidth(width + 2.15),
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
-        "line-offset": parallelOffset,
+        "line-offset": bundleOffset,
       },
     })
 
@@ -363,7 +370,7 @@ const TransitMap = {
         "line-color": ["get", "color"],
         "line-width": zoomedWidth(width),
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
-        "line-offset": parallelOffset,
+        "line-offset": bundleOffset,
       },
     })
 

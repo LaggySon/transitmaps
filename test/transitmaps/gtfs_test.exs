@@ -3,6 +3,7 @@ defmodule Transitmaps.GtfsTest do
 
   alias Transitmaps.Geometry
   alias Transitmaps.Gtfs
+  alias Transitmaps.Gtfs.CorridorDirections
   alias Transitmaps.Gtfs.DisplayGeometry
   alias Transitmaps.Gtfs.OffsetSlots
   alias Transitmaps.Gtfs.OperatorColors
@@ -432,6 +433,56 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
+  # MapLibre's line-offset is measured relative to travel direction, so a
+  # strand running against its corridor neighbours offsets to the wrong
+  # side: instead of joining the fan it overlaps another line (or, for
+  # strands of the same line, splits it into a hollow pair of strokes).
+  # Alignment must flip such strands and leave everything else untouched.
+  describe "CorridorDirections.align/1" do
+    test "flips a strand running against its corridor neighbour" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+
+      [_first, second] =
+        CorridorDirections.align([
+          geometry_line([corridor]),
+          geometry_line([Enum.reverse(corridor)])
+        ])
+
+      assert %{coordinates: [aligned]} = second.geometry
+      assert hd(aligned) == hd(corridor)
+      assert List.last(aligned) == List.last(corridor)
+    end
+
+    test "keeps strands that already agree" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+      shifted = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4005]
+
+      lines = [geometry_line([corridor]), geometry_line([shifted])]
+
+      assert CorridorDirections.align(lines) == lines
+    end
+
+    test "routes that merely cross keep their own directions" do
+      west_east = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+      north_south = for i <- 40..0//-1, do: [-0.9, 51.3 + i * 0.005]
+
+      lines = [geometry_line([west_east]), geometry_line([north_south])]
+
+      assert CorridorDirections.align(lines) == lines
+    end
+
+    test "aligns strands within a single line too" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+      opposing = for i <- 40..0//-1, do: [-1.0 + i * 0.005, 51.4008]
+
+      assert [%{geometry: %{coordinates: [kept, flipped]}}] =
+               CorridorDirections.align([geometry_line([corridor, opposing])])
+
+      assert kept == corridor
+      assert hd(flipped) == [-1.0, 51.4008]
+    end
+  end
+
   # The other half of the rendering contract: routes sharing a corridor
   # must occupy distinct offset slots (side-by-side strands, one ribbon
   # that fans apart when zoomed in), never the same slot where one line
@@ -513,6 +564,10 @@ defmodule Transitmaps.GtfsTest do
 
       assert slots == [0, 0]
     end
+  end
+
+  defp geometry_line(strands) do
+    %{geometry: %{type: "MultiLineString", coordinates: strands}}
   end
 
   defp db_route(id, agency, coordinates, opts \\ []) do

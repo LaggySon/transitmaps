@@ -116,8 +116,11 @@ small enough to render the whole country at once.
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
   routes are grouped into one drawn line per category/agency/colour (a TfL
   line, or a national operator's whole network) with the group's merged
-  geometry deduped into a single clean network, and corridor-sharing lines
-  get small parallel-offset slots (clamped to ±3)
+  geometry deduped into a single clean network, corridor-sharing strands
+  oriented the same way (`CorridorDirections`, so line-offset fans always
+  open to consistent sides instead of splitting lines into hollow pairs),
+  and corridor-sharing lines given small parallel-offset slots (clamped
+  to ±3)
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM

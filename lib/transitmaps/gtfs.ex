@@ -5,7 +5,15 @@ defmodule Transitmaps.Gtfs do
 
   import Ecto.Query
 
-  alias Transitmaps.Gtfs.{DisplayGeometry, OffsetSlots, OperatorColors, Route, RouteTypes, Stop}
+  alias Transitmaps.Gtfs.{
+    CorridorDirections,
+    DisplayGeometry,
+    OffsetSlots,
+    OperatorColors,
+    Route,
+    RouteTypes,
+    Stop
+  }
   alias Transitmaps.Repo
 
   @doc """
@@ -35,6 +43,7 @@ defmodule Transitmaps.Gtfs do
     |> where([r], r.category in ^categories)
     |> Repo.all()
     |> group_display_lines()
+    |> CorridorDirections.align()
     |> OffsetSlots.assign()
     |> Enum.map(fn {line, slot} -> line_feature(line, slot) end)
     |> feature_collection()

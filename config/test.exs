@@ -13,6 +13,9 @@ config :transitmaps, Transitmaps.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
+# Cached API responses would leak data between sandboxed tests.
+config :transitmaps, :geojson_cache, false
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :transitmaps, TransitmapsWeb.Endpoint,

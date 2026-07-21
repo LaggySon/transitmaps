@@ -10,12 +10,15 @@ defmodule Transitmaps.Application do
     children = [
       TransitmapsWeb.Telemetry,
       Transitmaps.Repo,
+      Transitmaps.Gtfs.GeoJsonCache,
       {DNSCluster, query: Application.get_env(:transitmaps, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Transitmaps.PubSub},
       # Start a worker by calling: Transitmaps.Worker.start_link(arg)
       # {Transitmaps.Worker, arg},
       # Start to serve requests, typically the last entry
-      TransitmapsWeb.Endpoint
+      TransitmapsWeb.Endpoint,
+      # Pre-build the default map responses so the first visit is cached too
+      {Task, &Transitmaps.Gtfs.GeoJsonCache.warm/0}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

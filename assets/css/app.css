@@ -263,6 +263,27 @@ input[type="search"]::-webkit-search-cancel-button {
   animation: map-spin 750ms linear infinite;
 }
 
+.map-loading__progress {
+  position: relative;
+  height: 0.22rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(0 122 255 / 0.14);
+}
+
+.map-loading__bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #007aff;
+  transition: width 220ms ease;
+}
+
+.map-loading__bar--indeterminate {
+  width: 38%;
+  animation: map-progress 1.15s ease-in-out infinite;
+}
+
 .map-loading[hidden] {
   display: none;
 }
@@ -454,6 +475,16 @@ body.playwright-visuals #map-zoom-readout {
 @keyframes map-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes map-progress {
+  from {
+    transform: translateX(-110%);
+  }
+
+  to {
+    transform: translateX(275%);
   }
 }
 

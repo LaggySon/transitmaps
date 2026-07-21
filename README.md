@@ -4,6 +4,9 @@ An Apple Maps-style transit view built with Phoenix LiveView and MapLibre GL:
 a muted basemap with bold, color-coded transit lines and station markers,
 with per-mode toggles (metro, tram, rail, intercity, ferry, bus, coach).
 
+[![Railway deployment](https://github.com/LaggySon/transitmaps/actions/workflows/railway-deployment.yml/badge.svg?branch=main)](https://github.com/LaggySon/transitmaps/actions/workflows/railway-deployment.yml)
+[Live production map](https://transitmaps.laggi.sh)
+
 Any GTFS feed in the world can be imported; the map shows whatever you've
 loaded. Seeded with Great Britain's national rail network.
 
@@ -92,6 +95,11 @@ bin/transitmaps eval "Transitmaps.Release.import_gb()"
 Railway also runs the TfL import automatically after migrations during every
 deployment. Pipeline imports bypass the local OSM response cache because
 pre-deploy containers have ephemeral filesystems.
+
+The `Railway deployment` GitHub Actions workflow watches the live `/health`
+endpoint for Railway's deployed commit SHA. Its `production` environment adds
+Vercel-style deployment history and live-site links to GitHub without starting
+a duplicate deployment.
 
 ## Railway deployment
 

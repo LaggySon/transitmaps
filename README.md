@@ -89,6 +89,9 @@ bin/transitmaps eval "Transitmaps.Release.import_tfl()"
 bin/transitmaps eval "Transitmaps.Release.import_gb()"
 ```
 
+Railway also runs the TfL import automatically after migrations during every
+deployment.
+
 ## Railway deployment
 
 Railway's standard Phoenix deployment uses Railpack's automatic Elixir

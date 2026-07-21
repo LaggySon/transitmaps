@@ -47,6 +47,7 @@ defmodule Transitmaps.Display.Network do
     |> Enum.flat_map(&Geometry.split_at_reversals/1)
     |> Enum.map(&Geometry.remove_small_loops/1)
     |> Geometry.stitch_lines(@stitch_km)
+    |> Geometry.drop_redundant_lines(@near_duplicate_km)
     |> Geometry.extract_network_lines(@near_duplicate_km)
     |> Geometry.drop_short_shadows(@stub_max_km, @stub_shadow_km)
     |> Geometry.stitch_lines(@stitch_km)

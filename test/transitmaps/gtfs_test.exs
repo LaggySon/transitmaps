@@ -5,6 +5,61 @@ defmodule Transitmaps.GtfsTest do
   alias Transitmaps.Gtfs
   alias Transitmaps.Gtfs.Stop
   alias Transitmaps.Gtfs.RouteTypes
+  alias Transitmaps.Gtfs.TflImporter
+
+  describe "TflImporter.line_coordinates/4" do
+    test "joins ordered OSM way members into continuous line geometry" do
+      relations = [
+        tfl_relation([
+          way([[-0.60, 51.50], [-0.59, 51.50]]),
+          way([[-0.58, 51.50], [-0.59, 51.50]]),
+          way([[-0.58, 51.50], [-0.57, 51.50]])
+        ])
+      ]
+
+      assert [[[-0.60, 51.50], [-0.59, 51.50], [-0.58, 51.50], [-0.57, 51.50]]] =
+               TflImporter.line_coordinates(central_line(), "tube", relations, central_stations())
+    end
+
+    test "rejects similarly named non-TfL relations and geometry outside the line's stations" do
+      valid =
+        tfl_relation([
+          way([[-0.60, 51.50], [-0.55, 51.51]]),
+          way([[-0.55, 51.51], [-0.50, 51.52]])
+        ])
+
+      national_rail = %{
+        "tags" => %{
+          "route" => "train",
+          "name" => "Slough to Windsor & Eton Central",
+          "network" => "National Rail",
+          "operator" => "Great Western Railway"
+        },
+        "members" => [way([[-2.60, 51.45], [-2.58, 51.46]])]
+      }
+
+      mislabeled_tfl =
+        tfl_relation([
+          way([[-2.60, 51.45], [-2.58, 51.46]]),
+          way([[-0.50, 51.52], [-0.45, 51.53]])
+        ])
+
+      assert coordinates =
+               TflImporter.line_coordinates(
+                 central_line(),
+                 "tube",
+                 [national_rail, mislabeled_tfl, valid],
+                 central_stations()
+               )
+
+      assert coordinates == [
+               [[-0.50, 51.52], [-0.45, 51.53]],
+               [[-0.60, 51.50], [-0.55, 51.51], [-0.50, 51.52]]
+             ]
+
+      refute Enum.any?(List.flatten(coordinates), &(&1 == -2.60))
+    end
+  end
 
   describe "RouteTypes.category/1" do
     test "maps basic GTFS route types" do
@@ -34,6 +89,35 @@ defmodule Transitmaps.GtfsTest do
         assert RouteTypes.default_color(category) =~ ~r/^#[0-9A-F]{6}$/
       end
     end
+  end
+
+  defp central_line, do: %{"id" => "central", "name" => "Central"}
+
+  defp central_stations do
+    [
+      %{"lon" => -0.61, "lat" => 51.49},
+      %{"lon" => 0.11, "lat" => 51.69}
+    ]
+  end
+
+  defp tfl_relation(members) do
+    %{
+      "tags" => %{
+        "route" => "subway",
+        "ref" => "Central",
+        "name" => "Central line",
+        "network" => "London Underground",
+        "operator" => "Transport for London"
+      },
+      "members" => members
+    }
+  end
+
+  defp way(coordinates) do
+    %{
+      "type" => "way",
+      "geometry" => Enum.map(coordinates, fn [lon, lat] -> %{"lon" => lon, "lat" => lat} end)
+    }
   end
 
   describe "Gtfs.sanitize_categories/1" do

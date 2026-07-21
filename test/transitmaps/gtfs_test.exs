@@ -335,6 +335,52 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
+  describe "Geometry.round_corners/2" do
+    test "replaces a sharp corner with an arc between the same endpoints" do
+      corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
+
+      rounded = Geometry.round_corners(corner, 0.15)
+
+      assert length(rounded) > length(corner)
+      assert hd(rounded) == hd(corner)
+      assert List.last(rounded) == List.last(corner)
+      refute [-0.99, 51.4] in rounded
+    end
+
+    test "keeps every output turn gentle enough for parallel offsets" do
+      corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
+      {kx, ky} = Geometry.km_scale(hd(corner))
+
+      turns =
+        corner
+        |> Geometry.round_corners(0.15)
+        |> Enum.map(fn [lon, lat] -> {lon * kx, lat * ky} end)
+        |> Enum.chunk_every(3, 1, :discard)
+        |> Enum.map(fn [{ax, ay}, {bx, by}, {cx, cy}] ->
+          {ux, uy} = {bx - ax, by - ay}
+          {vx, vy} = {cx - bx, cy - by}
+          norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+          :math.acos(min(1.0, max(-1.0, (ux * vx + uy * vy) / norm)))
+        end)
+
+      assert Enum.max(turns) < 0.35
+    end
+
+    test "leaves straight lines and gentle bends untouched" do
+      straight = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4]]
+      gentle = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4001]]
+
+      assert Geometry.round_corners(straight, 0.15) == straight
+      assert Geometry.round_corners(gentle, 0.15) == gentle
+    end
+
+    test "leaves near-reversals for the hairpin splitter" do
+      hairpin = [[-1.0, 51.4], [-0.99, 51.4], [-0.9999, 51.4001]]
+
+      assert Geometry.round_corners(hairpin, 0.15) == hairpin
+    end
+  end
+
   describe "Geometry.stitch_lines/2" do
     test "rejoins fragments that continue one another into one strand" do
       first = [[-1.0, 51.4], [-0.99, 51.4]]

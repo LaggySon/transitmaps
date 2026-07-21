@@ -29,6 +29,11 @@ defmodule Transitmaps.Gtfs.DisplayGeometry do
   # Fragments whose endpoints meet within this are one broken line.
   @stitch_km 0.05
 
+  # Corners round into arcs blending across up to this much track, so a
+  # multi-line bundle keeps its spacing through the corner instead of
+  # pinching at a single sharp vertex.
+  @corner_radius_km 0.15
+
   def prepare(%{"type" => "MultiLineString", "coordinates" => lines}) do
     %{"type" => "MultiLineString", "coordinates" => prepare_lines(lines)}
   end
@@ -47,6 +52,7 @@ defmodule Transitmaps.Gtfs.DisplayGeometry do
     |> Geometry.drop_redundant_lines(@near_duplicate_km)
     |> Geometry.drop_short_shadows(@stub_max_km, @stub_shadow_km)
     |> Geometry.stitch_lines(@stitch_km)
+    |> Enum.map(&Geometry.round_corners(&1, @corner_radius_km))
     |> Enum.map(&normalize_direction/1)
   end
 

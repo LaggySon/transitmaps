@@ -7,6 +7,8 @@ defmodule Transitmaps.Application do
   require Logger
 
   @gb_rail_url "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"
+  @gb_refresh_delay :timer.minutes(10)
+  @tfl_refresh_delay :timer.minutes(15)
 
   @impl true
   def start(_type, _args) do
@@ -42,6 +44,9 @@ defmodule Transitmaps.Application do
 
   defp refresh_gb_rail_on_railway do
     if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+      # Serve the persisted data and let the GeoJSON cache warm before a
+      # large download/import consumes CPU and invalidates that cache.
+      Process.sleep(@gb_refresh_delay)
       Logger.info("Refreshing Great Britain rail data after Railway startup")
 
       try do
@@ -64,6 +69,9 @@ defmodule Transitmaps.Application do
 
   defp refresh_tfl_on_railway do
     if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+      # Stagger this behind the national feed so the two imports never fight
+      # each other (or the first visitor) immediately after a deployment.
+      Process.sleep(@tfl_refresh_delay)
       Logger.info("Refreshing TfL data after Railway startup")
 
       try do

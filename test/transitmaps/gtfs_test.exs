@@ -86,6 +86,60 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
+  # Raw GTFS routes are not what the map draws: an operator's dozens of
+  # timetabled routes share one colour and corridor, and drawn separately
+  # they stack into dozens of parallel strands. Grouping collapses them into
+  # one line per {category, agency, colour} with a deduped network geometry.
+  describe "Gtfs.group_display_lines/1" do
+    test "collapses an operator's corridor-sharing routes into one line" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+      platform_variant = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4004]
+
+      assert [line] =
+               Gtfs.group_display_lines([
+                 db_route("gw1", "Great Western Railway", corridor, short_name: "GW1"),
+                 db_route("gw2", "Great Western Railway", platform_variant, short_name: "GW2")
+               ])
+
+      assert line.short_name == "Great Western Railway"
+      assert line.color == OperatorColors.color_for("Great Western Railway", "rail")
+      assert %{coordinates: [_single_strand]} = line.geometry
+    end
+
+    test "keeps differently coloured lines of one agency separate" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.5]
+
+      lines =
+        Gtfs.group_display_lines([
+          db_route("tfl:central", "Transport for London", corridor,
+            category: "metro",
+            short_name: "Central",
+            color: "#E32017"
+          ),
+          db_route("tfl:victoria", "Transport for London", corridor,
+            category: "metro",
+            short_name: "Victoria",
+            color: "#0098D4"
+          )
+        ])
+
+      assert lines |> Enum.map(& &1.short_name) |> Enum.sort() == ["Central", "Victoria"]
+      assert lines |> Enum.map(& &1.color) |> Enum.sort() == ["#0098D4", "#E32017"]
+    end
+
+    test "categories never merge even when agency and colour match" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.5]
+
+      lines =
+        Gtfs.group_display_lines([
+          db_route("r1", "Acme", corridor, category: "rail", color: "#112233"),
+          db_route("r2", "Acme", corridor, category: "tram", color: "#112233")
+        ])
+
+      assert lines |> Enum.map(& &1.category) |> Enum.sort() == ["rail", "tram"]
+    end
+  end
+
   describe "Geometry.simplify/2" do
     test "keeps endpoints and drops collinear midpoints" do
       line = [[0.0, 0.0], [1.0, 0.00001], [2.0, 0.0], [3.0, 0.00001], [4.0, 0.0]]
@@ -434,6 +488,18 @@ defmodule Transitmaps.GtfsTest do
                |> Enum.sort_by(fn {route, _slot} -> route.route_id end)
     end
 
+    test "slots never fan wider than plus or minus 3 on very busy corridors" do
+      shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
+
+      slots =
+        for(id <- ~w(a b c d e f g h i), do: corridor_route(id, "Operator #{id}", [shared]))
+        |> OffsetSlots.assign()
+        |> Enum.map(fn {_route, slot} -> slot end)
+
+      assert length(slots) == 9
+      assert slots |> Enum.map(&abs/1) |> Enum.max() == 3
+    end
+
     test "categories get independent slot assignments" do
       shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
 
@@ -447,6 +513,19 @@ defmodule Transitmaps.GtfsTest do
 
       assert slots == [0, 0]
     end
+  end
+
+  defp db_route(id, agency, coordinates, opts \\ []) do
+    %{
+      route_id: id,
+      agency_name: agency,
+      short_name: Keyword.get(opts, :short_name),
+      long_name: Keyword.get(opts, :long_name),
+      category: Keyword.get(opts, :category, "rail"),
+      color: Keyword.get(opts, :color),
+      text_color: Keyword.get(opts, :text_color),
+      geometry: %{"type" => "MultiLineString", "coordinates" => [coordinates]}
+    }
   end
 
   defp corridor_route(id, agency, coordinates, category \\ "rail") do

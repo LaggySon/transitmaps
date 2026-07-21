@@ -149,17 +149,65 @@ defmodule Transitmaps.Gtfs.TflImporter do
     |> Enum.uniq()
   end
 
+  # A relation only contributes geometry to a line when all three hold: OSM
+  # tags it as part of a TfL network, its route type matches the line's
+  # mode, and its label names the line itself. Loose substring matching on
+  # names alone previously glued National Rail services into TfL lines —
+  # "Slough => Windsor & Eton Central" into the Central line, London
+  # Victoria services into the Victoria line — painting TfL colours far
+  # outside their real extents.
   defp relation_for_line?(relation, line, mode) do
     tags = relation["tags"] || %{}
+
+    tfl_relation?(tags) and route_matches_mode?(tags["route"], mode) and
+      labels_line?(tags, line, mode)
+  end
+
+  @tfl_networks [
+    "london underground",
+    "london overground",
+    "elizabeth line",
+    "dlr",
+    "docklands light railway",
+    "tramlink",
+    "london trams",
+    "crossrail",
+    "tfl rail"
+  ]
+
+  @tfl_operators [
+    "transport for london",
+    "london underground",
+    "rail for london",
+    "mtr",
+    "arriva rail london",
+    "docklands light railway",
+    "tram operations",
+    "london tramlink"
+  ]
+
+  defp tfl_relation?(tags) do
+    network = String.downcase(tags["network"] || "")
+    operator = String.downcase(tags["operator"] || "")
+
+    String.contains?(network, @tfl_networks) or String.contains?(operator, @tfl_operators)
+  end
+
+  defp route_matches_mode?(route, "tube"), do: route == "subway"
+  defp route_matches_mode?(route, "dlr"), do: route == "light_rail"
+  defp route_matches_mode?(route, "tram"), do: route == "tram"
+  defp route_matches_mode?(route, _rail_mode), do: route == "train"
+
+  defp labels_line?(tags, line, mode) do
     label = String.downcase("#{tags["ref"]} #{tags["name"]}")
-    id = line["id"]
-    name = String.downcase(line["name"])
+    name = String.downcase(line["name"] || "")
 
     cond do
-      mode == "tram" -> String.contains?(label, ["tramlink", "london trams"])
-      id == "dlr" -> String.contains?(label, ["dlr", "docklands light railway"])
-      id == "elizabeth" -> String.contains?(label, "elizabeth")
-      true -> String.contains?(label, [String.downcase(id), name])
+      # The network gate already isolates the tram and DLR systems, whose
+      # relations are not consistently named after the TfL line.
+      mode == "tram" or line["id"] == "dlr" -> true
+      line["id"] == "elizabeth" -> String.contains?(label, "elizabeth")
+      true -> String.contains?(label, "#{name} line") or String.downcase(tags["ref"] || "") == name
     end
   end
 

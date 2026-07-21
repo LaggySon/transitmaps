@@ -34,10 +34,66 @@ defmodule Transitmaps.Gtfs do
     Route
     |> where([r], r.category in ^categories)
     |> Repo.all()
+    |> group_display_lines()
     |> OffsetSlots.assign()
-    |> Enum.map(fn {route, slot} -> route_feature(route, slot) end)
+    |> Enum.map(fn {line, slot} -> line_feature(line, slot) end)
     |> feature_collection()
   end
+
+  @doc """
+  Collapses raw GTFS routes into the lines the map actually draws.
+
+  National rail feeds describe one operator as dozens of route entries that
+  all share the operator's colour and corridor; drawn separately they stack
+  into dozens of parallel offset strands. Routes are grouped by category,
+  agency, and displayed colour — one feature per visual line — and the
+  group's merged geometry is cleaned as a single network, so re-traced
+  track collapses to one strand while genuine branches survive. Groups keep
+  their own name (a TfL line) when every member shares it, and fall back to
+  the agency name (a national operator's many timetabled routes).
+  """
+  def group_display_lines(routes) do
+    routes
+    |> Enum.group_by(fn route -> {route.category, route.agency_name, display_color(route)} end)
+    |> Enum.map(fn {{category, agency, color}, group} ->
+      display_line(category, agency, color, group)
+    end)
+    |> Enum.sort_by(&{&1.category, &1.agency_name, &1.short_name})
+  end
+
+  defp display_line(category, agency, color, group) do
+    coordinates = Enum.flat_map(group, &geometry_coordinates(&1.geometry))
+
+    %{
+      route_id: group |> Enum.map(& &1.route_id) |> Enum.min(),
+      category: category,
+      agency_name: agency,
+      short_name: shared_value(group, & &1.short_name) || agency,
+      long_name: shared_value(group, & &1.long_name),
+      color: color,
+      text_color: shared_value(group, & &1.text_color) || "#FFFFFF",
+      geometry:
+        DisplayGeometry.prepare(%{type: "MultiLineString", coordinates: coordinates})
+    }
+  end
+
+  defp display_color(route) do
+    OperatorColors.color_for(route.agency_name, route.category) ||
+      route.color || RouteTypes.default_color(route.category)
+  end
+
+  # The single value every route in the group shares, or nil when members
+  # disagree (then the caller falls back to something group-wide).
+  defp shared_value(group, fun) do
+    case group |> Enum.map(fun) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [value] -> value
+      _values -> nil
+    end
+  end
+
+  defp geometry_coordinates(%{"type" => "MultiLineString", "coordinates" => lines}), do: lines
+  defp geometry_coordinates(%{type: "MultiLineString", coordinates: lines}), do: lines
+  defp geometry_coordinates(_geometry), do: []
 
   def stop_feature_collection(categories) do
     Stop
@@ -83,19 +139,17 @@ defmodule Transitmaps.Gtfs do
     Enum.max_by([left, right], &String.length(&1 || ""))
   end
 
-  defp route_feature(%Route{} = route, offset_slot) do
+  defp line_feature(line, offset_slot) do
     %{
       type: "Feature",
-      geometry: DisplayGeometry.prepare(route.geometry),
+      geometry: line.geometry,
       properties: %{
-        name: route.short_name || route.long_name || route.route_id,
-        long_name: route.long_name,
-        agency: route.agency_name,
-        category: route.category,
-        color:
-          OperatorColors.color_for(route.agency_name, route.category) ||
-            route.color || RouteTypes.default_color(route.category),
-        text_color: route.text_color || "#FFFFFF",
+        name: line.short_name,
+        long_name: line.long_name,
+        agency: line.agency_name,
+        category: line.category,
+        color: line.color,
+        text_color: line.text_color,
         offset: offset_slot
       }
     }

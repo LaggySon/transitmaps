@@ -113,7 +113,11 @@ small enough to render the whole country at once.
 - `Transitmaps.Geometry` — Douglas-Peucker polyline simplification, plus
   station-area tidying: reversal hairpins are split and strands that only
   re-trace another strand of the same route are dropped
-- `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category
+- `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
+  routes are grouped into one drawn line per category/agency/colour (a TfL
+  line, or a national operator's whole network) with the group's merged
+  geometry deduped into a single clean network, and corridor-sharing lines
+  get small parallel-offset slots (clamped to ±3)
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM

@@ -22,8 +22,6 @@ const REGIONS = {
 
 const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
 const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
-const DETAILED_GEOMETRY_ZOOM = 12.5
-const CORNER_DEVIATION_METERS = 14
 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
@@ -45,15 +43,11 @@ const TransitMap = {
     this.loaded = new Set()
     this.pending = new Map()
     this.categoryData = new Map()
-    this.roundedLines = new WeakMap()
-    this.lineBoundsCache = new WeakMap()
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.region = this.el.dataset.region || "great-britain"
     this.root = this.el.closest("#transit-explorer")
     const initialView = REGIONS[this.region] || REGIONS["great-britain"]
-    this.routeGeometryDetail = initialView.zoom >= DETAILED_GEOMETRY_ZOOM ? "detailed" : "standard"
-    this.el.dataset.geometryDetail = this.routeGeometryDetail
 
     try {
       this.map = new maplibregl.Map({
@@ -80,7 +74,6 @@ const TransitMap = {
     })
     this.map.on("load", () => this.markMapReady())
     this.map.on("zoom", () => this.updateZoomReadout())
-    this.map.on("moveend", () => this.updateRouteGeometryDetail())
     this.map.on("idle", () => this.announceIdle())
 
     this.handleEvent("categories-changed", ({enabled}) => {
@@ -240,161 +233,6 @@ const TransitMap = {
     }
   },
 
-  updateRouteGeometryDetail() {
-    const detail = this.map.getZoom() >= DETAILED_GEOMETRY_ZOOM ? "detailed" : "standard"
-    const changed = detail !== this.routeGeometryDetail
-
-    this.routeGeometryDetail = detail
-    this.el.dataset.geometryDetail = detail
-
-    this.loaded.forEach((cat) => {
-      const source = this.map.getSource(`${cat}-routes`)
-      const data = this.categoryData.get(cat)
-      if (!source || !data) return
-
-      if (detail === "detailed") {
-        source.setData(this.detailedRouteCollection(data.routes, this.detailBounds()))
-      } else if (changed) {
-        source.setData(data.routes)
-      }
-    })
-  },
-
-  detailBounds() {
-    const bounds = this.map.getBounds()
-    const longitudePadding = (bounds.getEast() - bounds.getWest()) * 0.2
-    const latitudePadding = (bounds.getNorth() - bounds.getSouth()) * 0.2
-
-    return {
-      west: bounds.getWest() - longitudePadding,
-      east: bounds.getEast() + longitudePadding,
-      south: bounds.getSouth() - latitudePadding,
-      north: bounds.getNorth() + latitudePadding,
-    }
-  },
-
-  detailedRouteCollection(collection, bounds) {
-    return {
-      ...collection,
-      features: (collection.features || [])
-        .map((feature) => {
-          if (feature.geometry?.type !== "MultiLineString") return null
-
-          const coordinates = feature.geometry.coordinates
-            .filter((line) => this.lineIntersectsBounds(line, bounds))
-            .map((line) => this.roundLineCorners(line))
-
-          if (coordinates.length === 0) return null
-
-          return {
-            ...feature,
-            geometry: {...feature.geometry, coordinates},
-          }
-        })
-        .filter(Boolean),
-    }
-  },
-
-  lineIntersectsBounds(line, bounds) {
-    if (!Array.isArray(line) || line.length === 0) return false
-
-    let box = this.lineBoundsCache.get(line)
-
-    if (!box) {
-      box = {west: Infinity, east: -Infinity, south: Infinity, north: -Infinity}
-
-      line.forEach(([longitude, latitude]) => {
-        box.west = Math.min(box.west, longitude)
-        box.east = Math.max(box.east, longitude)
-        box.south = Math.min(box.south, latitude)
-        box.north = Math.max(box.north, latitude)
-      })
-
-      this.lineBoundsCache.set(line, box)
-    }
-
-    return box.east >= bounds.west && box.west <= bounds.east &&
-      box.north >= bounds.south && box.south <= bounds.north
-  },
-
-  // GTFS and OSM polylines often describe a physical curve with a handful of
-  // straight chords. At close zoom, replace the area around each vertex with
-  // a quadratic arc so a chain of chords reads as one continuous curve.
-  // Shallow bends — chords sampled off smooth track — blend across up to
-  // half of each adjacent chord, which joins consecutive arcs tangent to
-  // tangent. Genuinely sharp corners (junction turns) stay tight because the
-  // arc may never pull more than a fixed few metres inside the surveyed
-  // corner point.
-  roundLineCorners(line) {
-    if (!Array.isArray(line) || line.length < 3) return line
-
-    const cached = this.roundedLines.get(line)
-    if (cached) return cached
-
-    const rounded = [line[0]]
-
-    for (let index = 1; index < line.length - 1; index += 1) {
-      const previous = line[index - 1]
-      const corner = line[index]
-      const next = line[index + 1]
-      const latitude = corner[1] * Math.PI / 180
-      const metersPerLongitude = 111_320 * Math.cos(latitude)
-      const metersPerLatitude = 110_574
-      const incoming = [
-        (corner[0] - previous[0]) * metersPerLongitude,
-        (corner[1] - previous[1]) * metersPerLatitude,
-      ]
-      const outgoing = [
-        (next[0] - corner[0]) * metersPerLongitude,
-        (next[1] - corner[1]) * metersPerLatitude,
-      ]
-      const incomingLength = Math.hypot(...incoming)
-      const outgoingLength = Math.hypot(...outgoing)
-
-      if (incomingLength < 1 || outgoingLength < 1) {
-        rounded.push(corner)
-        continue
-      }
-
-      const cosine =
-        (incoming[0] * outgoing[0] + incoming[1] * outgoing[1]) /
-        (incomingLength * outgoingLength)
-
-      if (cosine > 0.9995 || cosine < -0.75) {
-        rounded.push(corner)
-        continue
-      }
-
-      // The arc's midpoint sits cut/2 * sqrt((1 - cosine) / 2) metres inside
-      // the corner vertex; inverting that caps the blend length for sharp
-      // turns while letting near-straight bends use their full half-chords.
-      const deviationCut = (2 * CORNER_DEVIATION_METERS) / Math.sqrt((1 - cosine) / 2)
-      const cut = Math.min(deviationCut, incomingLength * 0.5, outgoingLength * 0.5)
-      const entry = this.interpolatePoint(corner, previous, cut / incomingLength)
-      const exit = this.interpolatePoint(corner, next, cut / outgoingLength)
-      const turn = Math.acos(Math.max(-1, Math.min(1, cosine)))
-      const steps = Math.min(10, Math.max(3, Math.ceil(turn / 0.3) + 2))
-
-      rounded.push(entry)
-      for (let step = 1; step <= steps; step += 1) {
-        const amount = step / steps
-        const remaining = 1 - amount
-        rounded.push([
-          remaining * remaining * entry[0] + 2 * remaining * amount * corner[0] + amount * amount * exit[0],
-          remaining * remaining * entry[1] + 2 * remaining * amount * corner[1] + amount * amount * exit[1],
-        ])
-      }
-    }
-
-    rounded.push(line[line.length - 1])
-    this.roundedLines.set(line, rounded)
-    return rounded
-  },
-
-  interpolatePoint(from, to, amount) {
-    return [from[0] + (to[0] - from[0]) * amount, from[1] + (to[1] - from[1]) * amount]
-  },
-
   syncLayers() {
     this.el.dataset.transitReady = "false"
     this.el.dataset.mapIdle = "false"
@@ -443,11 +281,7 @@ const TransitMap = {
       this.categoryData.set(cat, {routes, stops})
 
       if (!this.map.getSource(`${cat}-routes`)) {
-        const routeData =
-          this.routeGeometryDetail === "detailed"
-            ? this.detailedRouteCollection(routes, this.detailBounds())
-            : routes
-        this.map.addSource(`${cat}-routes`, {type: "geojson", data: routeData})
+        this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
         this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
         this.addCategoryLayers(cat)
       }
@@ -495,16 +329,16 @@ const TransitMap = {
       17, base * 1.9,
     ]
     const slot = ["to-number", ["coalesce", ["get", "offset"], 0]]
-    // Fan shared routes apart once there is enough room to distinguish them,
-    // then keep the bundle spacing stable through street zooms. Detailed
-    // geometry rounds close-up corners, so every colored strand stays visible
-    // and connected instead of collapsing back onto a single centerline.
+    // Lines sharing a corridor sit in small offset slots (the server clamps
+    // them to ±3), drawn on their shared centreline at country zooms and
+    // fanned apart by roughly one line's width once there is room to tell
+    // them apart.
+    const spacing = (width + 2.15) * 1.6
     const parallelOffset = [
       "interpolate", ["linear"], ["zoom"],
-      8, 0,
-      10.5, ["*", slot, width + 1.15],
-      13.5, ["*", slot, width * 1.65 + 1.2],
-      17, ["*", slot, width * 1.65 + 1.2],
+      10, 0,
+      13, ["*", slot, spacing],
+      17, ["*", slot, spacing * 1.5],
     ]
 
     this.addLayerInOrder({
@@ -618,7 +452,7 @@ const TransitMap = {
 
       const props = event.features[0].properties
       const title = props.long_name || props.name || "Transit route"
-      const agency = props.agency
+      const agency = props.agency && props.agency !== title
         ? `<div class="map-route-popup__agency">${this.escapeHtml(props.agency)}</div>`
         : ""
       this.openPopup(

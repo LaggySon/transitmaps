@@ -9,9 +9,10 @@ defmodule Transitmaps.Gtfs.OffsetSlots do
   along its geometry); routes sharing a stretch of corridor are adjacent in
   an overlap graph, which is greedy-coloured in stable agency+name order.
   Colours map to slots fanning out symmetrically (0, +1, -1, +2, -2, ...),
-  so corridor-sharing routes always split apart into a ribbon that widens
-  with the number of routes, while isolated routes stay centred on their
-  own track.
+  clamped to ±3, so corridor-sharing routes split apart into a narrow
+  ribbon while isolated routes stay centred on their own track. Callers
+  pass display lines (see `Transitmaps.Gtfs.group_display_lines/1`), so a
+  slot means one visually distinct drawn line, not one timetabled route.
   """
 
   alias Transitmaps.Geometry
@@ -21,6 +22,11 @@ defmodule Transitmaps.Gtfs.OffsetSlots do
   # slots independent of each other.
   @cell_km 0.3
   @min_shared_cells 6
+
+  # Widest fan allowed: slots beyond ±3 would push the outermost strands so
+  # far off the track they read as separate corridors, so busier corridors
+  # share the outermost slots instead of widening the ribbon further.
+  @max_slot 3
 
   @doc """
   Returns `{route, slot}` pairs. Routes only need `category`,
@@ -59,7 +65,7 @@ defmodule Transitmaps.Gtfs.OffsetSlots do
 
   # 0, +1, -1, +2, -2, ... so the ribbon stays centred on the corridor.
   defp slot_for_color(color) do
-    magnitude = div(color + 1, 2)
+    magnitude = min(div(color + 1, 2), @max_slot)
     if rem(color, 2) == 1, do: magnitude, else: -magnitude
   end
 

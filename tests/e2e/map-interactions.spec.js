@@ -50,17 +50,3 @@ test("custom zoom buttons update the live map zoom", async ({page}) => {
   await page.locator("#map-zoom-out").click()
   await expect.poll(async () => Number(await map.getAttribute("data-map-zoom"))).toBeLessThan(initialZoom + 1)
 })
-
-test("switches to bounded high-detail geometry at close zoom", async ({page}) => {
-  const map = page.locator("#transit-map")
-
-  await map.evaluate((element) =>
-    element.dispatchEvent(new CustomEvent("map:set-zoom", {detail: {zoom: 12}}))
-  )
-  await expect(map).toHaveAttribute("data-geometry-detail", "standard")
-
-  await map.evaluate((element) =>
-    element.dispatchEvent(new CustomEvent("map:set-zoom", {detail: {zoom: 14}}))
-  )
-  await expect(map).toHaveAttribute("data-geometry-detail", "detailed")
-})

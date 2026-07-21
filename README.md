@@ -80,6 +80,15 @@ rate limit.
 Re-importing under the same name replaces that feed's data. Downloads are
 cached in `priv/gtfs_cache/`.
 
+In a deployed Railway release, run imports from the service shell without
+Mix. Restart the service afterward so its in-memory GeoJSON cache refreshes
+immediately:
+
+```sh
+bin/transitmaps eval "Transitmaps.Release.import_tfl()"
+bin/transitmaps eval "Transitmaps.Release.import_gb()"
+```
+
 ## Railway deployment
 
 Railway's standard Phoenix deployment uses Railpack's automatic Elixir

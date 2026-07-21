@@ -76,7 +76,11 @@ defmodule Transitmaps.GtfsTest do
       ]
 
       line = %{"id" => "elizabeth", "name" => "Elizabeth line"}
-      stations = [%{"lon" => -0.18, "lat" => 51.52}, %{"lon" => 0.12, "lat" => 51.49}]
+
+      stations = [
+        %{"lon" => -0.18, "lat" => 51.52},
+        %{"lon" => 0.12, "lat" => 51.49}
+      ]
 
       assert [[[-0.18, 51.52], [0.12, 51.49]]] =
                TflImporter.line_coordinates(line, "elizabeth-line", relations, stations)

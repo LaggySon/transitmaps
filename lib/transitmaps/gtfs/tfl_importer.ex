@@ -10,7 +10,8 @@ defmodule Transitmaps.Gtfs.TflImporter do
 
   @api "https://api.tfl.gov.uk"
   @modes "tube,dlr,tram,overground,elizabeth-line"
-  @overpass "https://overpass.kumi.systems/api/interpreter"
+  @overpass "https://overpass.private.coffee/api/interpreter"
+  @overpass_user_agent "transitmaps/0.1 (https://github.com/LaggySon/transitmaps)"
   @geometry_cache Path.join(["priv", "gtfs_cache", "tfl-osm-routes.json"])
   @tram_geometry_cache Path.join(["priv", "gtfs_cache", "tfl-osm-tram.json"])
 
@@ -132,6 +133,7 @@ defmodule Transitmaps.Gtfs.TflImporter do
     response =
       Req.post!(@overpass,
         form: [data: query],
+        headers: [{"user-agent", @overpass_user_agent}],
         receive_timeout: 240_000,
         retry: false,
         decode_body: false

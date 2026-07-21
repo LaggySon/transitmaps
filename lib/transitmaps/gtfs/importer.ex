@@ -41,7 +41,7 @@ defmodule Transitmaps.Gtfs.Importer do
       {stations, stop_coords} = read_stations(dir, stop_route_ids)
 
       route_rows =
-        build_route_rows(routes, trip_index, shape_geometries, fallback_paths, stop_coords)
+        build_route_rows(name, routes, trip_index, shape_geometries, fallback_paths, stop_coords)
         |> normalize_feed_categories(name)
 
       persist_rows(name, source, route_rows, station_rows(stations, route_rows))
@@ -344,20 +344,47 @@ defmodule Transitmaps.Gtfs.Importer do
 
   # -- assembling rows ------------------------------------------------------------
 
-  defp build_route_rows(routes, trip_index, shape_geometries, fallback_paths, stop_coords) do
+  defp build_route_rows(
+         feed_name,
+         routes,
+         trip_index,
+         shape_geometries,
+         fallback_paths,
+         stop_coords
+       ) do
     fallback_geometries = fallback_geometries_by_route(fallback_paths, stop_coords)
 
     routes
     |> Map.values()
     |> Enum.map(fn route ->
-      lines =
-        shape_multiline(route.route_id, trip_index.route_shape_ids, shape_geometries) ||
-          fallback_geometries[route.route_id]
+      shaped = shape_multiline(route.route_id, trip_index.route_shape_ids, shape_geometries)
+      fallback = fallback_geometries[route.route_id]
 
-      Map.put(route, :geometry, lines && %{type: "MultiLineString", coordinates: lines})
+      Map.put(route, :geometry, route_geometry(feed_name, route.category, shaped, fallback))
     end)
-    |> Enum.filter(& &1.geometry)
+    |> Enum.filter(&(&1.geometry || feed_name == "gb-rail"))
   end
+
+  @doc false
+  def route_geometry(_feed_name, _category, shaped, _fallback) when is_list(shaped) do
+    %{type: "MultiLineString", coordinates: shaped}
+  end
+
+  # The generated Great Britain feed contains dense, track-following shapes
+  # for the rail network, but some individual service records have no shape.
+  # Joining those services' stops with straight lines draws cross-city and
+  # cross-country chords (for example Cardiff Central directly to Newport).
+  # Keep the route row so its service still appears at stations, but reserve
+  # drawable geometry for services backed by an actual track shape.
+  def route_geometry("gb-rail", category, nil, _fallback)
+      when category in ~w(rail intercity metro tram),
+      do: nil
+
+  def route_geometry(_feed_name, _category, nil, fallback) when is_list(fallback) do
+    %{type: "MultiLineString", coordinates: fallback}
+  end
+
+  def route_geometry(_feed_name, _category, _shaped, _fallback), do: nil
 
   defp shape_multiline(route_id, route_shape_ids, shape_geometries) do
     lines =

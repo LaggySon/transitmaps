@@ -295,6 +295,7 @@ defmodule Transitmaps.Gtfs.TflImporter do
     "london underground",
     "rail for london",
     "mtr",
+    "gts rail operations",
     "arriva rail london",
     "docklands light railway",
     "tram operations",
@@ -303,9 +304,12 @@ defmodule Transitmaps.Gtfs.TflImporter do
 
   defp tfl_relation?(tags) do
     network = String.downcase(tags["network"] || "")
+    metro_network = String.downcase(tags["network:metro"] || "")
     operator = String.downcase(tags["operator"] || "")
 
-    String.contains?(network, @tfl_networks) or String.contains?(operator, @tfl_operators)
+    String.contains?(network, @tfl_networks) or
+      String.contains?(metro_network, @tfl_networks) or
+      String.contains?(operator, @tfl_operators)
   end
 
   defp route_matches_mode?(route, "tube"), do: route == "subway"

@@ -23,7 +23,7 @@ const REGIONS = {
 const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
 const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
 const DETAILED_GEOMETRY_ZOOM = 12.5
-const CORNER_RADIUS_METERS = 14
+const CORNER_DEVIATION_METERS = 14
 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
@@ -45,6 +45,8 @@ const TransitMap = {
     this.loaded = new Set()
     this.pending = new Map()
     this.categoryData = new Map()
+    this.roundedLines = new WeakMap()
+    this.lineBoundsCache = new WeakMap()
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.region = this.el.dataset.region || "great-britain"
@@ -296,27 +298,38 @@ const TransitMap = {
   lineIntersectsBounds(line, bounds) {
     if (!Array.isArray(line) || line.length === 0) return false
 
-    let west = Infinity
-    let east = -Infinity
-    let south = Infinity
-    let north = -Infinity
+    let box = this.lineBoundsCache.get(line)
 
-    line.forEach(([longitude, latitude]) => {
-      west = Math.min(west, longitude)
-      east = Math.max(east, longitude)
-      south = Math.min(south, latitude)
-      north = Math.max(north, latitude)
-    })
+    if (!box) {
+      box = {west: Infinity, east: -Infinity, south: Infinity, north: -Infinity}
 
-    return east >= bounds.west && west <= bounds.east && north >= bounds.south && south <= bounds.north
+      line.forEach(([longitude, latitude]) => {
+        box.west = Math.min(box.west, longitude)
+        box.east = Math.max(box.east, longitude)
+        box.south = Math.min(box.south, latitude)
+        box.north = Math.max(box.north, latitude)
+      })
+
+      this.lineBoundsCache.set(line, box)
+    }
+
+    return box.east >= bounds.west && box.west <= bounds.east &&
+      box.north >= bounds.south && box.south <= bounds.north
   },
 
   // GTFS and OSM polylines often describe a physical curve with a handful of
-  // straight chords. At close zoom, replace only the small area immediately
-  // around each vertex with a quadratic arc. The radius is capped in metres,
-  // so the curve never drifts far from the supplied track alignment.
+  // straight chords. At close zoom, replace the area around each vertex with
+  // a quadratic arc so a chain of chords reads as one continuous curve.
+  // Shallow bends — chords sampled off smooth track — blend across up to
+  // half of each adjacent chord, which joins consecutive arcs tangent to
+  // tangent. Genuinely sharp corners (junction turns) stay tight because the
+  // arc may never pull more than a fixed few metres inside the surveyed
+  // corner point.
   roundLineCorners(line) {
     if (!Array.isArray(line) || line.length < 3) return line
+
+    const cached = this.roundedLines.get(line)
+    if (cached) return cached
 
     const rounded = [line[0]]
 
@@ -347,26 +360,34 @@ const TransitMap = {
         (incoming[0] * outgoing[0] + incoming[1] * outgoing[1]) /
         (incomingLength * outgoingLength)
 
-      if (cosine > 0.998 || cosine < -0.75) {
+      if (cosine > 0.9995 || cosine < -0.75) {
         rounded.push(corner)
         continue
       }
 
-      const cut = Math.min(CORNER_RADIUS_METERS, incomingLength * 0.22, outgoingLength * 0.22)
+      // The arc's midpoint sits cut/2 * sqrt((1 - cosine) / 2) metres inside
+      // the corner vertex; inverting that caps the blend length for sharp
+      // turns while letting near-straight bends use their full half-chords.
+      const deviationCut = (2 * CORNER_DEVIATION_METERS) / Math.sqrt((1 - cosine) / 2)
+      const cut = Math.min(deviationCut, incomingLength * 0.5, outgoingLength * 0.5)
       const entry = this.interpolatePoint(corner, previous, cut / incomingLength)
       const exit = this.interpolatePoint(corner, next, cut / outgoingLength)
+      const turn = Math.acos(Math.max(-1, Math.min(1, cosine)))
+      const steps = Math.min(10, Math.max(3, Math.ceil(turn / 0.3) + 2))
 
       rounded.push(entry)
-      ;[0.25, 0.5, 0.75, 1].forEach((amount) => {
+      for (let step = 1; step <= steps; step += 1) {
+        const amount = step / steps
         const remaining = 1 - amount
         rounded.push([
           remaining * remaining * entry[0] + 2 * remaining * amount * corner[0] + amount * amount * exit[0],
           remaining * remaining * entry[1] + 2 * remaining * amount * corner[1] + amount * amount * exit[1],
         ])
-      })
+      }
     }
 
     rounded.push(line[line.length - 1])
+    this.roundedLines.set(line, rounded)
     return rounded
   },
 

@@ -415,31 +415,35 @@ defmodule Transitmaps.Gtfs.Importer do
 
     routes_by_id = Map.new(route_rows, fn route -> {route.route_id, route} end)
 
-    Repo.transaction(
-      fn ->
-        feed = upsert_feed!(name, source, now)
+    result =
+      Repo.transaction(
+        fn ->
+          feed = upsert_feed!(name, source, now)
 
-        Repo.delete_all(feed_scope(Transitmaps.Gtfs.Route, feed.id))
-        Repo.delete_all(feed_scope(Transitmaps.Gtfs.Stop, feed.id))
+          Repo.delete_all(feed_scope(Transitmaps.Gtfs.Route, feed.id))
+          Repo.delete_all(feed_scope(Transitmaps.Gtfs.Stop, feed.id))
 
-        insert_batched!(
-          Transitmaps.Gtfs.Route,
-          Enum.map(route_rows, &route_insert(&1, feed.id, now))
-        )
+          insert_batched!(
+            Transitmaps.Gtfs.Route,
+            Enum.map(route_rows, &route_insert(&1, feed.id, now))
+          )
 
-        insert_batched!(
-          Transitmaps.Gtfs.Stop,
-          Enum.map(station_rows, &stop_insert(&1, feed.id, now, routes_by_id))
-        )
+          insert_batched!(
+            Transitmaps.Gtfs.Stop,
+            Enum.map(station_rows, &stop_insert(&1, feed.id, now, routes_by_id))
+          )
 
-        Logger.info(
-          "Imported #{length(route_rows)} routes, #{length(station_rows)} stops for feed #{name}"
-        )
+          Logger.info(
+            "Imported #{length(route_rows)} routes, #{length(station_rows)} stops for feed #{name}"
+          )
 
-        feed
-      end,
-      timeout: :infinity
-    )
+          feed
+        end,
+        timeout: :infinity
+      )
+
+    Transitmaps.Gtfs.GeoJsonCache.invalidate()
+    result
   end
 
   defp feed_scope(schema, feed_id) do

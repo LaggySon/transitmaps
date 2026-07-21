@@ -303,9 +303,14 @@ defmodule Transitmaps.Gtfs.TflImporter do
 
   defp tfl_relation?(tags) do
     network = String.downcase(tags["network"] || "")
+    # Elizabeth line routes use `National Rail` as their broad network and
+    # identify the TfL service in the more specific `network:metro` tag.
+    metro_network = String.downcase(tags["network:metro"] || "")
     operator = String.downcase(tags["operator"] || "")
 
-    String.contains?(network, @tfl_networks) or String.contains?(operator, @tfl_operators)
+    String.contains?(network, @tfl_networks) or
+      String.contains?(metro_network, @tfl_networks) or
+      String.contains?(operator, @tfl_operators)
   end
 
   defp route_matches_mode?(route, "tube"), do: route == "subway"

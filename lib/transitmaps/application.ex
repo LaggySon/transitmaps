@@ -6,6 +6,8 @@ defmodule Transitmaps.Application do
   use Application
   require Logger
 
+  @gb_rail_url "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"
+
   @impl true
   def start(_type, _args) do
     children = [
@@ -25,6 +27,10 @@ defmodule Transitmaps.Application do
       ),
       # Railway data refreshes depend on live third-party APIs, so run them
       # after startup instead of making them a deployment gate.
+      Supervisor.child_spec(
+        {Task, &refresh_gb_rail_on_railway/0},
+        id: :railway_gb_rail_refresh
+      ),
       Supervisor.child_spec({Task, &refresh_tfl_on_railway/0}, id: :railway_tfl_refresh)
     ]
 
@@ -32,6 +38,28 @@ defmodule Transitmaps.Application do
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Transitmaps.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp refresh_gb_rail_on_railway do
+    if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+      Logger.info("Refreshing Great Britain rail data after Railway startup")
+
+      try do
+        Transitmaps.Gtfs.Importer.import_feed("gb-rail", @gb_rail_url)
+      rescue
+        error ->
+          Logger.error(
+            "Great Britain rail startup refresh failed; keeping existing map data:\n" <>
+              Exception.format(:error, error, __STACKTRACE__)
+          )
+      catch
+        kind, reason ->
+          Logger.error(
+            "Great Britain rail startup refresh failed; keeping existing map data:\n" <>
+              Exception.format(kind, reason, __STACKTRACE__)
+          )
+      end
+    end
   end
 
   defp refresh_tfl_on_railway do

@@ -15,7 +15,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   @table __MODULE__
 
   # The categories the map loads by default (see MapLive).
-  @warm_categories ~w(metro tram rail intercity ferry)
+  @warm_categories ~w(rail metro tram intercity ferry)
 
   # Imports usually run in their own VM against the shared database, where
   # this process's invalidation can't be reached, so entries also age out.

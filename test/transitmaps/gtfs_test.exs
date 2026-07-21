@@ -341,7 +341,7 @@ defmodule Transitmaps.GtfsTest do
       [end_lon, end_lat] = List.last(unique_branch)
       assert_in_delta end_lon, -0.9, 0.000_001
       assert_in_delta end_lat, 51.45, 0.000_001
-      refute Enum.any?(tl(unique_branch), fn [lon, lat] -> lon < -0.899 and lat < 51.405 end)
+      assert Enum.all?(tl(unique_branch), fn [lon, _lat] -> abs(lon + 0.9) < 0.001 end)
     end
 
     test "keeps only the novel extension of a partly overlapping path" do

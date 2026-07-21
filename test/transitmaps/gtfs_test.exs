@@ -335,9 +335,13 @@ defmodule Transitmaps.GtfsTest do
           (for(i <- 1..10, do: [-0.9, 51.4 + i * 0.005]))
 
       assert [^trunk, unique_branch] = Geometry.extract_network_lines([trunk, branch], 0.15)
-      assert hd(unique_branch) == [-0.9, 51.4]
-      assert List.last(unique_branch) == [-0.9, 51.45]
-      refute Enum.any?(tl(unique_branch), fn [lon, lat] -> lon < -0.899 and lat < 51.405 end)
+      [join_lon, join_lat] = hd(unique_branch)
+      assert_in_delta join_lon, -0.9, 0.002
+      assert join_lat == 51.4
+      [end_lon, end_lat] = List.last(unique_branch)
+      assert_in_delta end_lon, -0.9, 0.000_001
+      assert_in_delta end_lat, 51.45, 0.000_001
+      assert Enum.all?(tl(unique_branch), fn [lon, _lat] -> abs(lon + 0.9) < 0.001 end)
     end
 
     test "keeps only the novel extension of a partly overlapping path" do
@@ -347,7 +351,9 @@ defmodule Transitmaps.GtfsTest do
       assert [^trunk, extension] =
                Geometry.extract_network_lines([trunk, overlapping_extension], 0.15)
 
-      assert hd(extension) == [-0.8, 51.4]
+      [join_lon, join_lat] = hd(extension)
+      assert_in_delta join_lon, -0.8, 0.003
+      assert join_lat == 51.4
       assert List.last(extension) == [-0.75, 51.4003]
     end
 

@@ -3,7 +3,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   Serves the GeoJSON API from an ETS cache of pre-encoded response bodies.
 
   Building a feature collection walks every route's geometry (display
-  cleanup, offset slots) and encodes megabytes of JSON; doing that on every
+  cleanup, bundle offsets) and encodes megabytes of JSON; doing that on every
   request dominates the map's time to first paint. Each distinct request is
   built once, stored as encoded JSON alongside a gzipped variant and a
   strong ETag, and served straight from ETS until the next feed import

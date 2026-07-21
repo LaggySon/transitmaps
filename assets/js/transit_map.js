@@ -332,22 +332,10 @@ const TransitMap = {
       14, base * 1.72,
       17, base * 1.9,
     ]
-    const slot = ["to-number", ["coalesce", ["get", "offset"], 0]]
-    // Corridor-sharing lines sit in small offset slots (the server clamps
-    // them to ±3 and assigns them jointly across the rail family), packed
-    // Apple Maps-style: one uniform slot grid for every mode — sized off
-    // the widest line plus a sliver of casing and tracking the width's
-    // zoom curve — so a bundle reads as adjacent parallel lines, collapsed
-    // onto the shared centreline at country zooms.
-    const bundleWidth = 3.2
-    const bundleOffset = [
-      "interpolate", ["linear"], ["zoom"],
-      10.5, 0,
-      12.5, ["*", slot, bundleWidth * 1.45 + 2.1],
-      14, ["*", slot, bundleWidth * 1.72 + 2.2],
-      17, ["*", slot, bundleWidth * 1.9 + 2.4],
-    ]
-
+    // Bundle placement is baked into the served geometry: lines sharing a
+    // corridor arrive already offset side by side (and collapse into the
+    // space a departing line leaves), so the client draws plain lines and
+    // no renderer offset math can distort the bundle.
     this.addLayerInOrder({
       id: ids.casing,
       type: "line",
@@ -357,7 +345,6 @@ const TransitMap = {
         "line-color": "rgba(255,255,255,0.96)",
         "line-width": zoomedWidth(width + 2.15),
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
-        "line-offset": bundleOffset,
       },
     })
 
@@ -370,7 +357,6 @@ const TransitMap = {
         "line-color": ["get", "color"],
         "line-width": zoomedWidth(width),
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
-        "line-offset": bundleOffset,
       },
     })
 

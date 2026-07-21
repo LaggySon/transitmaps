@@ -1,19 +1,17 @@
 defmodule Transitmaps.Gtfs do
   @moduledoc """
   Query context for imported GTFS data, serving map-ready GeoJSON.
+
+  Route display work — which lines exist, their geometry, and how
+  corridor-sharing lines bundle — lives in `Transitmaps.Display`; this
+  module queries the database and shapes the results into GeoJSON.
   """
 
   import Ecto.Query
 
-  alias Transitmaps.Gtfs.{
-    CorridorDirections,
-    DisplayGeometry,
-    OffsetSlots,
-    OperatorColors,
-    Route,
-    RouteTypes,
-    Stop
-  }
+  alias Transitmaps.Display
+  alias Transitmaps.Display.Identity
+  alias Transitmaps.Gtfs.{Route, RouteTypes, Stop}
   alias Transitmaps.Repo
 
   @doc """
@@ -39,10 +37,10 @@ defmodule Transitmaps.Gtfs do
   end
 
   # Rail-family modes bundle side by side on shared corridors, so their
-  # direction alignment and offset slots must be computed across the whole
-  # family even when only one of its categories is requested — otherwise a
-  # tube line and the national-rail line on the same tracks would both sit
-  # in slot 0 and overpaint each other.
+  # display pipeline must see the whole family even when only one of its
+  # categories is requested — otherwise a tube line and the national-rail
+  # line on the same tracks would both sit on the centreline and
+  # overpaint each other.
   @rail_family ~w(rail intercity metro tram)
 
   def route_feature_collection(categories) do
@@ -51,11 +49,9 @@ defmodule Transitmaps.Gtfs do
     Route
     |> where([r], r.category in ^loaded)
     |> Repo.all()
-    |> group_display_lines()
-    |> CorridorDirections.align()
-    |> OffsetSlots.assign()
-    |> Enum.filter(fn {line, _slot} -> line.category in categories end)
-    |> Enum.map(fn {line, slot} -> line_feature(line, slot) end)
+    |> Display.drawn_lines()
+    |> Enum.filter(&(&1.category in categories))
+    |> Enum.map(&line_feature/1)
     |> feature_collection()
   end
 
@@ -66,61 +62,6 @@ defmodule Transitmaps.Gtfs do
       categories
     end
   end
-
-  @doc """
-  Collapses raw GTFS routes into the lines the map actually draws.
-
-  National rail feeds describe one operator as dozens of route entries that
-  all share the operator's colour and corridor; drawn separately they stack
-  into dozens of parallel offset strands. Routes are grouped by category,
-  agency, and displayed colour — one feature per visual line — and the
-  group's merged geometry is cleaned as a single network, so re-traced
-  track collapses to one strand while genuine branches survive. Groups keep
-  their own name (a TfL line) when every member shares it, and fall back to
-  the agency name (a national operator's many timetabled routes).
-  """
-  def group_display_lines(routes) do
-    routes
-    |> Enum.group_by(fn route -> {route.category, route.agency_name, display_color(route)} end)
-    |> Enum.map(fn {{category, agency, color}, group} ->
-      display_line(category, agency, color, group)
-    end)
-    |> Enum.sort_by(&{&1.category, &1.agency_name, &1.short_name})
-  end
-
-  defp display_line(category, agency, color, group) do
-    coordinates = Enum.flat_map(group, &geometry_coordinates(&1.geometry))
-
-    %{
-      route_id: group |> Enum.map(& &1.route_id) |> Enum.min(),
-      category: category,
-      agency_name: agency,
-      short_name: shared_value(group, & &1.short_name) || agency,
-      long_name: shared_value(group, & &1.long_name),
-      color: color,
-      text_color: shared_value(group, & &1.text_color) || "#FFFFFF",
-      geometry:
-        DisplayGeometry.prepare(%{type: "MultiLineString", coordinates: coordinates})
-    }
-  end
-
-  defp display_color(route) do
-    OperatorColors.color_for(route.agency_name, route.category) ||
-      route.color || RouteTypes.default_color(route.category)
-  end
-
-  # The single value every route in the group shares, or nil when members
-  # disagree (then the caller falls back to something group-wide).
-  defp shared_value(group, fun) do
-    case group |> Enum.map(fun) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
-      [value] -> value
-      _values -> nil
-    end
-  end
-
-  defp geometry_coordinates(%{"type" => "MultiLineString", "coordinates" => lines}), do: lines
-  defp geometry_coordinates(%{type: "MultiLineString", coordinates: lines}), do: lines
-  defp geometry_coordinates(_geometry), do: []
 
   def stop_feature_collection(categories) do
     Stop
@@ -166,18 +107,17 @@ defmodule Transitmaps.Gtfs do
     Enum.max_by([left, right], &String.length(&1 || ""))
   end
 
-  defp line_feature(line, offset_slot) do
+  defp line_feature(line) do
     %{
       type: "Feature",
       geometry: line.geometry,
       properties: %{
-        name: line.short_name,
+        name: line.name,
         long_name: line.long_name,
-        agency: line.agency_name,
+        agency: line.agency,
         category: line.category,
         color: line.color,
-        text_color: line.text_color,
-        offset: offset_slot
+        text_color: line.text_color
       }
     }
   end
@@ -198,7 +138,7 @@ defmodule Transitmaps.Gtfs do
 
   # Stored line entries may be atom- or string-keyed (structs vs jsonb);
   # normalize the shape and apply operator brand colours, matching what
-  # `route_feature/2` serves for the lines themselves.
+  # `route_feature_collection/1` serves for the lines themselves.
   defp present_line(line) do
     agency = line_value(line, :agency)
     category = line_value(line, :category)
@@ -207,7 +147,7 @@ defmodule Transitmaps.Gtfs do
       name: line_value(line, :name),
       agency: agency,
       category: category,
-      color: OperatorColors.color_for(agency, category) || line_value(line, :color)
+      color: Identity.brand_color(agency, category) || line_value(line, :color)
     }
   end
 

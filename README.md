@@ -110,18 +110,20 @@ small enough to render the whole country at once.
   shapes, stop_times, stops), never loads large files wholesale
 - `Transitmaps.Gtfs.RouteTypes` — maps basic + extended GTFS route types to
   display categories
-- `Transitmaps.Geometry` — Douglas-Peucker polyline simplification, plus
-  station-area tidying: reversal hairpins are split and strands that only
-  re-trace another strand of the same route are dropped
+- `Transitmaps.Geometry` — polyline primitives: Douglas-Peucker
+  simplification, jump/reversal splitting, loop splicing, re-trace
+  dedupe, fragment stitching, and corner rounding
+- `Transitmaps.Display` — the drawn-line pipeline, one stage per module:
+  `Identity` (one line per national-rail operator or per TfL-style line,
+  with brand colours), `Network` (each line's shapes merged into one
+  clean high-fidelity network), and `Bundles` (corridor-sharing lines
+  packed side by side around a shared axis, with offsets computed locally
+  along each corridor and baked into the geometry — so when a line leaves
+  mid-bundle the rest collapse smoothly into its space, and the client
+  just draws plain lines)
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
-  routes are grouped into one drawn line per category/agency/colour (a TfL
-  line, or a national operator's whole network) with the group's merged
-  geometry deduped into a single clean network, corridor-sharing strands
-  oriented the same way (`CorridorDirections`, so line-offset fans always
-  open to consistent sides instead of splitting lines into hollow pairs),
-  and corridor-sharing lines given small parallel-offset slots (clamped
-  to ±3, assigned jointly across rail/intercity/metro/tram so mixed-mode
-  corridors bundle side by side on one uniform slot grid)
+  rail-family categories (rail/intercity/metro/tram) are bundled
+  together, so serving one loads the family
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM

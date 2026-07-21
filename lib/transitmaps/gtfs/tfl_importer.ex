@@ -295,7 +295,6 @@ defmodule Transitmaps.Gtfs.TflImporter do
     "london underground",
     "rail for london",
     "mtr",
-    "gts rail operations",
     "arriva rail london",
     "docklands light railway",
     "tram operations",
@@ -304,6 +303,8 @@ defmodule Transitmaps.Gtfs.TflImporter do
 
   defp tfl_relation?(tags) do
     network = String.downcase(tags["network"] || "")
+    # Elizabeth line routes use `National Rail` as their broad network and
+    # identify the TfL service in the more specific `network:metro` tag.
     metro_network = String.downcase(tags["network:metro"] || "")
     operator = String.downcase(tags["operator"] || "")
 

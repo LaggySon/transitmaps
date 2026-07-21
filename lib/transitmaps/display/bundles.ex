@@ -28,7 +28,7 @@ defmodule Transitmaps.Display.Bundles do
     4. The resulting per-vertex slot and centreline correction are
        smoothed along the line so membership changes become gradual
        tapers, then each vertex is pushed sideways along its
-       (miter-clamped) normal by slot × #{trunc(1000 * 0.03)} m plus the
+       (miter-clamped) normal by slot × #{trunc(1000 * 0.016)} m plus the
        correction.
   """
 
@@ -47,10 +47,11 @@ defmodule Transitmaps.Display.Bundles do
   # alignment conflict running opposite) keeps its own centreline.
   @parallel_cosine 0.7
 
-  # Ground distance between neighbouring lines of a bundle. Bundles merge
-  # into one ribbon at country zooms and open into adjacent parallel lines
-  # as the map approaches street level.
-  @slot_spacing_km 0.03
+  # Ground distance between neighbouring lines of a bundle: roughly one
+  # rendered line's width around z14-15, so a bundle reads as adjacent
+  # touching lines there — merged into one ribbon at country zooms,
+  # opening slightly apart at street level.
+  @slot_spacing_km 0.016
 
   # Vertices are capped this far apart before slotting, so slot tapers and
   # curved corridors bend smoothly instead of in long straight jumps.

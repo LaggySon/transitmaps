@@ -138,7 +138,7 @@ defmodule Transitmaps.DisplayTest do
       [first, second] = Bundles.arrange([line([corridor]), line([corridor])])
 
       gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.03, 0.008
+      assert_in_delta gap, 0.016, 0.005
     end
 
     test "lines running opposite directions still bundle to opposite sides" do
@@ -147,7 +147,7 @@ defmodule Transitmaps.DisplayTest do
       [first, second] = Bundles.arrange([line([corridor]), line([Enum.reverse(corridor)])])
 
       gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.03, 0.008
+      assert_in_delta gap, 0.016, 0.005
     end
 
     test "remaining lines collapse into the space a departing line leaves" do
@@ -158,11 +158,11 @@ defmodule Transitmaps.DisplayTest do
 
       # Three abreast on the shared half: outer lines sit a full spacing
       # apart on each side of the middle one.
-      assert_in_delta lateral_km(first, third, -0.9), 0.06, 0.012
+      assert_in_delta lateral_km(first, third, -0.9), 0.032, 0.008
 
       # After the middle line leaves, the outer pair collapses to a single
       # spacing, centred on the corridor.
-      assert_in_delta lateral_km(first, third, -0.5), 0.03, 0.008
+      assert_in_delta lateral_km(first, third, -0.5), 0.016, 0.005
     end
 
     test "bundle offsets taper smoothly, never jump" do
@@ -229,7 +229,7 @@ defmodule Transitmaps.DisplayTest do
 
       [first, second] = lines
       gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.03, 0.01
+      assert_in_delta gap, 0.016, 0.006
     end
   end
 

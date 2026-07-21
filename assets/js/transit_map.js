@@ -21,6 +21,15 @@ const REGIONS = {
 }
 
 const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
+const MODE_LABEL = {
+  ferry: "Ferry",
+  coach: "Coach",
+  bus: "Bus",
+  rail: "National Rail",
+  intercity: "Intercity",
+  tram: "Tram",
+  metro: "Metro",
+}
 const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
 
 const layerIds = (cat) => ({
@@ -47,6 +56,8 @@ const TransitMap = {
     this.loaded = new Set()
     this.pending = new Map()
     this.categoryData = new Map()
+    this.dataLoadBatch = 0
+    this.dataLoading = false
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.region = this.el.dataset.region || "great-britain"
@@ -125,9 +136,68 @@ const TransitMap = {
 
   markMapReady() {
     this.el.dataset.mapReady = "true"
+    if (!this.dataLoading && this.el.dataset.transitReady !== "error") this.hideLoading()
+    this.updateZoomReadout()
+  },
+
+  showLoading(label, detail, progress = null) {
+    const loading = this.el.querySelector(".map-loading")
+    if (!loading) return
+
+    const labelEl = loading.querySelector("[data-loading-label]")
+    const detailEl = loading.querySelector("[data-loading-detail]")
+    const progressEl = loading.querySelector("[data-loading-progress]")
+    const barEl = loading.querySelector("[data-loading-bar]")
+
+    loading.hidden = false
+    if (labelEl) labelEl.textContent = label
+    if (detailEl) detailEl.textContent = detail
+
+    if (progressEl && barEl) {
+      if (progress === null) {
+        progressEl.removeAttribute("aria-valuenow")
+        barEl.classList.add("map-loading__bar--indeterminate")
+        barEl.style.width = ""
+      } else {
+        const value = Math.max(0, Math.min(100, Math.round(progress)))
+        progressEl.setAttribute("aria-valuenow", String(value))
+        barEl.classList.remove("map-loading__bar--indeterminate")
+        barEl.style.width = `${value}%`
+      }
+    }
+  },
+
+  hideLoading() {
     const loading = this.el.querySelector(".map-loading")
     if (loading) loading.hidden = true
-    this.updateZoomReadout()
+  },
+
+  startDataLoading(batch, categories) {
+    this.dataLoading = categories.length > 0
+    this.dataLoadProgress = {batch, categories: new Set(categories), complete: new Set()}
+
+    if (this.dataLoading) {
+      this.showLoading(
+        "Loading transit data",
+        `Preparing 0 of ${categories.length} layers`,
+        0
+      )
+    }
+  },
+
+  advanceDataLoading(batch, category) {
+    const progress = this.dataLoadProgress
+    if (!progress || progress.batch !== batch || !progress.categories.has(category)) return
+
+    progress.complete.add(category)
+    const complete = progress.complete.size
+    const total = progress.categories.size
+    const label = MODE_LABEL[category] || category
+    this.showLoading(
+      "Loading transit data",
+      `${label} ready · ${complete} of ${total} layers`,
+      (complete / total) * 100
+    )
   },
 
   announceIdle() {
@@ -240,17 +310,39 @@ const TransitMap = {
   syncLayers() {
     this.el.dataset.transitReady = "false"
     this.el.dataset.mapIdle = "false"
+    const batch = ++this.dataLoadBatch
+    const categoriesToLoad = MODE_ORDER.filter(
+      (cat) => this.enabled.has(cat) && !this.loaded.has(cat)
+    )
+    this.startDataLoading(batch, categoriesToLoad)
 
     const updates = MODE_ORDER.map((cat) => {
-      if (this.enabled.has(cat)) return this.showCategory(cat)
+      if (this.enabled.has(cat)) {
+        return this.showCategory(cat).then(() => this.advanceDataLoading(batch, cat))
+      }
       this.hideCategory(cat)
       return Promise.resolve()
     })
 
-    Promise.allSettled(updates).then(() => {
+    Promise.allSettled(updates).then((results) => {
+      if (batch !== this.dataLoadBatch) return
+
+      const failures = results.filter((result) => result.status === "rejected")
+      this.dataLoading = false
       this.el.dataset.mapIdle = "false"
-      this.el.dataset.transitReady = "true"
-      if (this.map.loaded()) this.announceIdle()
+      this.el.dataset.transitReady = failures.length === 0 ? "true" : "error"
+
+      if (failures.length > 0) {
+        const total = Math.max(1, this.dataLoadProgress.categories.size)
+        this.showLoading(
+          "Some transit data could not be loaded",
+          "Reload the page to try again",
+          (this.dataLoadProgress.complete.size / total) * 100
+        )
+      } else {
+        this.showLoading("Transit data ready", "All visible layers loaded", 100)
+        if (this.map.loaded()) this.announceIdle()
+      }
     })
   },
 
@@ -294,6 +386,7 @@ const TransitMap = {
       this.setCategoryVisibility(cat)
     } catch (error) {
       console.error(`Unable to load ${cat} transit data:`, error)
+      throw error
     }
   },
 

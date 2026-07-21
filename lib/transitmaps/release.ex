@@ -36,25 +36,22 @@ defmodule Transitmaps.Release do
 
   @doc ~S|Imports one GTFS feed: eval "Transitmaps.Release.import_gtfs(\"amtrak\", \"https://...zip\")"|
   def import_gtfs(name, source) do
-    start_import_deps()
-    Transitmaps.Gtfs.Importer.import_feed(name, source)
+    with_import_repo(fn -> Transitmaps.Gtfs.Importer.import_feed(name, source) end)
   end
 
   @doc ~S|Imports TfL lines from the TfL API and OSM: eval "Transitmaps.Release.import_tfl()"|
   def import_tfl do
-    start_import_deps()
-    Transitmaps.Gtfs.TflImporter.import()
+    with_import_repo(fn -> Transitmaps.Gtfs.TflImporter.import(cache: false) end)
   end
 
-  # Importers need the repo and an HTTP client but not the web endpoint.
-  defp start_import_deps do
+  # `with_repo/3` starts every application the adapter requires, starts a
+  # temporary Repo, and shuts it down after the import. Starting Repo directly
+  # in a release skips those dependencies and makes pre-deploy imports fail.
+  defp with_import_repo(importer) do
     load_app()
     {:ok, _apps} = Application.ensure_all_started(:req)
-
-    case Transitmaps.Repo.start_link(pool_size: 2) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    {:ok, result, _apps} = Ecto.Migrator.with_repo(Transitmaps.Repo, fn _repo -> importer.() end)
+    result
   end
 
   defp repos do

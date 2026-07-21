@@ -90,7 +90,8 @@ bin/transitmaps eval "Transitmaps.Release.import_gb()"
 ```
 
 Railway also runs the TfL import automatically after migrations during every
-deployment.
+deployment. Pipeline imports bypass the local OSM response cache because
+pre-deploy containers have ephemeral filesystems.
 
 ## Railway deployment
 

@@ -47,7 +47,7 @@ defmodule Transitmaps.Gtfs.TflImporter do
     "windrush" => "#DC241F"
   }
 
-  def import do
+  def import(opts \\ []) do
     lines = get!("/Line/Mode/#{@modes}/Route")
 
     details =
@@ -58,7 +58,7 @@ defmodule Transitmaps.Gtfs.TflImporter do
       )
       |> Enum.map(fn {:ok, detail} -> detail end)
 
-    osm_relations = osm_relations!()
+    osm_relations = osm_relations!(Keyword.get(opts, :cache, true))
     routes = Enum.map(details, &route_row(&1, osm_relations))
     stations = station_rows(details)
 
@@ -94,7 +94,13 @@ defmodule Transitmaps.Gtfs.TflImporter do
     }
   end
 
-  defp osm_relations! do
+  defp osm_relations!(false) do
+    download_osm_relations!()
+    |> Jason.decode!()
+    |> Map.fetch!("elements")
+  end
+
+  defp osm_relations!(true) do
     case File.read(@geometry_cache) do
       {:ok, body} ->
         Jason.decode!(body)["elements"] ++ cached_tram_relations()

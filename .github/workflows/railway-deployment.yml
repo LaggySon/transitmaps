@@ -1,0 +1,44 @@
+name: Railway deployment
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: railway-production
+  cancel-in-progress: true
+
+jobs:
+  production:
+    name: Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://transitmaps.laggi.sh
+
+    steps:
+      - name: Wait for Railway to serve this commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          HEALTH_URL: https://transitmaps.laggi.sh/health
+        run: |
+          for attempt in $(seq 1 120); do
+            deployed_sha="$(curl --fail --silent --show-error "$HEALTH_URL" | jq -r '.commit // empty' || true)"
+
+            if [ "$deployed_sha" = "$EXPECTED_SHA" ]; then
+              echo "Railway is serving $EXPECTED_SHA"
+              exit 0
+            fi
+
+            echo "Attempt $attempt/120: deployed commit is ${deployed_sha:-unavailable}"
+            sleep 10
+          done
+
+          echo "Railway did not serve $EXPECTED_SHA within 20 minutes"
+          exit 1

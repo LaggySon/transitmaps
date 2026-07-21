@@ -3,9 +3,6 @@ defmodule Transitmaps.GtfsTest do
 
   alias Transitmaps.Geometry
   alias Transitmaps.Gtfs
-  alias Transitmaps.Gtfs.DisplayGeometry
-  alias Transitmaps.Gtfs.OffsetSlots
-  alias Transitmaps.Gtfs.OperatorColors
   alias Transitmaps.Gtfs.Stop
   alias Transitmaps.Gtfs.RouteTypes
 
@@ -248,35 +245,49 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
-  describe "OperatorColors.color_for/2" do
-    test "gives corridor-sharing operators distinct colours" do
-      great_western = OperatorColors.color_for("Great Western Railway", "rail")
-      southern = OperatorColors.color_for("Southern", "rail")
+  describe "Geometry.round_corners/2" do
+    test "replaces a sharp corner with an arc between the same endpoints" do
+      corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
 
-      assert great_western =~ ~r/^#[0-9A-F]{6}$/
-      assert southern =~ ~r/^#[0-9A-F]{6}$/
-      refute great_western == southern
+      rounded = Geometry.round_corners(corner, 0.15)
+
+      assert length(rounded) > length(corner)
+      assert hd(rounded) == hd(corner)
+      assert List.last(rounded) == List.last(corner)
+      refute [-0.99, 51.4] in rounded
     end
 
-    test "matches the most specific operator name first" do
-      refute OperatorColors.color_for("Great Northern", "rail") ==
-               OperatorColors.color_for("Northern", "rail")
+    test "keeps every output turn gentle enough for parallel offsets" do
+      corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
+      {kx, ky} = Geometry.km_scale(hd(corner))
 
-      refute OperatorColors.color_for("South Western Railway", "rail") ==
-               OperatorColors.color_for("Southern", "rail")
+      turns =
+        corner
+        |> Geometry.round_corners(0.15)
+        |> Enum.map(fn [lon, lat] -> {lon * kx, lat * ky} end)
+        |> Enum.chunk_every(3, 1, :discard)
+        |> Enum.map(fn [{ax, ay}, {bx, by}, {cx, cy}] ->
+          {ux, uy} = {bx - ax, by - ay}
+          {vx, vy} = {cx - bx, cy - by}
+          norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+          :math.acos(min(1.0, max(-1.0, (ux * vx + uy * vy) / norm)))
+        end)
 
-      refute OperatorColors.color_for("London North Eastern Railway", "intercity") ==
-               OperatorColors.color_for("Northern", "rail")
+      assert Enum.max(turns) < 0.35
     end
 
-    test "only applies to rail-family categories" do
-      assert OperatorColors.color_for("Southern Vectis", "bus") == nil
-      assert OperatorColors.color_for("Great Western Railway", "ferry") == nil
+    test "leaves straight lines and gentle bends untouched" do
+      straight = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4]]
+      gentle = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4001]]
+
+      assert Geometry.round_corners(straight, 0.15) == straight
+      assert Geometry.round_corners(gentle, 0.15) == gentle
     end
 
-    test "unknown operators keep feed colours" do
-      assert OperatorColors.color_for("Acme Trains", "rail") == nil
-      assert OperatorColors.color_for(nil, "rail") == nil
+    test "leaves near-reversals for the hairpin splitter" do
+      hairpin = [[-1.0, 51.4], [-0.99, 51.4], [-0.9999, 51.4001]]
+
+      assert Geometry.round_corners(hairpin, 0.15) == hairpin
     end
   end
 
@@ -303,175 +314,6 @@ defmodule Transitmaps.GtfsTest do
 
       assert Geometry.stitch_lines([first, second], 0.05) == [first, second]
     end
-  end
-
-  # The rendering contract for route geometry: corridors must draw as
-  # continuous lines (never chains of dashes), cleanup must never open a
-  # gap in a route's coverage, and every strand must be oriented the same
-  # way along its corridor so MapLibre's line-offset keeps parallel routes
-  # on consistent, distinct sides.
-  describe "DisplayGeometry.prepare/1" do
-    test "a fragmented corridor comes back as one unbroken strand" do
-      fragments = [
-        for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4]),
-        for(i <- 20..30, do: [-1.0 + i * 0.01, 51.4]),
-        for(i <- 10..20, do: [-1.0 + i * 0.01, 51.4])
-      ]
-
-      assert %{coordinates: [strand]} =
-               DisplayGeometry.prepare(%{type: "MultiLineString", coordinates: fragments})
-
-      assert hd(strand) == [-1.0, 51.4]
-      assert List.last(strand) == [-0.7, 51.4]
-    end
-
-    test "cleanup never opens gaps in the corridor" do
-      # One shape that runs east, reverses back over its own track, then
-      # continues east: the pipeline may split and drop strands, but every
-      # point of the original corridor must stay covered.
-      east = for i <- 0..50, do: [-1.0 + i * 0.002, 51.4]
-      back = for i <- 49..40//-1, do: [-1.0 + i * 0.002, 51.4]
-      onward = for i <- 41..90, do: [-1.0 + i * 0.002, 51.4]
-      shape = east ++ back ++ onward
-
-      assert %{coordinates: strands} =
-               DisplayGeometry.prepare(%{type: "MultiLineString", coordinates: [shape]})
-
-      for point <- shape do
-        assert within_km?(point, strands, 0.3),
-               "corridor point #{inspect(point)} lost by cleanup"
-      end
-    end
-
-    test "strands are all oriented the same way along their corridor" do
-      # Two north-south strands whose endpoint longitudes wiggle in
-      # opposite directions; ordering by whole coordinates would flip one
-      # onto the other side of the corridor.
-      northbound = [[-1.0001, 51.0], [-1.0, 51.05], [-1.0002, 51.1]]
-      southbound = [[-0.9999, 51.3], [-1.0, 51.25], [-1.0001, 51.2]]
-
-      assert %{coordinates: strands} =
-               DisplayGeometry.prepare(%{
-                 type: "MultiLineString",
-                 coordinates: [northbound, southbound]
-               })
-
-      assert length(strands) == 2
-
-      for [[_lon1, lat1] | _] = strand <- strands do
-        [_lon2, lat2] = List.last(strand)
-        assert lat2 > lat1, "strand not oriented south-to-north: #{inspect(strand)}"
-      end
-    end
-
-    test "string-keyed geometry goes through the same pipeline" do
-      fragments = [
-        [[-1.0, 51.4], [-0.99, 51.4]],
-        [[-0.99, 51.4], [-0.98, 51.4]]
-      ]
-
-      assert %{"coordinates" => [_single_strand]} =
-               DisplayGeometry.prepare(%{
-                 "type" => "MultiLineString",
-                 "coordinates" => fragments
-               })
-    end
-  end
-
-  # The other half of the rendering contract: routes sharing a corridor
-  # must occupy distinct offset slots (side-by-side strands, one ribbon
-  # that fans apart when zoomed in), never the same slot where one line
-  # hides the other and peeks out as broken fragments.
-  describe "OffsetSlots.assign/1" do
-    test "corridor-sharing routes always get distinct slots" do
-      shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
-
-      slots =
-        [
-          corridor_route("1", "Thameslink", [shared]),
-          corridor_route("2", "Southern", [shared]),
-          corridor_route("3", "Gatwick Express", [shared])
-        ]
-        |> OffsetSlots.assign()
-        |> Enum.map(fn {_route, slot} -> slot end)
-
-      assert length(Enum.uniq(slots)) == 3
-    end
-
-    test "slots fan out symmetrically so the ribbon stays centred" do
-      shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
-
-      routes = for id <- ~w(a b c d e), do: corridor_route(id, "Operator #{id}", [shared])
-
-      slots = routes |> OffsetSlots.assign() |> Enum.map(fn {_route, slot} -> slot end)
-
-      assert Enum.sort(slots) == [-2, -1, 0, 1, 2]
-    end
-
-    test "isolated routes stay centred on their own track" do
-      first = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
-      far_away = for i <- 0..40, do: [-1.0 + i * 0.005, 53.4]
-
-      assert [{_route_a, 0}, {_route_b, 0}] =
-               [
-                 corridor_route("1", "A", [first]),
-                 corridor_route("2", "B", [far_away])
-               ]
-               |> OffsetSlots.assign()
-               |> Enum.sort_by(fn {route, _slot} -> route.route_id end)
-    end
-
-    test "routes that merely cross keep their own centreline" do
-      west_east = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
-      south_north = for i <- 0..40, do: [-0.9, 51.3 + i * 0.005]
-
-      assert [{_route_a, 0}, {_route_b, 0}] =
-               [
-                 corridor_route("1", "A", [west_east]),
-                 corridor_route("2", "B", [south_north])
-               ]
-               |> OffsetSlots.assign()
-               |> Enum.sort_by(fn {route, _slot} -> route.route_id end)
-    end
-
-    test "categories get independent slot assignments" do
-      shared = for i <- 0..40, do: [-1.0 + i * 0.005, 51.4]
-
-      slots =
-        [
-          corridor_route("1", "A", [shared], "rail"),
-          corridor_route("2", "B", [shared], "tram")
-        ]
-        |> OffsetSlots.assign()
-        |> Enum.map(fn {_route, slot} -> slot end)
-
-      assert slots == [0, 0]
-    end
-  end
-
-  defp corridor_route(id, agency, coordinates, category \\ "rail") do
-    %{
-      route_id: id,
-      agency_name: agency,
-      short_name: id,
-      long_name: nil,
-      category: category,
-      geometry: %{type: "MultiLineString", coordinates: coordinates}
-    }
-  end
-
-  # Distance from a point to the nearest vertex of any strand; inputs use
-  # dense vertices so vertex distance approximates line distance.
-  defp within_km?([lon, lat], strands, tolerance_km) do
-    kx = 111.320 * :math.cos(lat * :math.pi() / 180)
-
-    Enum.any?(strands, fn strand ->
-      Enum.any?(strand, fn [lon2, lat2] ->
-        dx = (lon2 - lon) * kx
-        dy = (lat2 - lat) * 110.574
-        :math.sqrt(dx * dx + dy * dy) <= tolerance_km
-      end)
-    end)
   end
 
   describe "Geometry.split_long_segments/2" do

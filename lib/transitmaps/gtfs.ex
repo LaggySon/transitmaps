@@ -1,11 +1,17 @@
 defmodule Transitmaps.Gtfs do
   @moduledoc """
   Query context for imported GTFS data, serving map-ready GeoJSON.
+
+  Route display work — which lines exist, their geometry, and how
+  corridor-sharing lines bundle — lives in `Transitmaps.Display`; this
+  module queries the database and shapes the results into GeoJSON.
   """
 
   import Ecto.Query
 
-  alias Transitmaps.Gtfs.{DisplayGeometry, OffsetSlots, OperatorColors, Route, RouteTypes, Stop}
+  alias Transitmaps.Display
+  alias Transitmaps.Display.Identity
+  alias Transitmaps.Gtfs.{Route, RouteTypes, Stop}
   alias Transitmaps.Repo
 
   @doc """
@@ -30,13 +36,31 @@ defmodule Transitmaps.Gtfs do
     |> Map.new()
   end
 
+  # Rail-family modes bundle side by side on shared corridors, so their
+  # display pipeline must see the whole family even when only one of its
+  # categories is requested — otherwise a tube line and the national-rail
+  # line on the same tracks would both sit on the centreline and
+  # overpaint each other.
+  @rail_family ~w(rail intercity metro tram)
+
   def route_feature_collection(categories) do
+    loaded = loaded_categories(categories)
+
     Route
-    |> where([r], r.category in ^categories)
+    |> where([r], r.category in ^loaded)
     |> Repo.all()
-    |> OffsetSlots.assign()
-    |> Enum.map(fn {route, slot} -> route_feature(route, slot) end)
+    |> Display.drawn_lines()
+    |> Enum.filter(&(&1.category in categories))
+    |> Enum.map(&line_feature/1)
     |> feature_collection()
+  end
+
+  defp loaded_categories(categories) do
+    if Enum.any?(categories, &(&1 in @rail_family)) do
+      Enum.uniq(categories ++ @rail_family)
+    else
+      categories
+    end
   end
 
   def stop_feature_collection(categories) do
@@ -83,20 +107,17 @@ defmodule Transitmaps.Gtfs do
     Enum.max_by([left, right], &String.length(&1 || ""))
   end
 
-  defp route_feature(%Route{} = route, offset_slot) do
+  defp line_feature(line) do
     %{
       type: "Feature",
-      geometry: DisplayGeometry.prepare(route.geometry),
+      geometry: line.geometry,
       properties: %{
-        name: route.short_name || route.long_name || route.route_id,
-        long_name: route.long_name,
-        agency: route.agency_name,
-        category: route.category,
-        color:
-          OperatorColors.color_for(route.agency_name, route.category) ||
-            route.color || RouteTypes.default_color(route.category),
-        text_color: route.text_color || "#FFFFFF",
-        offset: offset_slot
+        name: line.name,
+        long_name: line.long_name,
+        agency: line.agency,
+        category: line.category,
+        color: line.color,
+        text_color: line.text_color
       }
     }
   end
@@ -117,7 +138,7 @@ defmodule Transitmaps.Gtfs do
 
   # Stored line entries may be atom- or string-keyed (structs vs jsonb);
   # normalize the shape and apply operator brand colours, matching what
-  # `route_feature/2` serves for the lines themselves.
+  # `route_feature_collection/1` serves for the lines themselves.
   defp present_line(line) do
     agency = line_value(line, :agency)
     category = line_value(line, :category)
@@ -126,7 +147,7 @@ defmodule Transitmaps.Gtfs do
       name: line_value(line, :name),
       agency: agency,
       category: category,
-      color: OperatorColors.color_for(agency, category) || line_value(line, :color)
+      color: Identity.brand_color(agency, category) || line_value(line, :color)
     }
   end
 

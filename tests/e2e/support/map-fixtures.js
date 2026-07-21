@@ -8,7 +8,9 @@ const CATEGORY_COLORS = {
   ferry: "#32ADE6",
 }
 
-const CATEGORY_OFFSETS = {ferry: -3, coach: -2, bus: -1, rail: 0, intercity: 1, tram: 2, metro: 3}
+// Bundle offsets are baked into served geometry, so fixtures emulate the
+// server by shifting each category's line slightly north of the last.
+const CATEGORY_SHIFT = {ferry: -3, coach: -2, bus: -1, rail: 0, intercity: 1, tram: 2, metro: 3}
 
 const ROUTE_COORDINATES = [
   [-0.5104, 51.4713],
@@ -17,6 +19,11 @@ const ROUTE_COORDINATES = [
   [0.0032, 51.5413],
   [0.129, 51.5681],
 ]
+
+const shiftedRoute = (category) => {
+  const shift = (CATEGORY_SHIFT[category] || 0) * 0.0006
+  return ROUTE_COORDINATES.map(([lon, lat]) => [lon, lat + shift])
+}
 
 const stopFeature = (name, coordinates, color, category) => ({
   type: "Feature",
@@ -41,7 +48,7 @@ export const mockTransitApis = async (page) => {
         features: [
           {
             type: "Feature",
-            geometry: {type: "MultiLineString", coordinates: [ROUTE_COORDINATES]},
+            geometry: {type: "MultiLineString", coordinates: [shiftedRoute(category)]},
             properties: {
               name: `${category[0].toUpperCase()}${category.slice(1)} Line`,
               long_name: `${category[0].toUpperCase()}${category.slice(1)} visual route`,
@@ -49,7 +56,6 @@ export const mockTransitApis = async (page) => {
               category,
               color,
               text_color: "#FFFFFF",
-              offset: CATEGORY_OFFSETS[category] || 0,
             },
           },
         ],

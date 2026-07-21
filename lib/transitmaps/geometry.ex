@@ -384,6 +384,83 @@ defmodule Transitmaps.Geometry do
     Enum.reverse(kept)
   end
 
+  # Corners gentler than this are already smooth; sharper than the reversal
+  # threshold is a hairpin for `split_at_reversals/1`, not a corner.
+  @corner_min_turn 0.12
+  @corner_reversal_cosine -0.75
+
+  # Arc sampling: no vertex in the output turns more than this, so a
+  # parallel-offset rendering of the line stays concentric through the
+  # corner instead of pinching a bundle together at one sharp vertex.
+  @corner_step 0.3
+
+  @doc """
+  Rounds interior corners into short arcs.
+
+  A corner held in a single vertex forces renderer line-offsets to squeeze
+  every parallel line of a bundle through one sharp join, pinching the
+  bundle's spacing at the apex. Each corner turning more than about 7
+  degrees is replaced by a quadratic arc blending across up to `radius_km`
+  (capped well under half of each adjacent segment so neighbouring corners
+  never overlap), sampled finely enough that offset lines render as clean
+  concentric arcs. Near-reversals are left alone for
+  `split_at_reversals/1`.
+  """
+  def round_corners(line, radius_km)
+
+  def round_corners([first | _] = line, radius_km) when length(line) >= 3 do
+    scale = km_scale(first)
+
+    middle =
+      line
+      |> Enum.chunk_every(3, 1, :discard)
+      |> Enum.flat_map(fn [previous, corner, next] ->
+        rounded_corner(previous, corner, next, radius_km, scale)
+      end)
+
+    Enum.dedup([hd(line) | middle] ++ [List.last(line)])
+  end
+
+  def round_corners(line, _radius_km), do: line
+
+  defp rounded_corner(previous, corner, next, radius_km, scale) do
+    {ux, uy} = km_vector(previous, corner, scale)
+    {vx, vy} = km_vector(corner, next, scale)
+    incoming = :math.sqrt(ux * ux + uy * uy)
+    outgoing = :math.sqrt(vx * vx + vy * vy)
+
+    if incoming == 0.0 or outgoing == 0.0 do
+      [corner]
+    else
+      cosine = clamp((ux * vx + uy * vy) / (incoming * outgoing))
+      turn = :math.acos(cosine)
+
+      if turn < @corner_min_turn or cosine < @corner_reversal_cosine do
+        [corner]
+      else
+        cut = Enum.min([radius_km, incoming * 0.45, outgoing * 0.45])
+        entry = interpolate(corner, previous, cut / incoming)
+        exit = interpolate(corner, next, cut / outgoing)
+        steps = max(2, ceil(turn / @corner_step))
+
+        for step <- 0..steps do
+          bezier(entry, corner, exit, step / steps)
+        end
+      end
+    end
+  end
+
+  defp clamp(value), do: min(1.0, max(-1.0, value))
+
+  defp interpolate([x1, y1], [x2, y2], amount) do
+    [x1 + (x2 - x1) * amount, y1 + (y2 - y1) * amount]
+  end
+
+  defp bezier([ex, ey], [cx, cy], [xx, xy], t) do
+    r = 1.0 - t
+    [r * r * ex + 2 * r * t * cx + t * t * xx, r * r * ey + 2 * r * t * cy + t * t * xy]
+  end
+
   @doc "Kilometres per degree of longitude/latitude around a reference point."
   def km_scale([lon, lat]) when is_number(lon) and is_number(lat) do
     {111.320 * :math.cos(lat * :math.pi() / 180), 110.574}

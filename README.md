@@ -92,9 +92,11 @@ bin/transitmaps eval "Transitmaps.Release.import_tfl()"
 bin/transitmaps eval "Transitmaps.Release.import_gb()"
 ```
 
-Railway also runs the TfL import automatically after migrations during every
-deployment. Pipeline imports bypass the local OSM response cache because
-pre-deploy containers have ephemeral filesystems.
+Railway also attempts the TfL import automatically after migrations during
+every deployment. Pipeline imports bypass the local OSM response cache because
+pre-deploy containers have ephemeral filesystems. A temporary TfL or OSM
+failure leaves the last successful import in place instead of blocking the new
+application release; migration failures still stop the deployment.
 
 The `Railway deployment` GitHub Actions workflow watches the live `/health`
 endpoint for Railway's deployed commit SHA. Its `production` environment adds

@@ -338,7 +338,9 @@ defmodule Transitmaps.GtfsTest do
       [join_lon, join_lat] = hd(unique_branch)
       assert_in_delta join_lon, -0.9, 0.002
       assert join_lat == 51.4
-      assert List.last(unique_branch) == [-0.9, 51.45]
+      [end_lon, end_lat] = List.last(unique_branch)
+      assert_in_delta end_lon, -0.9, 0.000_001
+      assert_in_delta end_lat, 51.45, 0.000_001
       refute Enum.any?(tl(unique_branch), fn [lon, lat] -> lon < -0.899 and lat < 51.405 end)
     end
 

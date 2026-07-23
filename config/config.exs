@@ -11,6 +11,13 @@ config :transitmaps,
   ecto_repos: [Transitmaps.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# Real-time train positions poller (see Transitmaps.Live.Server). Disabled in
+# test so the suite never reaches out to the live TfL API.
+config :transitmaps, Transitmaps.Live.Server,
+  enabled: true,
+  poll_interval: :timer.seconds(15),
+  graph_interval: :timer.hours(6)
+
 # Configure the endpoint
 config :transitmaps, TransitmapsWeb.Endpoint,
   url: [host: "localhost"],

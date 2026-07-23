@@ -16,6 +16,9 @@ config :transitmaps, Transitmaps.Repo,
 # Cached API responses would leak data between sandboxed tests.
 config :transitmaps, :geojson_cache, false
 
+# Never poll the live TfL API during tests (or the Playwright test server).
+config :transitmaps, Transitmaps.Live.Server, enabled: false
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :transitmaps, TransitmapsWeb.Endpoint,

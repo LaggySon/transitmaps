@@ -108,6 +108,34 @@ endpoint for Railway's deployed commit SHA. Its `production` environment adds
 Vercel-style deployment history and live-site links to GitHub without starting
 a duplicate deployment.
 
+## Live train positions
+
+The optional **Live trains** setting (map settings → "Live trains") shows
+real-time train positions. TfL does not publish vehicle coordinates, so
+`Transitmaps.Live.Server` derives them: it reads each line's live arrival
+predictions (next station + seconds-to-arrival + direction) from the TfL
+Unified API and places every train on the track between its previous stop and
+the platform it is approaching. Positions refresh every 15 seconds and the
+client interpolates between updates so markers glide.
+
+No credentials are required; set `TFL_APP_KEY` for a higher rate limit (the
+same key the TfL importer uses). Tune or disable the poller with:
+
+```elixir
+config :transitmaps, Transitmaps.Live.Server,
+  enabled: true,
+  poll_interval: :timer.seconds(15),
+  graph_interval: :timer.hours(6)
+```
+
+It is disabled during tests so the suite never reaches the live API.
+
+Only London (the `great-britain` region, TfL modes) currently has a live
+provider. National Rail has no public GTFS-Realtime vehicle feed — its live
+data (Darwin / Network Rail / Realtime Trains) needs a registered account —
+so a National Rail provider slots in beside `Transitmaps.Live.Tfl` once a
+credentialed source is configured.
+
 ## Railway deployment
 
 Railway's standard Phoenix deployment uses Railpack's automatic Elixir
@@ -156,9 +184,12 @@ small enough to render the whole country at once.
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM
 - `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`
+- `Transitmaps.Live` + `Transitmaps.Live.Server` + `Transitmaps.Live.Tfl` —
+  the optional real-time layer. `Live.Server` polls TfL's live arrivals in the
+  background, derives each train's position on the track, and publishes the
+  latest GeoJSON per region into an ETS cache; `TransitmapsWeb.VehicleController`
+  serves it at `/api/vehicles.geojson`
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
   MapLibre hook; layers lazy-load per category on first toggle. An optional
-  "Live trains" setting animates markers along the drawn rail-family track
-  geometry — simulated client-side from the served line shapes (the importer
-  is schedule-free), so it needs no realtime feed and respects
-  `prefers-reduced-motion`
+  "Live trains" setting polls `/api/vehicles.geojson` and smoothly interpolates
+  the real positions between polls (respecting `prefers-reduced-motion`)

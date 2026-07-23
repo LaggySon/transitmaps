@@ -16,6 +16,8 @@ defmodule Transitmaps.Application do
       TransitmapsWeb.Telemetry,
       Transitmaps.Repo,
       Transitmaps.Gtfs.GeoJsonCache,
+      # Background poller for real-time train positions (serves /api/vehicles.geojson)
+      Transitmaps.Live.Server,
       {DNSCluster, query: Application.get_env(:transitmaps, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Transitmaps.PubSub},
       # Start a worker by calling: Transitmaps.Worker.start_link(arg)

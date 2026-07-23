@@ -32,16 +32,11 @@ const MODE_LABEL = {
 }
 const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
 
-// Optional "live train traffic": animated markers glide along the drawn
-// track geometry of the rail-family modes. Positions are simulated from the
-// served line shapes (the importer is schedule-free), giving a lively sense
-// of movement without any external realtime feed.
-const RAIL_TRAFFIC_MODES = ["metro", "tram", "rail", "intercity"]
-const MAX_TRAINS = 140
-// Latitude-corrected degrees per second; each train varies around this base.
-const TRAIN_SPEED = 0.008
-const MIN_TRAIN_LINE = 0.004
+// Optional "live train traffic": real train positions polled from
+// /api/vehicles.geojson (derived server-side from live TfL arrivals) and
+// smoothly interpolated between polls so markers glide instead of jumping.
 const TRAIN_LAYERS = ["live-trains-glow", "live-trains-dot"]
+const VEHICLE_POLL_MS = 15000
 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
@@ -72,9 +67,9 @@ const TransitMap = {
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.liveTraffic = this.el.dataset.liveTraffic === "true"
-    this.trains = []
+    this.vehicles = new Map()
     this.trainFrame = null
-    this.trainLastTs = 0
+    this.vehicleTimer = null
     this.region = this.el.dataset.region || "great-britain"
     this.root = this.el.closest("#transit-explorer")
     const initialView = REGIONS[this.region] || REGIONS["great-britain"]
@@ -101,6 +96,10 @@ const TransitMap = {
     this.map.on("style.load", () => {
       this.applyAppleBasemap()
       this.syncLayers()
+      if (this.liveTraffic) {
+        this.ensureTrainLayers()
+        this.setTrainVisibility("visible")
+      }
     })
     this.map.on("load", () => this.markMapReady())
     this.map.on("zoom", () => this.updateZoomReadout())
@@ -241,6 +240,13 @@ const TransitMap = {
       duration: 900,
       essential: true,
     })
+
+    // Live vehicles are region-specific; drop the old set and refetch.
+    if (this.liveTraffic) {
+      this.vehicles.clear()
+      this.setTrainData([])
+      this.fetchVehicles()
+    }
   },
 
   mapPadding() {
@@ -253,6 +259,7 @@ const TransitMap = {
 
   destroyed() {
     this.stopTrainLoop()
+    this.stopVehiclePolling()
     this.el.removeEventListener("map:zoom-in", this.zoomInHandler)
     this.el.removeEventListener("map:zoom-out", this.zoomOutHandler)
     this.el.removeEventListener("map:locate", this.locateHandler)
@@ -358,7 +365,6 @@ const TransitMap = {
         )
       } else {
         this.showLoading("Transit data ready", "All visible layers loaded", 100)
-        if (this.liveTraffic) this.refreshTrains()
         if (this.map.loaded()) this.announceIdle()
       }
     })
@@ -703,130 +709,89 @@ const TransitMap = {
     this.liveTraffic = enabled
 
     if (enabled) {
-      this.refreshTrains()
+      if (this.map && this.map.isStyleLoaded()) {
+        this.ensureTrainLayers()
+        this.setTrainVisibility("visible")
+      }
+      this.startVehiclePolling()
+      this.startTrainLoop()
       return
     }
 
+    this.stopVehiclePolling()
     this.stopTrainLoop()
     this.setTrainVisibility("none")
-    this.trains = []
+    this.vehicles.clear()
     this.setTrainData([])
   },
 
-  // Rebuild the animated train set from whatever rail-family lines are
-  // currently loaded and enabled, then (re)start the animation. Safe to call
-  // repeatedly — on category toggles, on data load, and on enabling.
-  refreshTrains() {
-    if (!this.liveTraffic || !this.map || !this.map.isStyleLoaded()) return
-
-    this.ensureTrainLayers()
-    this.buildTrains()
-    this.setTrainVisibility("visible")
-
-    if (this.trains.length === 0) {
-      this.stopTrainLoop()
-      this.setTrainData([])
-      return
-    }
-
-    this.startTrainLoop()
+  startVehiclePolling() {
+    if (this.vehicleTimer != null) return
+    this.fetchVehicles()
+    this.vehicleTimer = setInterval(() => this.fetchVehicles(), VEHICLE_POLL_MS)
   },
 
-  buildTrains() {
-    const lines = []
+  stopVehiclePolling() {
+    if (this.vehicleTimer != null) {
+      clearInterval(this.vehicleTimer)
+      this.vehicleTimer = null
+    }
+  },
 
-    RAIL_TRAFFIC_MODES.forEach((cat) => {
-      if (!this.enabled.has(cat)) return
-      const data = this.categoryData.get(cat)
-      if (!data || !data.routes) return
+  async fetchVehicles() {
+    if (!this.liveTraffic) return
 
-      ;(data.routes.features || []).forEach((feature) => {
-        const line = this.longestLine(feature.geometry)
-        if (line && line.total > MIN_TRAIN_LINE) {
-          lines.push({line, color: this.safeColor(feature.properties?.color)})
-        }
+    try {
+      const response = await fetch(
+        `/api/vehicles.geojson?region=${encodeURIComponent(this.region)}`
+      )
+      if (!response.ok) return
+      const data = await response.json()
+      this.applyVehicles(data.features || [])
+    } catch (_error) {
+      // Transient network error: keep drawing the last known positions.
+    }
+  },
+
+  // Fold a fresh poll into the animated set: each vehicle glides from where
+  // it is right now toward its new reported position over the poll interval.
+  applyVehicles(features) {
+    const now = performance.now()
+    const next = new Map()
+
+    features.forEach((feature) => {
+      const id = feature.properties?.id
+      const coordinates = feature.geometry?.coordinates
+      if (!id || !Array.isArray(coordinates)) return
+
+      const existing = this.vehicles.get(id)
+      next.set(id, {
+        from: existing ? this.vehiclePosition(existing, now) : coordinates,
+        to: coordinates,
+        t0: now,
+        color: this.safeColor(feature.properties?.color),
+        category: feature.properties?.category,
       })
     })
 
-    // Even sampling keeps a dense metro from crowding out sparser networks
-    // once we hit the train budget.
-    const step = lines.length > MAX_TRAINS ? lines.length / MAX_TRAINS : 1
-    const trains = []
-    for (let i = 0; i < lines.length; i += step) {
-      const {line, color} = lines[Math.floor(i)]
-      trains.push({
-        ...line,
-        color,
-        pos: Math.random() * line.total,
-        dir: Math.random() < 0.5 ? 1 : -1,
-        speed: TRAIN_SPEED * (0.7 + Math.random() * 0.6),
-      })
-    }
-
-    this.trains = trains
+    this.vehicles = next
+    if (this.reducedMotion()) this.renderVehicles(now)
   },
 
-  longestLine(geometry) {
-    if (!geometry) return null
-
-    let candidates = []
-    if (geometry.type === "LineString") candidates = [geometry.coordinates]
-    else if (geometry.type === "MultiLineString") candidates = geometry.coordinates
-    else return null
-
-    let best = null
-    candidates.forEach((coords) => {
-      const measured = this.measureLine(coords)
-      if (measured && (!best || measured.total > best.total)) best = measured
-    })
-
-    return best
-  },
-
-  measureLine(coords) {
-    if (!Array.isArray(coords) || coords.length < 2) return null
-
-    const cum = [0]
-    let total = 0
-    for (let i = 1; i < coords.length; i++) {
-      total += this.segmentLength(coords[i - 1], coords[i])
-      cum.push(total)
-    }
-
-    return total > 0 ? {coords, cum, total} : null
-  },
-
-  segmentLength(a, b) {
-    const latMid = (((a[1] + b[1]) / 2) * Math.PI) / 180
-    const dx = (b[0] - a[0]) * Math.cos(latMid)
-    const dy = b[1] - a[1]
-    return Math.hypot(dx, dy)
-  },
-
-  pointAt(train) {
-    const {coords, cum, total, pos} = train
-    if (pos <= 0) return coords[0]
-    if (pos >= total) return coords[coords.length - 1]
-
-    let i = 1
-    while (i < cum.length - 1 && cum[i] < pos) i++
-    const segStart = cum[i - 1]
-    const segLen = cum[i] - segStart || 1
-    const t = (pos - segStart) / segLen
-    const a = coords[i - 1]
-    const b = coords[i]
-    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+  vehiclePosition(vehicle, now) {
+    const frac = Math.min((now - vehicle.t0) / VEHICLE_POLL_MS, 1)
+    return [
+      vehicle.from[0] + (vehicle.to[0] - vehicle.from[0]) * frac,
+      vehicle.from[1] + (vehicle.to[1] - vehicle.from[1]) * frac,
+    ]
   },
 
   startTrainLoop() {
-    if (this.trainFrame != null) return
-
     if (this.reducedMotion()) {
-      this.renderTrainsOnce()
+      this.renderVehicles(performance.now())
       return
     }
-
-    this.trainLastTs = 0
+    if (this.trainFrame != null) return
     this.trainFrame = requestAnimationFrame((ts) => this.tickTrains(ts))
   },
 
@@ -843,36 +808,30 @@ const TransitMap = {
       return
     }
 
-    let dt = this.trainLastTs ? (ts - this.trainLastTs) / 1000 : 0
-    this.trainLastTs = ts
-    if (dt > 0.1) dt = 0.1 // clamp jumps after the tab was backgrounded
+    if (this.map && this.map.isStyleLoaded() && !this.map.getSource("live-trains")) {
+      this.ensureTrainLayers()
+      this.setTrainVisibility("visible")
+    }
 
-    const features = this.trains.map((train) => {
-      train.pos += train.dir * train.speed * dt
-      if (train.pos >= train.total) {
-        train.pos = train.total
-        train.dir = -1
-      } else if (train.pos <= 0) {
-        train.pos = 0
-        train.dir = 1
-      }
-      return this.trainFeature(train)
-    })
-
-    this.setTrainData(features)
+    this.renderVehicles(ts)
     this.trainFrame = requestAnimationFrame((next) => this.tickTrains(next))
   },
 
-  renderTrainsOnce() {
-    this.setTrainData(this.trains.map((train) => this.trainFeature(train)))
-  },
+  // Draw every live vehicle whose mode is currently visible, positioned by
+  // interpolating between its last two polled locations.
+  renderVehicles(now) {
+    const features = []
 
-  trainFeature(train) {
-    return {
-      type: "Feature",
-      geometry: {type: "Point", coordinates: this.pointAt(train)},
-      properties: {color: train.color},
-    }
+    this.vehicles.forEach((vehicle) => {
+      if (vehicle.category && !this.enabled.has(vehicle.category)) return
+      features.push({
+        type: "Feature",
+        geometry: {type: "Point", coordinates: this.vehiclePosition(vehicle, now)},
+        properties: {color: vehicle.color},
+      })
+    })
+
+    this.setTrainData(features)
   },
 
   setTrainData(features) {

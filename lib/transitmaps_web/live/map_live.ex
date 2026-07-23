@@ -713,7 +713,7 @@ defmodule TransitmapsWeb.MapLive do
               <span class="min-w-0 flex-1">
                 <span class="block text-[11px] font-semibold text-[#3a3a3c]">Live trains</span>
                 <span class="mt-0.5 block text-[9px] font-medium text-[#8e8e93]">
-                  Animate services along visible rail lines
+                  Real-time positions (London Underground &amp; rail)
                 </span>
               </span>
               <span

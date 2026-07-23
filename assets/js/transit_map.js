@@ -32,6 +32,27 @@ const MODE_LABEL = {
 }
 const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
 
+// Mode brand colours mirror Transitmaps.Gtfs.RouteTypes.default_color/1 so a
+// station's mode headings read the same as the toggles in the layers menu.
+const MODE_COLOR = {
+  metro: "#E32017",
+  tram: "#00A65F",
+  rail: "#1D4ED8",
+  intercity: "#7C3AED",
+  bus: "#D97706",
+  coach: "#B45309",
+  ferry: "#0891B2",
+}
+// Reading order for a station's services: fixed rail modes first, then road,
+// then water — the order a passenger scans an interchange, not alphabetical.
+const STATION_MODE_ORDER = ["metro", "rail", "intercity", "tram", "bus", "coach", "ferry"]
+const modeRank = (category) => {
+  const index = STATION_MODE_ORDER.indexOf(category)
+  return index === -1 ? STATION_MODE_ORDER.length : index
+}
+const titleCase = (value) =>
+  String(value || "").replace(/(^|[\s-])\w/g, (match) => match.toUpperCase())
+
 // Optional "live train traffic": animated markers glide along the drawn
 // track geometry of the rail-family modes. Positions are simulated from the
 // served line shapes (the importer is schedule-free), giving a lively sense
@@ -245,7 +266,7 @@ const TransitMap = {
 
   mapPadding() {
     if (window.matchMedia("(min-width: 640px)").matches) {
-      return {top: 56, right: 56, bottom: 56, left: 400}
+      return {top: 56, right: 56, bottom: 56, left: 352}
     }
 
     return {top: 64, right: 28, bottom: Math.round(window.innerHeight * 0.44), left: 28}
@@ -575,24 +596,50 @@ const TransitMap = {
 
   stationPopupHtml(props) {
     const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
-    const groups = this.stationServiceGroups(lines)
-    const content = groups.length
-      ? `<div class="station-popup__services"><div class="station-popup__eyebrow">Services</div>${groups
-          .map(
-            (group) =>
-              `<section class="station-popup__group"><div class="station-popup__operator">${this.escapeHtml(group.agency)}</div>` +
+    const fallback = this.stationFallbackCategory(props)
+    const groups = this.stationModeGroups(lines, fallback)
+    const lineTotal = groups.reduce((sum, group) => sum + group.lines.length, 0)
+
+    const meta = groups.length
+      ? `<div class="station-popup__meta">${lineTotal} ${lineTotal === 1 ? "line" : "lines"}` +
+        ` · ${groups.length} ${groups.length === 1 ? "mode" : "modes"}</div>`
+      : ""
+
+    const body = groups.length
+      ? `<div class="station-popup__modes">${groups
+          .map((group) => {
+            const operator = this.sharedOperator(group.lines)
+            const operatorHtml = operator
+              ? `<span class="station-popup__operator">${this.escapeHtml(operator)}</span>`
+              : ""
+            return (
+              `<section class="station-popup__mode">` +
+              `<header class="station-popup__mode-head">` +
+              `<span class="station-popup__dot" style="background:${this.safeColor(group.color)}"></span>` +
+              `<span class="station-popup__mode-name">${this.escapeHtml(group.label)}</span>` +
+              operatorHtml +
+              `<span class="station-popup__count">${group.lines.length}</span>` +
+              `</header>` +
               `<div class="station-popup__badges">${group.lines
                 .map(
                   (line) =>
                     `<span class="station-popup__badge" style="--line-color:${this.safeColor(line.color)}">` +
                     `${this.escapeHtml(line.label)}</span>`
                 )
-                .join("")}</div></section>`
-          )
+                .join("")}</div>` +
+              `</section>`
+            )
+          })
           .join("")}</div>`
       : `<div class="station-popup__empty">No service information available</div>`
 
-    return `<div class="station-popup"><div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>${content}</div>`
+    return (
+      `<div class="station-popup">` +
+      `<div class="station-popup__header">` +
+      `<div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>` +
+      meta +
+      `</div>${body}</div>`
+    )
   },
 
   async searchStop(query) {
@@ -669,34 +716,60 @@ const TransitMap = {
     return /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#6e6e73"
   },
 
-  stationServices(lines) {
-    const services = new Map()
+  // A stop's single category when it only serves one mode, so fixture and
+  // legacy lines that omit their own `category` still land in a named group.
+  stationFallbackCategory(props) {
+    const raw = props.categories
+    const categories = typeof raw === "string" ? this.safeParse(raw, []) : raw || []
+    return categories.length === 1 ? categories[0] : "other"
+  },
+
+  safeParse(value, fallback) {
+    try {
+      return JSON.parse(value)
+    } catch (_error) {
+      return fallback
+    }
+  },
+
+  // Group a station's lines by transit mode (the way a passenger reads an
+  // interchange), de-duplicating repeated lines and ordering modes by
+  // STATION_MODE_ORDER, with each line sorted naturally within its mode.
+  stationModeGroups(lines, fallbackCategory) {
+    const groups = new Map()
 
     lines.forEach((line) => {
       const label = line.name || line.agency
       if (!label) return
 
+      const category = line.category || fallbackCategory || "other"
       const agency = line.agency && line.agency !== label ? line.agency : null
-      const key = `${label}:${agency || ""}`
-      if (!services.has(key)) services.set(key, {label, agency, color: line.color})
+      const group = groups.get(category) || {category, lines: [], seen: new Set()}
+
+      const key = `${label}::${agency || ""}`
+      if (group.seen.has(key)) return
+      group.seen.add(key)
+      group.lines.push({label, agency, color: line.color})
+      groups.set(category, group)
     })
 
-    return [...services.values()].sort(
-      (a, b) => (a.agency || "").localeCompare(b.agency || "") || a.label.localeCompare(b.label)
-    )
+    return [...groups.values()]
+      .sort((a, b) => modeRank(a.category) - modeRank(b.category) || a.category.localeCompare(b.category))
+      .map((group) => ({
+        category: group.category,
+        label: MODE_LABEL[group.category] || titleCase(group.category),
+        color: MODE_COLOR[group.category] || "#6e6e73",
+        lines: group.lines.sort((a, b) =>
+          a.label.localeCompare(b.label, undefined, {numeric: true, sensitivity: "base"})
+        ),
+      }))
   },
 
-  stationServiceGroups(lines) {
-    const groups = new Map()
-
-    this.stationServices(lines).forEach((line) => {
-      const agency = line.agency || "Transit service"
-      const group = groups.get(agency) || {agency, lines: []}
-      group.lines.push(line)
-      groups.set(agency, group)
-    })
-
-    return [...groups.values()].sort((a, b) => a.agency.localeCompare(b.agency))
+  // The operator to caption a mode group with — only when every line in the
+  // group shares one, so the header stays quiet at mixed-operator stations.
+  sharedOperator(lines) {
+    const agencies = new Set(lines.map((line) => line.agency).filter(Boolean))
+    return agencies.size === 1 ? [...agencies][0] : null
   },
 
   setLiveTraffic(enabled) {

@@ -37,6 +37,22 @@ defmodule TransitmapsWeb.MapLiveTest do
     assert has_element?(view, "#map-detail-labels[aria-checked='false']")
   end
 
+  test "toggles the optional live train traffic layer", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#transit-map[data-live-traffic='false']")
+
+    view |> element("#map-options-button") |> render_click()
+    assert has_element?(view, "#map-live-traffic[aria-checked='false']")
+
+    view |> element("#map-live-traffic") |> render_click()
+    assert has_element?(view, "#map-live-traffic[aria-checked='true']")
+    assert has_element?(view, "#transit-map[data-live-traffic='true']")
+
+    view |> element("#map-live-traffic") |> render_click()
+    assert has_element?(view, "#map-live-traffic[aria-checked='false']")
+  end
+
   test "collapses and restores the sidebar", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
@@ -56,5 +72,19 @@ defmodule TransitmapsWeb.MapLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#map-search-message")
+  end
+
+  test "opens the trip planner and reports unknown stations", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#map-menu-trip") |> render_click()
+    assert has_element?(view, "#trip-menu")
+    assert has_element?(view, "#trip-form")
+
+    view
+    |> form("#trip-form", trip: %{from: "Kings Cross", to: "Paddington"})
+    |> render_submit()
+
+    assert has_element?(view, "#trip-error")
   end
 end

@@ -157,4 +157,8 @@ small enough to render the whole country at once.
   aged out hourly for imports run in a separate VM
 - `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
-  MapLibre hook; layers lazy-load per category on first toggle
+  MapLibre hook; layers lazy-load per category on first toggle. An optional
+  "Live trains" setting animates markers along the drawn rail-family track
+  geometry — simulated client-side from the served line shapes (the importer
+  is schedule-free), so it needs no realtime feed and respects
+  `prefers-reduced-motion`

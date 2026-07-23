@@ -34,6 +34,23 @@ test("toggles map details and transit layers", async ({page}) => {
   await expect(metro).toHaveAttribute("aria-checked", "false")
 })
 
+test("toggles the optional live train traffic layer", async ({page}) => {
+  const map = page.locator("#transit-map")
+  await expect(map).toHaveAttribute("data-live-traffic", "false")
+
+  await page.locator("#map-options-button").click()
+  const liveTrains = page.locator("#map-live-traffic")
+  await expect(liveTrains).toHaveAttribute("aria-checked", "false")
+
+  await liveTrains.click()
+  await expect(liveTrains).toHaveAttribute("aria-checked", "true")
+  await expect(map).toHaveAttribute("data-live-traffic", "true")
+
+  await liveTrains.click()
+  await expect(liveTrains).toHaveAttribute("aria-checked", "false")
+  await expect(map).toHaveAttribute("data-live-traffic", "false")
+})
+
 test("searches visible station data and opens a result", async ({page}) => {
   await page.locator("#map-search-form input[type='search']").fill("London Central")
   await page.locator("#map-search-form input[type='search']").press("Enter")

@@ -37,6 +37,22 @@ defmodule TransitmapsWeb.MapLiveTest do
     assert has_element?(view, "#map-detail-labels[aria-checked='false']")
   end
 
+  test "toggles the optional live train traffic layer", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#transit-map[data-live-traffic='false']")
+
+    view |> element("#map-options-button") |> render_click()
+    assert has_element?(view, "#map-live-traffic[aria-checked='false']")
+
+    view |> element("#map-live-traffic") |> render_click()
+    assert has_element?(view, "#map-live-traffic[aria-checked='true']")
+    assert has_element?(view, "#transit-map[data-live-traffic='true']")
+
+    view |> element("#map-live-traffic") |> render_click()
+    assert has_element?(view, "#map-live-traffic[aria-checked='false']")
+  end
+
   test "collapses and restores the sidebar", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 

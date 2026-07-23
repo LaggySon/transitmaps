@@ -57,4 +57,18 @@ defmodule TransitmapsWeb.MapLiveTest do
 
     assert has_element?(view, "#map-search-message")
   end
+
+  test "opens the trip planner and reports unknown stations", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#map-menu-trip") |> render_click()
+    assert has_element?(view, "#trip-menu")
+    assert has_element?(view, "#trip-form")
+
+    view
+    |> form("#trip-form", trip: %{from: "Kings Cross", to: "Paddington"})
+    |> render_submit()
+
+    assert has_element?(view, "#trip-error")
+  end
 end

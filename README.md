@@ -152,6 +152,10 @@ small enough to render the whole country at once.
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
   rail-family categories (rail/intercity/metro/tram) are bundled
   together, so serving one loads the family
+- `Transitmaps.Journey` — schedule-free trip planner: a breadth-first
+  search over the line graph (two stations are connected when one line
+  serves both) that returns the fewest-transfer itinerary between two
+  named stations. Surfaced as the sidebar's "Trip" panel
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM

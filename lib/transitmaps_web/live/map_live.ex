@@ -3,6 +3,7 @@ defmodule TransitmapsWeb.MapLive do
 
   alias Transitmaps.Gtfs
   alias Transitmaps.Gtfs.RouteTypes
+  alias Transitmaps.Journey
 
   @mode_groups [
     {"rail", "Rail", "hero-building-library",
@@ -32,7 +33,7 @@ defmodule TransitmapsWeb.MapLive do
 
   @default_enabled ~w(metro tram rail intercity ferry)
   @default_details ~w(labels stops)
-  @panels ~w(explore layers)
+  @panels ~w(explore layers trip)
   @details ~w(labels stops)
   @visual_counts %{
     "metro" => 62,
@@ -64,6 +65,9 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:region, "great-britain")
      |> assign(:search_form, to_form(%{"query" => ""}, as: :search))
      |> assign(:search_message, nil)
+     |> assign(:trip_form, to_form(%{"from" => "", "to" => ""}, as: :trip))
+     |> assign(:journey, nil)
+     |> assign(:journey_error, nil)
      |> assign(:enabled, MapSet.new(@default_enabled))
      |> assign(:details, MapSet.new(@default_details))}
   end
@@ -152,6 +156,36 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:search_message, nil)}
   end
 
+  def handle_event("plan-trip", %{"trip" => %{"from" => from, "to" => to}}, socket) do
+    from = String.trim(from)
+    to = String.trim(to)
+    form = to_form(%{"from" => from, "to" => to}, as: :trip)
+
+    case Journey.plan(from, to) do
+      {:ok, itinerary} ->
+        {:noreply,
+         socket
+         |> assign(:trip_form, form)
+         |> assign(:journey, itinerary)
+         |> assign(:journey_error, nil)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:trip_form, form)
+         |> assign(:journey, nil)
+         |> assign(:journey_error, trip_error_message(reason))}
+    end
+  end
+
+  def handle_event("clear-trip", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:trip_form, to_form(%{"from" => "", "to" => ""}, as: :trip))
+     |> assign(:journey, nil)
+     |> assign(:journey_error, nil)}
+  end
+
   defp put_enabled(socket, enabled) do
     socket
     |> assign(:enabled, enabled)
@@ -197,6 +231,18 @@ defmodule TransitmapsWeb.MapLive do
       cats -> Enum.all?(cats, &MapSet.member?(enabled, &1))
     end
   end
+
+  defp trip_error_message(:blank), do: "Enter a start and destination station"
+  defp trip_error_message(:same_station), do: "Start and destination are the same station"
+  defp trip_error_message(:no_route), do: "No connecting route in the loaded network"
+  defp trip_error_message({:not_found, query}), do: "No station matching “#{query}”"
+  defp trip_error_message(_reason), do: "Couldn't plan that trip"
+
+  defp transfers_label(0), do: "Direct · no changes"
+  defp transfers_label(1), do: "1 change"
+  defp transfers_label(count), do: "#{count} changes"
+
+  defp line_color(line), do: line[:color] || RouteTypes.default_color(line[:category])
 
   @impl true
   def render(assigns) do
@@ -321,12 +367,13 @@ defmodule TransitmapsWeb.MapLive do
               <nav
                 id="map-menu-tabs"
                 aria-label="Map menu sections"
-                class="mt-4 grid grid-cols-2 rounded-[10px] bg-[#e9e9eb] p-[2px]"
+                class="mt-4 grid grid-cols-3 rounded-[10px] bg-[#e9e9eb] p-[2px]"
               >
                 <button
                   :for={
                     {panel, label, icon} <- [
                       {"explore", "Explore", "hero-map-pin"},
+                      {"trip", "Trip", "hero-arrow-long-right"},
                       {"layers", "Layers", "hero-square-3-stack-3d"}
                     ]
                   }
@@ -453,6 +500,130 @@ defmodule TransitmapsWeb.MapLive do
                   </span>
                   <.icon name="hero-chevron-right" class="size-4 text-[#a4a4a8]" />
                 </button>
+              </section>
+
+              <section :if={@active_panel == "trip"} id="trip-menu" class="pt-5">
+                <div class="px-1">
+                  <p class="apple-eyebrow">Plan</p>
+                  <h2 class="mt-1 text-[20px] font-bold tracking-[-0.04em] text-[#1d1d1f]">
+                    Trip planner
+                  </h2>
+                  <p class="mt-1 text-[11px] font-medium leading-4 text-[#77777c]">
+                    Find the fewest-change route between two stations.
+                  </p>
+                </div>
+
+                <.form
+                  for={@trip_form}
+                  id="trip-form"
+                  phx-submit="plan-trip"
+                  class="mt-4 space-y-2.5"
+                >
+                  <div class="relative">
+                    <span class="pointer-events-none absolute top-[19px] left-3.5 z-10 grid -translate-y-1/2 place-items-center">
+                      <span class="size-2 rounded-full border-2 border-[#34c759]"></span>
+                    </span>
+                    <.input
+                      field={@trip_form[:from]}
+                      type="text"
+                      aria-label="Start station"
+                      placeholder="From station"
+                      autocomplete="off"
+                      class="h-10 w-full rounded-xl border-0 bg-[#eeeeef]/95 py-0 pr-3.5 pl-10 text-[14px] font-medium tracking-[-0.01em] text-[#1d1d1f] outline-none ring-0 transition placeholder:text-[#85858a] focus:bg-white focus:ring-2 focus:ring-[#007aff]/30"
+                    />
+                  </div>
+                  <div class="relative">
+                    <span class="pointer-events-none absolute top-[19px] left-3.5 z-10 grid -translate-y-1/2 place-items-center">
+                      <.icon name="hero-map-pin-solid" class="size-3.5 text-[#ff3b30]" />
+                    </span>
+                    <.input
+                      field={@trip_form[:to]}
+                      type="text"
+                      aria-label="Destination station"
+                      placeholder="To station"
+                      autocomplete="off"
+                      class="h-10 w-full rounded-xl border-0 bg-[#eeeeef]/95 py-0 pr-3.5 pl-10 text-[14px] font-medium tracking-[-0.01em] text-[#1d1d1f] outline-none ring-0 transition placeholder:text-[#85858a] focus:bg-white focus:ring-2 focus:ring-[#007aff]/30"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2 pt-0.5">
+                    <button
+                      id="plan-trip-button"
+                      type="submit"
+                      class="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-[#007aff] text-[13px] font-bold tracking-[-0.01em] text-white transition hover:bg-[#0071eb] active:scale-[0.98]"
+                    >
+                      <.icon name="hero-arrow-long-right" class="size-4" /> Plan trip
+                    </button>
+                    <button
+                      :if={@journey || @journey_error}
+                      id="clear-trip-button"
+                      type="button"
+                      phx-click="clear-trip"
+                      aria-label="Clear trip"
+                      class="grid size-10 shrink-0 place-items-center rounded-xl bg-[#eeeeef] text-[#6e6e73] transition hover:bg-[#e5e5e7] active:scale-[0.98]"
+                    >
+                      <.icon name="hero-x-mark" class="size-4" />
+                    </button>
+                  </div>
+                </.form>
+
+                <p
+                  :if={@journey_error}
+                  id="trip-error"
+                  class="mt-4 rounded-2xl bg-[#fff2f1] px-3.5 py-3 text-[11px] font-semibold leading-4 text-[#b3261e]"
+                >
+                  {@journey_error}
+                </p>
+
+                <div :if={@journey} id="trip-itinerary" class="mt-4">
+                  <div class="flex items-center justify-between px-1">
+                    <p class="text-[12px] font-bold tracking-[-0.01em] text-[#1d1d1f]">
+                      {@journey.origin.name} → {@journey.destination.name}
+                    </p>
+                  </div>
+                  <p class="mt-0.5 px-1 text-[10px] font-semibold tracking-wide text-[#007aff] uppercase">
+                    {transfers_label(@journey.transfers)}
+                  </p>
+
+                  <ol class="mt-3 space-y-2.5">
+                    <li
+                      :for={{leg, index} <- Enum.with_index(@journey.legs)}
+                      id={"trip-leg-#{index}"}
+                      class="overflow-hidden rounded-2xl border border-black/[0.055] bg-white/70 p-3.5"
+                    >
+                      <div class="flex items-center gap-2.5">
+                        <span
+                          class="inline-flex h-6 items-center rounded-full px-2.5 text-[11px] font-bold text-white shadow-[inset_0_0_0_1px_rgba(0,0,0,0.08)]"
+                          style={"background: #{line_color(leg.line)}"}
+                        >
+                          {leg.line.name}
+                        </span>
+                        <span
+                          :if={leg.line.agency}
+                          class="truncate text-[10px] font-semibold text-[#8a8a8e]"
+                        >
+                          {leg.line.agency}
+                        </span>
+                      </div>
+                      <div class="mt-2.5 space-y-1.5 pl-1">
+                        <div class="flex items-center gap-2">
+                          <span class="size-2 shrink-0 rounded-full border-2 border-[#34c759]">
+                          </span>
+                          <span class="text-[12px] font-semibold text-[#2c2c2e]">
+                            Board at {leg.from.name}
+                          </span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <.icon name="hero-map-pin-solid" class="size-3.5 shrink-0 text-[#ff3b30]" />
+                          <span class="text-[12px] font-semibold text-[#2c2c2e]">
+                            {if index == length(@journey.legs) - 1,
+                              do: "Arrive at #{leg.to.name}",
+                              else: "Change at #{leg.to.name}"}
+                          </span>
+                        </div>
+                      </div>
+                    </li>
+                  </ol>
+                </div>
               </section>
 
               <section :if={@active_panel == "layers"} id="layers-menu" class="pt-5">

@@ -1,4 +1,13 @@
 import maplibregl from "../vendor/maplibre-gl"
+import {
+  PLACES_LAYER_ID,
+  groupForClass,
+  placeFilter,
+  placeLayer,
+  placePinId,
+  placeSubtitle,
+  renderPlacePin,
+} from "./map_places"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
 const tileProxyUrl = (path) => `${location.origin}/tiles${path}`
@@ -60,6 +69,8 @@ const TransitMap = {
     this.dataLoading = false
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
+    this.places = new Set(this.parseData("places", []))
+    this.placeCatalog = this.parseData("placeCatalog", [])
     this.region = this.el.dataset.region || "great-britain"
     this.root = this.el.closest("#transit-explorer")
     const initialView = REGIONS[this.region] || REGIONS["great-britain"]
@@ -85,6 +96,9 @@ const TransitMap = {
     this.map.on("error", (event) => console.error("MapLibre error:", event.error))
     this.map.on("style.load", () => {
       this.applyAppleBasemap()
+      // Places are added before any transit layer exists, which leaves every
+      // pin below the lines and stations the map is actually about.
+      this.addPlaceLayers()
       this.syncLayers()
     })
     this.map.on("load", () => this.markMapReady())
@@ -98,6 +112,10 @@ const TransitMap = {
     this.handleEvent("details-changed", ({enabled}) => {
       this.details = new Set(enabled)
       this.syncDetails()
+    })
+    this.handleEvent("places-changed", ({enabled}) => {
+      this.places = new Set(enabled)
+      this.syncPlaces()
     })
     this.handleEvent("map-region", ({region}) => this.showRegion(region))
     this.handleEvent("map-search", ({query}) => this.searchStop(query))
@@ -305,6 +323,64 @@ const TransitMap = {
     } catch (_error) {
       // Style layers vary slightly between OpenFreeMap releases.
     }
+  },
+
+  addPlaceLayers() {
+    const pixelRatio = window.devicePixelRatio || 1
+
+    this.placeCatalog.forEach(({id, color}) => {
+      if (!this.map.hasImage(placePinId(id))) {
+        this.map.addImage(placePinId(id), renderPlacePin(color, id, pixelRatio), {pixelRatio})
+      }
+    })
+
+    this.map.addLayer(placeLayer())
+    this.bindPlacePopup()
+    this.syncPlaces()
+  },
+
+  // Categories are switched by narrowing the shared layer's filter rather than
+  // by hiding layers, so the pins on screen always come from one ranked
+  // contest between everything the user asked for.
+  syncPlaces() {
+    const groups = this.placeCatalog.map(({id}) => id).filter((id) => this.places.has(id))
+
+    // An empty class list is not a valid `match`, so no categories means the
+    // layer is simply switched off.
+    if (groups.length > 0) this.map.setFilter(PLACES_LAYER_ID, placeFilter(groups))
+    this.setVisibility(PLACES_LAYER_ID, groups.length > 0 ? "visible" : "none")
+  },
+
+  bindPlacePopup() {
+    this.map.on("click", PLACES_LAYER_ID, (event) => {
+      // Transit comes first: a pin sitting under a station marker never steals
+      // the click from it.
+      if (this.transitFeaturesAt(event.point).length > 0) return
+
+      const props = event.features[0].properties
+      const group = this.placeCatalog.find(({id}) => id === groupForClass(props.class))
+      const subtitle = placeSubtitle(props)
+      const meta = [subtitle, group?.label].filter(Boolean).join(" · ")
+
+      this.openPopup(
+        event.lngLat,
+        `<div class="place-popup"><div class="place-popup__name">${this.escapeHtml(props.name)}</div>` +
+          `<div class="place-popup__meta"><span class="place-popup__dot" style="background:${this.safeColor(group?.color)}"></span>` +
+          `${this.escapeHtml(meta)}</div></div>`
+      )
+    })
+
+    const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
+    this.map.on("mouseenter", PLACES_LAYER_ID, setPointer(true))
+    this.map.on("mouseleave", PLACES_LAYER_ID, setPointer(false))
+  },
+
+  transitFeaturesAt(point) {
+    const stopLayers = MODE_ORDER.map((mode) => layerIds(mode).stops).filter((id) =>
+      this.map.getLayer(id)
+    )
+
+    return stopLayers.length > 0 ? this.map.queryRenderedFeatures(point, {layers: stopLayers}) : []
   },
 
   syncLayers() {
@@ -533,8 +609,7 @@ const TransitMap = {
     })
 
     this.map.on("click", ids.line, (event) => {
-      const stopLayers = MODE_ORDER.map((mode) => layerIds(mode).stops).filter((id) => this.map.getLayer(id))
-      if (this.map.queryRenderedFeatures(event.point, {layers: stopLayers}).length > 0) return
+      if (this.transitFeaturesAt(event.point).length > 0) return
 
       const props = event.features[0].properties
       const title = props.long_name || props.name || "Transit route"

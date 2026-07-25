@@ -37,6 +37,40 @@ defmodule TransitmapsWeb.MapLiveTest do
     assert has_element?(view, "#map-detail-labels[aria-checked='false']")
   end
 
+  test "toggles a place category and pushes it to the map", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#map-menu-layers") |> render_click()
+    assert has_element?(view, "#places-menu")
+    assert has_element?(view, "#place-toggle-shopping[aria-checked='false']")
+
+    view |> element("#place-toggle-shopping") |> render_click()
+    assert has_element?(view, "#place-toggle-shopping[aria-checked='true']")
+
+    view |> element("#place-toggle-shopping") |> render_click()
+    assert has_element?(view, "#place-toggle-shopping[aria-checked='false']")
+  end
+
+  test "shows and hides every place category at once", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#map-menu-layers") |> render_click()
+    view |> element("#group-toggle-places") |> render_click()
+
+    assert has_element?(view, "#place-toggle-food[aria-checked='true']")
+    assert has_element?(view, "#place-toggle-essentials[aria-checked='true']")
+
+    view |> element("#group-toggle-places") |> render_click()
+    assert has_element?(view, "#place-toggle-food[aria-checked='false']")
+    assert has_element?(view, "#place-toggle-essentials[aria-checked='false']")
+  end
+
+  test "starts with places hidden so transit stays the focus", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#transit-map[data-places='[]']")
+  end
+
   test "collapses and restores the sidebar", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 

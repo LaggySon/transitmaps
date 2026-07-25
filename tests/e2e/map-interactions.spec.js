@@ -34,6 +34,23 @@ test("toggles map details and transit layers", async ({page}) => {
   await expect(metro).toHaveAttribute("aria-checked", "false")
 })
 
+test("toggles place categories without disturbing the map", async ({page}) => {
+  await page.locator("#map-menu-layers").click()
+
+  const shopping = page.locator("#place-toggle-shopping")
+  await expect(shopping).toHaveAttribute("aria-checked", "false")
+  await shopping.click({force: true})
+  await expect(shopping).toHaveAttribute("aria-checked", "true")
+
+  await page.locator("#group-toggle-places").click()
+  await expect(page.locator("#place-toggle-food")).toHaveAttribute("aria-checked", "true")
+  await expect(page.locator("#place-toggle-essentials")).toHaveAttribute("aria-checked", "true")
+
+  // Adding every place category must still let the map settle rather than
+  // leaving it spinning on an unrenderable layer.
+  await expect(page.locator("#transit-map[data-map-idle='true']")).toBeVisible()
+})
+
 test("searches visible station data and opens a result", async ({page}) => {
   await page.locator("#map-search-form input[type='search']").fill("London Central")
   await page.locator("#map-search-form input[type='search']").press("Enter")

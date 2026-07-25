@@ -16,6 +16,15 @@ test.describe("map visual regression at every supported zoom level", () => {
   }
 })
 
+test("matches the approved design with every place category shown", async ({page}) => {
+  await openStableMap(page)
+  await page.locator("#map-menu-layers").click()
+  await page.locator("#group-toggle-places").click()
+  await setMapZoom(page, 16)
+
+  await expect(page.locator("#transit-explorer")).toHaveScreenshot("map-places-zoom-16.png")
+})
+
 test("matches the desktop layers and settings menus", async ({page}) => {
   await openStableMap(page)
   await page.locator("#map-menu-layers").click()

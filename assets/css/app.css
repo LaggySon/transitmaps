@@ -397,6 +397,35 @@ input[type="search"]::-webkit-search-cancel-button {
   font-size: 0.7rem;
 }
 
+.place-popup {
+  min-width: 11rem;
+  padding: 0.9rem 1rem;
+}
+
+.place-popup__name {
+  font-size: 0.82rem;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+
+.place-popup__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  margin-top: 0.32rem;
+  color: #77777c;
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.place-popup__dot {
+  width: 0.44rem;
+  height: 0.44rem;
+  flex: none;
+  border-radius: 999px;
+}
+
 .map-route-popup {
   min-width: 12rem;
   padding: 0.9rem 1rem;

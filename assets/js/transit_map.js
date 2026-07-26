@@ -111,7 +111,11 @@ const STRIPE_PITCH = [
 ]
 const STRIPE_INK = 0.72
 
-const ribbonLayerIds = (cat) => ({casing: `${cat}-ribbon-casing`, stripe: `${cat}-ribbon-stripe`})
+const ribbonLayerIds = (cat) => ({
+  casing: `${cat}-ribbon-casing`,
+  stripe: `${cat}-ribbon-stripe`,
+  labels: `${cat}-ribbon-labels`,
+})
 
 // Zoom has to be the input of a top-level interpolate, so the slot is applied
 // to each zoom stop's pitch rather than wrapping the interpolate.
@@ -140,6 +144,7 @@ const desiredLayerOrder = () =>
     MODE_ORDER.map((cat) => layerIds(cat).casing),
     MODE_ORDER.map((cat) => ribbonLayerIds(cat).stripe),
     MODE_ORDER.map((cat) => layerIds(cat).line),
+    MODE_ORDER.map((cat) => ribbonLayerIds(cat).labels),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -607,6 +612,32 @@ const TransitMap = {
         "line-offset": stripeOffset,
       },
     })
+
+    // Names must come off the ribbon's own geometry. The bundled layer's
+    // coordinates carry a baked ground offset, which is tens of pixels away
+    // by zoom 18 — far enough to leave a label stranded off its line.
+    this.addLayerInOrder({
+      id: ids.labels,
+      type: "symbol",
+      source: `${cat}-corridors`,
+      minzoom: 10.5,
+      layout: {
+        "symbol-placement": "line",
+        "symbol-spacing": 420,
+        "text-field": ["get", "name"],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 10.5, 9.5, 16, 12.5],
+        "text-letter-spacing": -0.01,
+        "text-padding": 4,
+        "text-optional": true,
+      },
+      paint: {
+        "text-color": ["to-color", ["get", "color"]],
+        "text-halo-color": "rgba(255,255,255,0.96)",
+        "text-halo-width": 1.8,
+        "text-halo-blur": 0.3,
+      },
+    })
   },
 
   setCategoryVisibility(cat) {
@@ -617,13 +648,16 @@ const TransitMap = {
     const ribbons = visible && this.details.has("ribbons")
     const lines = visible && !this.details.has("ribbons")
 
-    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
+    const ribbon = ribbonLayerIds(cat)
+    const named = this.details.has("labels")
+
+    this.setVisibility(ribbon.casing, ribbons ? "visible" : "none")
+    this.setVisibility(ribbon.stripe, ribbons ? "visible" : "none")
+    this.setVisibility(ribbon.labels, ribbons && named ? "visible" : "none")
 
     this.setVisibility(ids.casing, lines ? "visible" : "none")
     this.setVisibility(ids.line, lines ? "visible" : "none")
-    // Line names come off the same per-line geometry either way, so they stay
-    // on in both renderings rather than leaving the ribbons unlabelled.
-    this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
+    this.setVisibility(ids.lineLabels, lines && named ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
     this.setVisibility(ids.labels, visible && this.details.has("labels") ? "visible" : "none")
   },

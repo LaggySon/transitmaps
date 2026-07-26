@@ -14,6 +14,17 @@ const JUNCTIONS = [
   {name: "euston-corridor", center: [-0.1330, 51.5290], zoom: 13.8},
 ]
 
+// Street level, where a bundle has the most room to go wrong. Ten metres of
+// ground is about 54 px at zoom 19, so anything spaced on the ground rather
+// than on the screen flies apart here.
+const CLOSE_UPS = [
+  {name: "baker-street-z18", center: [-0.1573, 51.5226], zoom: 18},
+  {name: "kings-cross-z18", center: [-0.1235, 51.5305], zoom: 18},
+  {name: "earls-court-z18", center: [-0.1935, 51.4915], zoom: 18.5},
+  {name: "paddington-z19", center: [-0.1769, 51.5166], zoom: 19},
+  {name: "baker-street-z19", center: [-0.1566, 51.5222], zoom: 19},
+]
+
 // Each rendering draws the same network a different way, so both are worth a
 // picture at every junction.
 const RENDERINGS = [
@@ -31,6 +42,19 @@ test.beforeEach(({}, testInfo) => testInfo.setTimeout(LOAD_BUDGET_MS))
 // costs far more than moving around it, so the map is opened once and then
 // flown between the junctions.
 for (const rendering of RENDERINGS) {
+  test(`draws every close-up as approved, ${rendering.name}`, async ({page}) => {
+    await openLiveMap(page, {stripes: rendering.stripes})
+
+    for (const junction of CLOSE_UPS) {
+      await setMapZoom(page, junction.zoom, junction.center)
+      await page.waitForTimeout(2500)
+
+      await expect(page.locator("#transit-map")).toHaveScreenshot(
+        `${rendering.name}-${junction.name}.png`
+      )
+    }
+  })
+
   test(`draws every junction as approved, ${rendering.name}`, async ({page}) => {
     await openLiveMap(page, {stripes: rendering.stripes})
 

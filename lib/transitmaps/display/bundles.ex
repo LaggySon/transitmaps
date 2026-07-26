@@ -77,6 +77,18 @@ defmodule Transitmaps.Display.Bundles do
   # cannot drag its bundle sideways off the track.
   @max_correction_km 0.06
 
+  # Ribbon slots are rounded to this before segments are cut. Fine enough that
+  # a taper reads as a smooth slide across the ribbon, coarse enough that a
+  # long corridor does not shatter into a segment per vertex.
+  @slot_quantum 0.125
+
+  # Lines join a ribbon only where they would actually be drawn on top of one
+  # another. Sharing a fingerprint cell is not enough on its own: a cell is
+  # 400 m across, so two lines can sit in one having never come near each
+  # other — which is how a line running a few streets away used to be counted
+  # into a bundle it was nowhere near.
+  @overlap_km 0.05
+
   @doc """
   Returns `lines` with corridor-sharing geometry offset into bundles.
   Line order, count, and every non-geometry field are preserved; output
@@ -170,11 +182,33 @@ defmodule Transitmaps.Display.Bundles do
   # Every vertex lands in exactly one run and runs share their boundary
   # vertex, so the segments tile the line with no gaps.
   defp corridor_segments(points, line_index, line_data, occupancy, scale) do
-    points
-    |> Enum.map(&{&1, placement_at(&1, line_index, line_data, occupancy)})
-    |> Enum.chunk_by(fn {_point, placement} -> placement end)
+    placements = Enum.map(points, &placement_at(&1, line_index, line_data, occupancy))
+
+    # A slot that steps straight from one value to the next puts a visible kink
+    # in the ribbon — obvious by zoom 18, where a slot is tens of pixels. The
+    # slots are smoothed along the line the same way `offset_strand/4` smooths
+    # them, then quantised, so a change arrives as a short taper of small steps
+    # rather than one jump.
+    sizes = Enum.map(placements, &elem(&1, 1))
+
+    slots =
+      points
+      |> smooth_values(Enum.map(placements, &elem(&1, 0)))
+      |> Enum.zip(sizes)
+      # Smoothing pulls a slot toward its neighbours', which can carry it past
+      # the edge of the bundle it is actually in — a stripe drawn off its own
+      # ribbon. Clamp it back to the slots this vertex's bundle really has.
+      |> Enum.map(fn {slot, size} ->
+        limit = (size - 1) / 2
+        slot |> min(limit) |> max(-limit) |> Kernel./(@slot_quantum) |> Float.round()
+      end)
+      |> Enum.map(&(&1 * @slot_quantum))
+
+    [points, slots, sizes]
+    |> Enum.zip()
+    |> Enum.chunk_by(fn {_point, slot, _size} -> slot end)
     |> join_segment_ends()
-    |> Enum.filter(fn {_placement, run} -> match?([_, _ | _], run) end)
+    |> Enum.filter(fn {_slot, run} -> match?([_, _ | _], run) end)
     |> Enum.map(fn {{slot, size}, run} ->
       %{
         line: line_index,
@@ -191,9 +225,9 @@ defmodule Transitmaps.Display.Bundles do
     chunks
     |> Enum.zip(Enum.drop(chunks, 1) ++ [[]])
     |> Enum.map(fn {chunk, next} ->
-      placement = chunk |> List.first() |> elem(1)
-      run = Enum.map(chunk, &elem(&1, 0)) ++ Enum.map(Enum.take(next, 1), &elem(&1, 0))
-      {placement, run}
+      {_point, slot, size} = List.first(chunk)
+      points = Enum.map(chunk, &elem(&1, 0)) ++ Enum.map(Enum.take(next, 1), &elem(&1, 0))
+      {{slot, size}, points}
     end)
   end
 
@@ -208,11 +242,14 @@ defmodule Transitmaps.Display.Bundles do
         {0.0, 1}
 
       own_direction ->
+        own_mean = sample_mean(sample)
+
         members =
           occupancy
           |> Map.get(cell, [])
-          |> Enum.filter(fn {_other, direction, _mean} ->
-            dot(own_direction, direction) >= @parallel_cosine
+          |> Enum.filter(fn {_other, direction, mean} ->
+            dot(own_direction, direction) >= @parallel_cosine and
+              distance(own_mean, mean) <= @overlap_km
           end)
           |> Enum.sort_by(fn {other, _direction, _mean} -> other end)
           |> Enum.uniq_by(fn {other, _direction, _mean} -> other end)

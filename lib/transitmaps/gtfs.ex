@@ -11,6 +11,7 @@ defmodule Transitmaps.Gtfs do
 
   alias Transitmaps.Display
   alias Transitmaps.Display.Identity
+  alias Transitmaps.Geometry
   alias Transitmaps.Gtfs.{Route, RouteTypes, Stop}
   alias Transitmaps.Repo
 
@@ -55,39 +56,153 @@ defmodule Transitmaps.Gtfs do
     |> feature_collection()
   end
 
+  # How far apart two stops can be and still be one place. A big interchange
+  # spreads its entrances over a couple of hundred metres — King's Cross St
+  # Pancras arrives as three stations a block apart and should be drawn as
+  # the one place a passenger changes at.
+  #
+  # Only rail-family stations reach that far. Because clustering chains
+  # (A merges with C through B), a radius that generous applied to bus stops
+  # would swallow a whole high street's worth of them into one marker.
+  @station_merge_km 0.25
+  @stop_merge_km 0.05
+
+  @station_categories ~w(rail metro intercity tram)
+
   @doc false
   def merge_colocated_stops(stops) do
     stops
-    |> Enum.group_by(&station_grid_key/1)
-    |> Enum.map(fn {_key, grouped_stops} -> merge_stops(grouped_stops) end)
+    |> cluster_colocated(@station_merge_km)
+    |> Enum.map(&merge_stops/1)
   end
 
-  # A 0.001-degree grid is roughly one city block. Separate GTFS publishers
-  # commonly place the same platforms a few metres apart, so this gives NEC
-  # interchanges one marker and one complete service list.
-  defp station_grid_key(stop) do
-    {round(stop.lon * 1_000), round(stop.lat * 1_000)}
+  # Stops chain into a station while each hop stays inside the radius. The
+  # obvious alternative — rounding coordinates onto a fixed grid — splits a
+  # complex in half whenever it happens to straddle a cell boundary, which
+  # is exactly how King's Cross ended up drawn as three separate dots.
+  defp cluster_colocated(stops, radius_km) do
+    indexed = stops |> Enum.with_index() |> Map.new(fn {stop, index} -> {index, stop} end)
+    cells = Enum.group_by(indexed, fn {_i, stop} -> cell(stop, radius_km) end, &elem(&1, 0))
+
+    {clusters, _visited} =
+      indexed
+      |> Map.keys()
+      |> Enum.sort()
+      |> Enum.reduce({[], MapSet.new()}, fn index, {clusters, visited} ->
+        if MapSet.member?(visited, index) do
+          {clusters, visited}
+        else
+          {members, visited} =
+            flood([index], indexed, cells, radius_km, MapSet.put(visited, index), [])
+
+          {[Enum.map(members, &Map.fetch!(indexed, &1)) | clusters], visited}
+        end
+      end)
+
+    Enum.reverse(clusters)
   end
 
-  defp merge_stops([representative | rest]) do
-    Enum.reduce(rest, representative, fn stop, merged ->
-      %{
-        merged
-        | categories: Enum.uniq(merged.categories ++ stop.categories),
-          lines: Enum.uniq_by(merged.lines ++ stop.lines, &line_identity/1),
-          name: preferred_station_name(merged.name, stop.name)
-      }
-    end)
+  defp flood([], _indexed, _cells, _radius_km, visited, members), do: {members, visited}
+
+  defp flood([index | queue], indexed, cells, radius_km, visited, members) do
+    stop = Map.fetch!(indexed, index)
+
+    {found, visited} =
+      stop
+      |> neighbouring_indexes(cells, radius_km)
+      |> Enum.reduce({[], visited}, fn other, {found, visited} ->
+        if MapSet.member?(visited, other) or not within?(stop, Map.fetch!(indexed, other)) do
+          {found, visited}
+        else
+          {[other | found], MapSet.put(visited, other)}
+        end
+      end)
+
+    flood(found ++ queue, indexed, cells, radius_km, visited, [index | members])
   end
+
+  # Cells are one radius across, so every stop within the radius is in this
+  # cell or one touching it.
+  defp cell(stop, radius_km) do
+    {kx, ky} = Geometry.km_scale([stop.lon, stop.lat])
+    {trunc(stop.lon * kx / radius_km), trunc(stop.lat * ky / radius_km)}
+  end
+
+  defp neighbouring_indexes(stop, cells, radius_km) do
+    {cx, cy} = cell(stop, radius_km)
+
+    for dx <- -1..1,
+        dy <- -1..1,
+        index <- Map.get(cells, {cx + dx, cy + dy}, []),
+        do: index
+  end
+
+  defp within?(one, other) do
+    {kx, ky} = Geometry.km_scale([one.lon, one.lat])
+    dx = (one.lon - other.lon) * kx
+    dy = (one.lat - other.lat) * ky
+    radius_km = merge_radius_km(one, other)
+
+    dx * dx + dy * dy <= radius_km * radius_km
+  end
+
+  defp merge_radius_km(one, other) do
+    if station?(one) and station?(other), do: @station_merge_km, else: @stop_merge_km
+  end
+
+  defp station?(stop), do: Enum.any?(stop.categories, &(&1 in @station_categories))
+
+  defp merge_stops([representative | _rest] = stops) do
+    %{
+      representative
+      | categories: stops |> Enum.flat_map(& &1.categories) |> Enum.uniq(),
+        lines: stops |> Enum.flat_map(& &1.lines) |> Enum.uniq_by(&line_identity/1),
+        name: preferred_station_name(stops),
+        # Sit the marker in the middle of the complex rather than on whichever
+        # entrance happened to come first, so the dot lands between the
+        # platforms it stands for instead of off to one side of them.
+        lon: mean(stops, & &1.lon),
+        lat: mean(stops, & &1.lat)
+    }
+  end
+
+  defp mean(stops, fun), do: Enum.sum(Enum.map(stops, fun)) / length(stops)
 
   defp line_identity(line) do
     {line_value(line, :name), line_value(line, :agency)}
   end
 
+  # Counts the lines a passenger sees drawn, which is what makes a station feel
+  # like an interchange. Feeds do not count that way: a national-rail operator
+  # lists every timetabled service separately, so London Bridge arrives with
+  # over two hundred "lines" where the map draws about six. Rail operators
+  # collapse to one line each — the same rule `Identity` draws them by — while
+  # metro-style lines stay individual.
+  defp drawn_line_count(stop) do
+    stop.lines
+    |> Enum.map(&drawn_line_key/1)
+    |> Enum.uniq()
+    |> length()
+  end
+
+  defp drawn_line_key(line) do
+    agency = line_value(line, :agency)
+
+    if Identity.brand_color(agency, line_value(line, :category)),
+      do: {:operator, agency},
+      else: line_identity(line)
+  end
+
   defp line_value(line, key), do: Map.get(line, key) || Map.get(line, Atom.to_string(key))
 
-  defp preferred_station_name(left, right) do
-    Enum.max_by([left, right], &String.length(&1 || ""))
+  # The merged complex takes the name of whichever stop carries the most
+  # services, so Bank and Monument come out as "Bank". Preferring the longest
+  # name instead would answer "Monument", naming the interchange after its
+  # quieter half.
+  defp preferred_station_name(stops) do
+    stops
+    |> Enum.max_by(&{drawn_line_count(&1), String.length(&1.name || "")})
+    |> Map.get(:name)
   end
 
   defp line_feature(line) do
@@ -114,7 +229,10 @@ defmodule Transitmaps.Gtfs do
         categories: stop.categories,
         lines: Enum.map(stop.lines, &present_line/1),
         # Stations serving rail-family modes get the larger "station" marker.
-        station: Enum.any?(stop.categories, &(&1 in ~w(rail metro intercity tram)))
+        station: station?(stop),
+        # How many services meet here, so the map can draw Bank at the size of
+        # the interchange it is rather than as one more dot on the Northern.
+        interchange: drawn_line_count(stop)
       }
     }
   end

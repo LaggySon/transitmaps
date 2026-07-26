@@ -73,6 +73,29 @@ const TRAIN_SPEED = 0.008
 const MIN_TRAIN_LINE = 0.004
 const TRAIN_LAYERS = ["live-trains-glow", "live-trains-dot"]
 
+// Grows a marker dimension with the number of services meeting at a stop.
+// Responses cached before interchange counts were served carry no count, so
+// those stops fall back to the single-service size.
+const interchangeScale = (busy) => [
+  "interpolate",
+  ["linear"],
+  ["coalesce", ["get", "interchange"], 1],
+  1,
+  1,
+  6,
+  busy,
+]
+
+// MapLibre only accepts a `zoom` expression as the input of a top-level
+// interpolate, so the interchange factor cannot wrap one — it multiplies each
+// zoom stop's output instead.
+const byZoomAndInterchange = (stops, busy) => [
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
+]
+
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
   line: `${cat}-line`,
@@ -604,8 +627,19 @@ const TransitMap = {
       paint: {
         "circle-color": "#ffffff",
         "circle-stroke-color": "#4a4a4f",
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 7.5, 1.2, 11, 3.2, 15, 5.8, 17, 7],
-        "circle-stroke-width": ["case", ["get", "station"], 1.7, 1.05],
+        // Scaled by how many services meet at the stop, so a six-line
+        // interchange reads as a landmark and a single-line halt stays a dot.
+        "circle-radius": byZoomAndInterchange(
+          [
+            [7.5, 1.2],
+            [11, 3.2],
+            [15, 5.8],
+            [17, 7],
+            [19, 8.5],
+          ],
+          1.5
+        ),
+        "circle-stroke-width": ["*", ["case", ["get", "station"], 1.7, 1.05], interchangeScale(1.35)],
         "circle-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
         "circle-stroke-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
       },
@@ -620,12 +654,24 @@ const TransitMap = {
       layout: {
         "text-field": ["get", "name"],
         "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 8, 9.5, 12, 11.5, 16, 13.5],
+        "text-size": byZoomAndInterchange(
+          [
+            [8, 9.5],
+            [12, 11.5],
+            [16, 13.5],
+          ],
+          1.12
+        ),
         "text-anchor": "top",
-        "text-offset": [0, 0.78],
+        // Offset with the marker, so a big interchange's name clears its
+        // larger dot instead of sitting on top of it.
+        "text-offset": ["literal", [0, 0.78]],
         "text-max-width": 12,
         "text-padding": 3,
         "text-optional": true,
+        // Busiest interchange first: when names compete for room, the place
+        // people actually change at is the one that keeps its label.
+        "symbol-sort-key": ["-", 0, ["coalesce", ["get", "interchange"], 1]],
       },
       paint: {
         "text-color": "#414145",

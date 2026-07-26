@@ -28,7 +28,7 @@ defmodule Transitmaps.Display.Bundles do
     4. The resulting per-vertex slot and centreline correction are
        smoothed along the line so membership changes become gradual
        tapers, then each vertex is pushed sideways along its
-       (miter-clamped) normal by slot × #{trunc(1000 * 0.012)} m plus the
+       (miter-clamped) normal by slot × #{trunc(1000 * 0.010)} m plus the
        correction.
   """
 
@@ -47,12 +47,12 @@ defmodule Transitmaps.Display.Bundles do
   # alignment conflict running opposite) keeps its own centreline.
   @parallel_cosine 0.7
 
-  # Ground distance between neighbouring lines of a bundle — as tight as
-  # bundles can pack: a rendered line is ~12 m of ground around z15, so
-  # neighbours kiss there and any tighter they would overpaint each other.
-  # Bundles merge into one ribbon at country zooms and open slightly
-  # apart at street level.
-  @slot_spacing_km 0.012
+  # Ground distance between neighbouring lines of a bundle. Ten metres packs
+  # the strands just tight enough to read as one ribbon following a corridor
+  # rather than as separate lines that happen to run alongside; a rendered
+  # line is ~12 m of ground around z15, so neighbours touch there and any
+  # tighter they would overpaint each other.
+  @slot_spacing_km 0.010
 
   # Vertices are capped this far apart before slotting, so slot tapers and
   # curved corridors bend smoothly instead of in long straight jumps.
@@ -64,8 +64,9 @@ defmodule Transitmaps.Display.Bundles do
 
   # Offset points may sit at most this factor beyond the nominal distance
   # at a corner, which keeps bundles tight through bends that corner
-  # rounding left slightly angular.
-  @miter_limit 1.6
+  # rounding left slightly angular. Clamping harder stops the outer strand
+  # of a bundle flaring away from its neighbours around tight curves.
+  @miter_limit 1.45
 
   # Offset strands are re-simplified before serving (~4 m tolerance):
   # densification is needed for smooth ramps but straight runs collapse
@@ -283,7 +284,10 @@ defmodule Transitmaps.Display.Bundles do
 
   defp offset_strand(points, line_index, line_data, occupancy) do
     normals = vertex_normals(points)
-    {raw_slots, raw_corrections} = raw_placement(points, normals, line_index, line_data, occupancy)
+
+    {raw_slots, raw_corrections} =
+      raw_placement(points, normals, line_index, line_data, occupancy)
+
     slots = smooth_values(points, raw_slots)
     corrections = smooth_values(points, raw_corrections)
     offset_points(points, slots, corrections, normals)
@@ -359,7 +363,15 @@ defmodule Transitmaps.Display.Bundles do
 
   defp window_average(slots, positions, count, index, position) do
     {sum, total} =
-      accumulate(slots, positions, count, index, position, -1, accumulate(slots, positions, count, index, position, 1, {elem(slots, index), 1}))
+      accumulate(
+        slots,
+        positions,
+        count,
+        index,
+        position,
+        -1,
+        accumulate(slots, positions, count, index, position, 1, {elem(slots, index), 1})
+      )
 
     sum / total
   end
@@ -371,7 +383,16 @@ defmodule Transitmaps.Display.Bundles do
       acc
     else
       {sum, total} = acc
-      accumulate(slots, positions, count, next, position, step, {sum + elem(slots, next), total + 1})
+
+      accumulate(
+        slots,
+        positions,
+        count,
+        next,
+        position,
+        step,
+        {sum + elem(slots, next), total + 1}
+      )
     end
   end
 
@@ -442,8 +463,11 @@ defmodule Transitmaps.Display.Bundles do
         |> Enum.with_index()
         |> Enum.map(fn {strand, strand_index} ->
           case Map.get(offset_strands, {line_index, strand_index}) do
-            nil -> strand
-            points -> points |> Enum.map(&unproject(&1, scale)) |> Geometry.simplify(@output_tolerance)
+            nil ->
+              strand
+
+            points ->
+              points |> Enum.map(&unproject(&1, scale)) |> Geometry.simplify(@output_tolerance)
           end
         end)
 

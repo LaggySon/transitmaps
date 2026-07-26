@@ -104,7 +104,10 @@ const byZoomAndInterchange = (stops, busy) => [
 //
 // Widths are in screen pixels, so a ribbon holds its proportions at any zoom
 // rather than collapsing the way baked ground-metre offsets do.
-const MAX_STRIPES = 8
+// Enough bands for the busiest trunk route. The East Coast Main Line runs ten
+// operators over one pair of tracks, and a band past this cap is simply never
+// drawn — the operator vanishes from the ribbon with nothing to show for it.
+const MAX_STRIPES = 12
 
 // Spacing between band centres. It falls to nothing by the country zooms: a
 // ribbon held open there would be a wide white casing carrying hairline
@@ -113,20 +116,20 @@ const MAX_STRIPES = 8
 // corridor draws as the single line it looks like from that far out.
 const STRIPE_PITCH = [
   [6, 0],
-  [9, 0.7],
-  [11, 2],
-  [13, 3.2],
-  [16, 4.6],
-  [19, 6],
+  [9, 0.8],
+  [11, 2.4],
+  [13, 4.2],
+  [16, 6],
+  [19, 7.5],
 ]
 
 // Band thickness is set apart from the pitch, so bands stay drawable at the
 // zooms where the pitch has closed to nothing.
 const STRIPE_WIDTH = [
   [6, 1.3],
-  [11, 1.8],
-  [14, 2.4],
-  [19, 3.6],
+  [11, 2],
+  [14, 3.2],
+  [19, 4.6],
 ]
 const RIBBON_EDGE = 1.4
 

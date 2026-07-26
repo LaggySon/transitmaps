@@ -109,6 +109,32 @@ test("every corridor stripe carries a usable colour", async ({page}) => {
   expect(problems).toEqual([])
 })
 
+test("no ribbon carries more bands than the renderer can draw", async ({page}) => {
+  await openLiveMap(page)
+
+  const overflowing = await page.evaluate(async () => {
+    // Mirrors MAX_STRIPES in the map hook: a band past the last stripe layer
+    // is never drawn, so the operator silently disappears from its corridor.
+    const drawable = 12
+    const found = []
+
+    for (const category of ["metro", "rail", "intercity", "tram", "ferry"]) {
+      const response = await fetch(`/api/corridors.geojson?cats=${category}`)
+      const {features} = await response.json()
+
+      features.forEach(({properties}) => {
+        if (properties.stripes > drawable) {
+          found.push(`${category}: ${properties.stripes} bands on "${properties.name}"`)
+        }
+      })
+    }
+
+    return found
+  })
+
+  expect(overflowing).toEqual([])
+})
+
 test("corridor segments stay on the ground they describe", async ({page}) => {
   await openLiveMap(page)
 

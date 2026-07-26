@@ -82,7 +82,13 @@ defmodule Transitmaps.Display.Bundles do
   # 400 m across, so two lines can sit in one having never come near each
   # other — which is how a line running a few streets away used to be counted
   # into a bundle it was nowhere near.
-  @overlap_km 0.05
+  #
+  # Set at the width of a big railway rather than a single track. A trunk route
+  # like the West Coast Main Line carries its operators over several parallel
+  # tracks that fan wider still through a station throat; measured any tighter,
+  # operators drop in and out of the ribbon along the way and one of them ends
+  # up drawn as a stray line running alongside the corridor it belongs to.
+  @overlap_km 0.12
 
   @doc """
   Returns `lines` with corridor-sharing geometry offset into bundles.

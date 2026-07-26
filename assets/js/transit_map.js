@@ -96,6 +96,23 @@ const byZoomAndInterchange = (stops, busy) => [
   ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
 ]
 
+// Ribbon rendering: a corridor arrives as one line carrying the colours of
+// every service sharing it, and is drawn as that many stripes stacked across
+// its width. Offsets are in screen pixels, so the ribbon keeps its width at
+// any zoom rather than collapsing the way ground-metre offsets do.
+const MAX_STRIPES = 8
+const STRIPE_PX = 2.6
+
+const stripeLayerId = (cat, index) => `${cat}-stripe-${index}`
+
+// Stripe i sits i places along a ribbon that is `stripes` wide, measured from
+// the ribbon's centre: with three stripes the offsets are -1, 0 and +1.
+const stripeOffset = (index) => [
+  "*",
+  STRIPE_PX,
+  ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]],
+]
+
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
   line: `${cat}-line`,
@@ -108,7 +125,11 @@ const layerIds = (cat) => ({
 // (a tube line running beside national rail) one mode's white casing can
 // never cut into a neighbouring mode's line.
 const desiredLayerOrder = () =>
-  MODE_ORDER.map((cat) => layerIds(cat).casing).concat(
+  MODE_ORDER.map((cat) => `${cat}-ribbon-casing`).concat(
+    MODE_ORDER.map((cat) => layerIds(cat).casing),
+    MODE_ORDER.flatMap((cat) =>
+      Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
+    ),
     MODE_ORDER.map((cat) => layerIds(cat).line),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
@@ -509,19 +530,27 @@ const TransitMap = {
 
   async loadCategory(cat) {
     try {
-      const [routeResponse, stopResponse] = await Promise.all([
+      const [routeResponse, stopResponse, corridorResponse] = await Promise.all([
         fetch(`/api/routes.geojson?cats=${encodeURIComponent(cat)}`),
         fetch(`/api/stops.geojson?cats=${encodeURIComponent(cat)}`),
+        fetch(`/api/corridors.geojson?cats=${encodeURIComponent(cat)}`),
       ])
 
-      if (!routeResponse.ok || !stopResponse.ok) throw new Error(`Could not load ${cat} data`)
+      if (!routeResponse.ok || !stopResponse.ok || !corridorResponse.ok) {
+        throw new Error(`Could not load ${cat} data`)
+      }
 
-      const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
+      const [routes, stops, corridors] = await Promise.all([
+        routeResponse.json(),
+        stopResponse.json(),
+        corridorResponse.json(),
+      ])
       this.categoryData.set(cat, {routes, stops})
 
       if (!this.map.getSource(`${cat}-routes`)) {
         this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
         this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
+        this.map.addSource(`${cat}-corridors`, {type: "geojson", data: corridors})
         this.addCategoryLayers(cat)
       }
 
@@ -536,15 +565,57 @@ const TransitMap = {
   hideCategory(cat) {
     if (!this.loaded.has(cat)) return
     Object.values(layerIds(cat)).forEach((id) => this.setVisibility(id, "none"))
+    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, "none"))
+  },
+
+  stripeLayerIds(cat) {
+    return Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
+  },
+
+  addStripeLayers(cat) {
+    // One white casing under the whole ribbon, widened by however many
+    // stripes it carries, so the bundle reads as a single object.
+    this.addLayerInOrder({
+      id: `${cat}-ribbon-casing`,
+      type: "line",
+      source: `${cat}-corridors`,
+      layout: {"line-join": "round", "line-cap": "round"},
+      paint: {
+        "line-color": "rgba(255,255,255,0.96)",
+        "line-width": ["+", ["*", STRIPE_PX, ["get", "stripes"]], 2.2],
+      },
+    })
+
+    for (let index = 0; index < MAX_STRIPES; index++) {
+      this.addLayerInOrder({
+        id: stripeLayerId(cat, index),
+        type: "line",
+        source: `${cat}-corridors`,
+        filter: [">", ["get", "stripes"], index],
+        layout: {"line-join": "round", "line-cap": "butt"},
+        paint: {
+          "line-color": ["to-color", ["get", `stripe_${index}`]],
+          "line-width": STRIPE_PX,
+          "line-offset": stripeOffset(index),
+        },
+      })
+    }
   },
 
   setCategoryVisibility(cat) {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
+    // The two renderings draw the same network, so only one may be on at a
+    // time or every shared corridor would be painted twice.
+    const ribbons = visible && this.details.has("ribbons")
+    const lines = visible && !this.details.has("ribbons")
 
-    this.setVisibility(ids.casing, visible ? "visible" : "none")
-    this.setVisibility(ids.line, visible ? "visible" : "none")
-    this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
+    this.setVisibility(`${cat}-ribbon-casing`, ribbons ? "visible" : "none")
+    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
+
+    this.setVisibility(ids.casing, lines ? "visible" : "none")
+    this.setVisibility(ids.line, lines ? "visible" : "none")
+    this.setVisibility(ids.lineLabels, lines && this.details.has("labels") ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
     this.setVisibility(ids.labels, visible && this.details.has("labels") ? "visible" : "none")
   },
@@ -681,6 +752,7 @@ const TransitMap = {
       },
     })
 
+    this.addStripeLayers(cat)
     this.bindPopups(cat)
   },
 

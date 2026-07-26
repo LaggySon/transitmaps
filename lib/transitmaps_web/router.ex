@@ -25,6 +25,7 @@ defmodule TransitmapsWeb.Router do
 
     get "/routes.geojson", GeoController, :routes
     get "/stops.geojson", GeoController, :stops
+    get "/corridors.geojson", GeoController, :corridors
   end
 
   scope "/", TransitmapsWeb do

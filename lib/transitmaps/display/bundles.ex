@@ -83,6 +83,47 @@ defmodule Transitmaps.Display.Bundles do
   is stable for identical input.
   """
   def arrange(lines) do
+    case analyse(lines) do
+      nil ->
+        lines
+
+      %{aligned: aligned, line_data: line_data, occupancy: occupancy, scale: scale} ->
+        offset_strands =
+          Map.new(aligned, fn {{line_index, _strand_index} = id, points} ->
+            {id, offset_strand(points, line_index, line_data, occupancy)}
+          end)
+
+        rebuild(lines, offset_strands, scale)
+    end
+  end
+
+  @doc """
+  Corridor segments for `lines`: every run of track where the same set of
+  lines travels together, emitted once rather than once per member.
+
+  Each segment is `%{members: [line index], coordinates: [[lon, lat]]}` with
+  members in the same stable rank order `arrange/1` packs them in, so a
+  renderer can stripe one ribbon in its members' colours instead of drawing
+  the members side by side. A stretch only one line uses comes back as a
+  single-member segment, so the segments cover the whole network.
+  """
+  def corridors(lines) do
+    case analyse(lines) do
+      nil ->
+        []
+
+      %{aligned: aligned, line_data: line_data, occupancy: occupancy, scale: scale} ->
+        aligned
+        |> Enum.sort_by(fn {id, _points} -> id end)
+        |> Enum.flat_map(fn {{line_index, _strand_index}, points} ->
+          corridor_segments(points, line_index, line_data, occupancy, scale)
+        end)
+    end
+  end
+
+  # The corridor analysis both renderings share: strands projected, densified,
+  # turned the same way along each corridor, and indexed by cell.
+  defp analyse(lines) do
     strands =
       for {line, line_index} <- Enum.with_index(lines),
           {strand, strand_index} <- Enum.with_index(strand_list(line.geometry)),
@@ -92,7 +133,7 @@ defmodule Transitmaps.Display.Bundles do
 
     case strands do
       [] ->
-        lines
+        nil
 
       [{_id, [reference | _]} | _] ->
         scale = Geometry.km_scale(reference)
@@ -111,14 +152,61 @@ defmodule Transitmaps.Display.Bundles do
           end)
 
         line_data = line_cell_data(aligned)
-        occupancy = cell_occupancy(line_data)
 
-        offset_strands =
-          Map.new(aligned, fn {{line_index, _strand_index} = id, points} ->
-            {id, offset_strand(points, line_index, line_data, occupancy)}
-          end)
+        %{
+          aligned: aligned,
+          line_data: line_data,
+          occupancy: cell_occupancy(line_data),
+          scale: scale
+        }
+    end
+  end
 
-        rebuild(lines, offset_strands, scale)
+  # Consecutive vertices sharing a membership set become one segment. Only the
+  # lowest-ranked member emits it, so a corridor three lines share is drawn
+  # once with three colours rather than three times.
+  defp corridor_segments(points, line_index, line_data, occupancy, scale) do
+    points
+    |> Enum.map(&{&1, members_at(&1, line_index, line_data, occupancy)})
+    |> Enum.chunk_by(fn {_point, members} -> members end)
+    |> join_segment_ends()
+    |> Enum.filter(fn {members, run} -> List.first(members) == line_index and length(run) > 1 end)
+    |> Enum.map(fn {members, run} ->
+      %{members: members, coordinates: Enum.map(run, &unproject(&1, scale))}
+    end)
+  end
+
+  # Each run borrows the next run's first vertex, so neighbouring segments meet
+  # instead of leaving a gap where membership changes.
+  defp join_segment_ends(chunks) do
+    chunks
+    |> Enum.zip(Enum.drop(chunks, 1) ++ [[]])
+    |> Enum.map(fn {chunk, next} ->
+      members = chunk |> List.first() |> elem(1)
+      run = Enum.map(chunk, &elem(&1, 0)) ++ Enum.map(Enum.take(next, 1), &elem(&1, 0))
+      {members, run}
+    end)
+  end
+
+  # The lines running the same way as `line_index` through this vertex's cell,
+  # in rank order — the same membership `raw_placement/5` slots against.
+  defp members_at(point, line_index, line_data, occupancy) do
+    cell = cell(point)
+    sample = Map.get(line_data[line_index], cell)
+
+    case sample && normalize(sample_direction(sample)) do
+      nil ->
+        [line_index]
+
+      own_direction ->
+        occupancy
+        |> Map.get(cell, [])
+        |> Enum.filter(fn {_other, direction, _mean} ->
+          dot(own_direction, direction) >= @parallel_cosine
+        end)
+        |> Enum.map(fn {other, _direction, _mean} -> other end)
+        |> Enum.uniq()
+        |> Enum.sort()
     end
   end
 

@@ -47,6 +47,16 @@ defmodule Transitmaps.Gtfs do
     |> feature_collection()
   end
 
+  def corridor_feature_collection(categories) do
+    Route
+    |> where([r], r.category in ^categories)
+    |> where([r], not is_nil(r.geometry))
+    |> Repo.all()
+    |> Display.corridor_ribbons()
+    |> Enum.map(&corridor_feature/1)
+    |> feature_collection()
+  end
+
   def stop_feature_collection(categories) do
     Stop
     |> Repo.all()
@@ -203,6 +213,29 @@ defmodule Transitmaps.Gtfs do
     stops
     |> Enum.max_by(&{drawn_line_count(&1), String.length(&1.name || "")})
     |> Map.get(:name)
+  end
+
+  # Stripe colours go out as `stripe_0`, `stripe_1`, … rather than one list.
+  # A GeoJSON source flattens list properties to strings on the way into the
+  # renderer, which leaves no way to index them from a style expression.
+  defp corridor_feature(corridor) do
+    stripes =
+      corridor.colors
+      |> Enum.with_index()
+      |> Map.new(fn {color, index} -> {:"stripe_#{index}", color} end)
+
+    %{
+      type: "Feature",
+      geometry: %{type: "LineString", coordinates: corridor.coordinates},
+      properties:
+        Map.merge(stripes, %{
+          names: Enum.join(corridor.names, " · "),
+          category: corridor.category,
+          # The count decides how wide the ribbon is and how far each stripe
+          # sits from its centre.
+          stripes: length(corridor.colors)
+        })
+    }
   end
 
   defp line_feature(line) do

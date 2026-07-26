@@ -96,22 +96,33 @@ const byZoomAndInterchange = (stops, busy) => [
   ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
 ]
 
-// Ribbon rendering: a corridor arrives as one line carrying the colours of
-// every service sharing it, and is drawn as that many stripes stacked across
-// its width. Offsets are in screen pixels, so the ribbon keeps its width at
-// any zoom rather than collapsing the way ground-metre offsets do.
-const MAX_STRIPES = 8
-const STRIPE_PX = 2.6
-
-const stripeLayerId = (cat, index) => `${cat}-stripe-${index}`
-
-// Stripe i sits i places along a ribbon that is `stripes` wide, measured from
-// the ribbon's centre: with three stripes the offsets are -1, 0 and +1.
-const stripeOffset = (index) => [
-  "*",
-  STRIPE_PX,
-  ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]],
+// Ribbon rendering: every line keeps its own geometry and carries the slot it
+// occupies where lines run together. The renderer offsets by that slot, in
+// screen pixels, so a bundle holds its width at any zoom instead of collapsing
+// the way baked ground-metre offsets do.
+//
+// The white casing is drawn as wide as the pitch, so neighbouring stripes are
+// separated by a hairline of white rather than meeting as one colour blur.
+const STRIPE_PITCH = [
+  [10, 2.2],
+  [13, 3.2],
+  [16, 4.6],
+  [19, 6],
 ]
+const STRIPE_INK = 0.72
+
+const ribbonLayerIds = (cat) => ({casing: `${cat}-ribbon-casing`, stripe: `${cat}-ribbon-stripe`})
+
+// Zoom has to be the input of a top-level interpolate, so the slot is applied
+// to each zoom stop's pitch rather than wrapping the interpolate.
+const byZoom = (transform) => [
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  ...STRIPE_PITCH.flatMap(([zoom, pitch]) => [zoom, transform(pitch)]),
+]
+
+const stripeOffset = byZoom((pitch) => ["*", pitch, ["get", "slot"]])
 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
@@ -125,11 +136,9 @@ const layerIds = (cat) => ({
 // (a tube line running beside national rail) one mode's white casing can
 // never cut into a neighbouring mode's line.
 const desiredLayerOrder = () =>
-  MODE_ORDER.map((cat) => `${cat}-ribbon-casing`).concat(
+  MODE_ORDER.map((cat) => ribbonLayerIds(cat).casing).concat(
     MODE_ORDER.map((cat) => layerIds(cat).casing),
-    MODE_ORDER.flatMap((cat) =>
-      Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
-    ),
+    MODE_ORDER.map((cat) => ribbonLayerIds(cat).stripe),
     MODE_ORDER.map((cat) => layerIds(cat).line),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
@@ -569,37 +578,35 @@ const TransitMap = {
   },
 
   stripeLayerIds(cat) {
-    return Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
+    return Object.values(ribbonLayerIds(cat))
   },
 
   addStripeLayers(cat) {
-    // One white casing under the whole ribbon, widened by however many
-    // stripes it carries, so the bundle reads as a single object.
+    const ids = ribbonLayerIds(cat)
+
     this.addLayerInOrder({
-      id: `${cat}-ribbon-casing`,
+      id: ids.casing,
       type: "line",
       source: `${cat}-corridors`,
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
         "line-color": "rgba(255,255,255,0.96)",
-        "line-width": ["+", ["*", STRIPE_PX, ["get", "stripes"]], 2.2],
+        "line-width": byZoom((pitch) => pitch),
+        "line-offset": stripeOffset,
       },
     })
 
-    for (let index = 0; index < MAX_STRIPES; index++) {
-      this.addLayerInOrder({
-        id: stripeLayerId(cat, index),
-        type: "line",
-        source: `${cat}-corridors`,
-        filter: [">", ["get", "stripes"], index],
-        layout: {"line-join": "round", "line-cap": "butt"},
-        paint: {
-          "line-color": ["to-color", ["get", `stripe_${index}`]],
-          "line-width": STRIPE_PX,
-          "line-offset": stripeOffset(index),
-        },
-      })
-    }
+    this.addLayerInOrder({
+      id: ids.stripe,
+      type: "line",
+      source: `${cat}-corridors`,
+      layout: {"line-join": "round", "line-cap": "round"},
+      paint: {
+        "line-color": ["to-color", ["get", "color"]],
+        "line-width": byZoom((pitch) => pitch * STRIPE_INK),
+        "line-offset": stripeOffset,
+      },
+    })
   },
 
   setCategoryVisibility(cat) {
@@ -610,12 +617,13 @@ const TransitMap = {
     const ribbons = visible && this.details.has("ribbons")
     const lines = visible && !this.details.has("ribbons")
 
-    this.setVisibility(`${cat}-ribbon-casing`, ribbons ? "visible" : "none")
     this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
 
     this.setVisibility(ids.casing, lines ? "visible" : "none")
     this.setVisibility(ids.line, lines ? "visible" : "none")
-    this.setVisibility(ids.lineLabels, lines && this.details.has("labels") ? "visible" : "none")
+    // Line names come off the same per-line geometry either way, so they stay
+    // on in both renderings rather than leaving the ribbons unlabelled.
+    this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
     this.setVisibility(ids.labels, visible && this.details.has("labels") ? "visible" : "none")
   },

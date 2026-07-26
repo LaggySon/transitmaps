@@ -38,13 +38,13 @@ defmodule Transitmaps.Display do
   end
 
   @doc """
-  The same network drawn as corridor ribbons instead of parallel lines: one
-  segment per run of track, carrying the colours of every line sharing it.
+  The same network drawn as corridor ribbons: each line's own geometry, cut
+  where its place in the bundle changes and labelled with that place.
 
-  Where `drawn_lines/1` moves lines apart so a shared corridor reads as
-  several neighbouring lines, this keeps them on one centreline and leaves
-  the renderer to stripe it. Segments cover the whole network — a stretch
-  only one line uses simply has one colour.
+  Where `drawn_lines/1` bakes the offset into the coordinates, this leaves
+  the geometry where the track is and lets the renderer offset by `slot`
+  instead — so a bundle can hold its width on screen at any zoom. Every line
+  still describes its whole length, so none can be dropped for a neighbour.
   """
   def corridor_ribbons(routes) do
     lines = cleaned_lines(routes)
@@ -52,14 +52,16 @@ defmodule Transitmaps.Display do
 
     lines
     |> Bundles.corridors()
-    |> Enum.map(fn %{members: members, coordinates: coordinates} ->
-      drawn = Enum.map(members, &Map.fetch!(by_index, &1))
+    |> Enum.map(fn segment ->
+      line = Map.fetch!(by_index, segment.line)
 
       %{
-        coordinates: coordinates,
-        colors: Enum.map(drawn, & &1.color),
-        names: Enum.map(drawn, & &1.name),
-        category: drawn |> List.first() |> Map.get(:category)
+        coordinates: segment.coordinates,
+        slot: segment.slot,
+        size: segment.size,
+        color: line.color,
+        name: line.name,
+        category: line.category
       }
     end)
   end

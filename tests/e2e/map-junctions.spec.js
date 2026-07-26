@@ -59,22 +59,23 @@ test("every corridor stripe carries a usable colour", async ({page}) => {
       const response = await fetch(`/api/corridors.geojson?cats=${category}`)
       const {features} = await response.json()
 
-      features.forEach((feature) => {
-        const {stripes, names} = feature.properties
+      features.forEach(({properties}) => {
+        const {stripes, slot, colour = properties.color, name} = properties
 
-        if (!Number.isInteger(stripes) || stripes < 1) {
-          found.push(`${category}: segment "${names}" has stripes=${stripes}`)
-          return
+        // A missing or malformed colour is not a subtle bug: MapLibre falls
+        // back to black, and the segment reads as a line that does not exist.
+        if (!/^#[0-9a-f]{6}$/i.test(colour || "")) {
+          found.push(`${category}: "${name}" has colour ${colour}`)
         }
 
-        for (let index = 0; index < stripes; index += 1) {
-          const colour = feature.properties[`stripe_${index}`]
+        if (!Number.isInteger(stripes) || stripes < 1) {
+          found.push(`${category}: "${name}" has stripes=${stripes}`)
+        }
 
-          // A missing or malformed colour is not a subtle bug: MapLibre falls
-          // back to black, and the segment reads as a line that does not exist.
-          if (!/^#[0-9a-f]{6}$/i.test(colour || "")) {
-            found.push(`${category}: segment "${names}" stripe ${index} is ${colour}`)
-          }
+        // A slot must sit inside its own ribbon, or the stripe is drawn
+        // somewhere off the corridor it belongs to.
+        if (!Number.isFinite(slot) || Math.abs(slot) > (stripes - 1) / 2 + 0.001) {
+          found.push(`${category}: "${name}" slot ${slot} outside a ribbon of ${stripes}`)
         }
       })
     }
@@ -102,7 +103,7 @@ test("corridor segments stay on the ground they describe", async ({page}) => {
         // jump stitched across the city, which is what these look like.
         const km = Math.hypot((lon - previousLon) * 69.2, (lat - previousLat) * 110.6)
 
-        if (km > 3) found.push(`${properties.names}: ${km.toFixed(1)} km step`)
+        if (km > 3) found.push(`${properties.name}: ${km.toFixed(1)} km step`)
       })
     })
 

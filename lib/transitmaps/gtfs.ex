@@ -215,26 +215,19 @@ defmodule Transitmaps.Gtfs do
     |> Map.get(:name)
   end
 
-  # Stripe colours go out as `stripe_0`, `stripe_1`, … rather than one list.
-  # A GeoJSON source flattens list properties to strings on the way into the
-  # renderer, which leaves no way to index them from a style expression.
   defp corridor_feature(corridor) do
-    stripes =
-      corridor.colors
-      |> Enum.with_index()
-      |> Map.new(fn {color, index} -> {:"stripe_#{index}", color} end)
-
     %{
       type: "Feature",
       geometry: %{type: "LineString", coordinates: corridor.coordinates},
-      properties:
-        Map.merge(stripes, %{
-          names: Enum.join(corridor.names, " · "),
-          category: corridor.category,
-          # The count decides how wide the ribbon is and how far each stripe
-          # sits from its centre.
-          stripes: length(corridor.colors)
-        })
+      properties: %{
+        color: corridor.color,
+        name: corridor.name,
+        category: corridor.category,
+        # Where this stripe sits across the ribbon, and how many stripes the
+        # ribbon has: the renderer turns the slot into a pixel offset.
+        slot: corridor.slot,
+        stripes: corridor.size
+      }
     }
   end
 

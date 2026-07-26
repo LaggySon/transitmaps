@@ -217,26 +217,28 @@ export const placeLayer = () => ({
   filter: placeFilter(allGroups()),
   layout: {
     "icon-image": placeIconImage(),
-    "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0.62, 16, 0.8, 17, 0.92],
-    "icon-allow-overlap": false,
-    // Central London offers a few hundred places per screen at zoom 14, which
-    // would bury the transit lines. Demanding a wide berth between pins when
-    // zoomed out and relaxing it at street level lets collision thin the field
-    // for us — and because the sort key below is the OSM rank, the pins that
-    // survive the thinning are the ones worth seeing.
-    "icon-padding": ["interpolate", ["linear"], ["zoom"], 14, 26, 15, 14, 16, 6, 17, 3],
+    "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0.56, 16, 0.78, 17, 0.92, 19, 1],
+    // From zoom 16 every pin is drawn, overlapping or not: by then you are
+    // reading a single neighbourhood and a place quietly missing from the map
+    // is worse than two pins touching. Below 16 collision still thins the
+    // field, since a whole city's worth of overlapping pins is unreadable.
+    "icon-allow-overlap": ["step", ["zoom"], false, 16, true],
+    // And under 16, barely any breathing room is demanded, so a place is
+    // dropped only when it would genuinely overlap its neighbour rather than
+    // merely crowd it.
+    "icon-padding": ["interpolate", ["linear"], ["zoom"], 14, 2, 16, 1],
     // OSM ranks the most prominent place in a tile lowest, and symbols with the
-    // lower sort key are placed first — so when pins compete for space the
-    // landmark survives and the corner shop drops out. Unranked features sort
-    // last rather than becoming a null sort key, which is not a valid number.
+    // lower sort key are placed first — so on the rare occasion two pins truly
+    // cannot both fit, the landmark is the one that stays. Unranked features
+    // sort last rather than becoming a null sort key, which is not a number.
     "symbol-sort-key": ["coalesce", ["get", "rank"], 999],
     "text-field": ["get", "name"],
     "text-font": ["Noto Sans Regular"],
-    "text-size": ["interpolate", ["linear"], ["zoom"], 14, 9.5, 17, 11.5],
+    "text-size": ["interpolate", ["linear"], ["zoom"], 14, 9.5, 17, 11.5, 19, 12.5],
     "text-anchor": "top",
     "text-offset": [0, 0.72],
     "text-max-width": 9,
-    "text-padding": ["interpolate", ["linear"], ["zoom"], 14, 8, 16, 4, 17, 3],
+    "text-padding": ["interpolate", ["linear"], ["zoom"], 14, 2, 19, 1],
     "text-optional": true,
   },
   paint: {

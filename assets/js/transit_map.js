@@ -41,6 +41,38 @@ const MODE_LABEL = {
 }
 const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
 
+// Mode brand colours mirror Transitmaps.Gtfs.RouteTypes.default_color/1 so a
+// station's mode headings read the same as the toggles in the layers menu.
+const MODE_COLOR = {
+  metro: "#E32017",
+  tram: "#00A65F",
+  rail: "#1D4ED8",
+  intercity: "#7C3AED",
+  bus: "#D97706",
+  coach: "#B45309",
+  ferry: "#0891B2",
+}
+// Reading order for a station's services: fixed rail modes first, then road,
+// then water — the order a passenger scans an interchange, not alphabetical.
+const STATION_MODE_ORDER = ["metro", "rail", "intercity", "tram", "bus", "coach", "ferry"]
+const modeRank = (category) => {
+  const index = STATION_MODE_ORDER.indexOf(category)
+  return index === -1 ? STATION_MODE_ORDER.length : index
+}
+const titleCase = (value) =>
+  String(value || "").replace(/(^|[\s-])\w/g, (match) => match.toUpperCase())
+
+// Optional "live train traffic": animated markers glide along the drawn
+// track geometry of the rail-family modes. Positions are simulated from the
+// served line shapes (the importer is schedule-free), giving a lively sense
+// of movement without any external realtime feed.
+const RAIL_TRAFFIC_MODES = ["metro", "tram", "rail", "intercity"]
+const MAX_TRAINS = 140
+// Latitude-corrected degrees per second; each train varies around this base.
+const TRAIN_SPEED = 0.008
+const MIN_TRAIN_LINE = 0.004
+const TRAIN_LAYERS = ["live-trains-glow", "live-trains-dot"]
+
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
   line: `${cat}-line`,
@@ -71,6 +103,10 @@ const TransitMap = {
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.places = new Set(this.parseData("places", []))
     this.placeCatalog = this.parseData("placeCatalog", [])
+    this.liveTraffic = this.el.dataset.liveTraffic === "true"
+    this.trains = []
+    this.trainFrame = null
+    this.trainLastTs = 0
     this.region = this.el.dataset.region || "great-britain"
     this.root = this.el.closest("#transit-explorer")
     const initialView = REGIONS[this.region] || REGIONS["great-britain"]
@@ -82,7 +118,12 @@ const TransitMap = {
         center: initialView.center,
         zoom: initialView.zoom,
         minZoom: 4,
-        maxZoom: 17,
+        // Zoom 14 is as deep as the vector tiles go, so everything past it is
+        // overzoom. Allowing three extra levels costs no new data and is what
+        // makes a crowded high street readable: the same block covers eight
+        // times the pixels at 19, so pins that lost the fight for space at 14
+        // all find room and every name ends up on screen.
+        maxZoom: 19,
         maxPitch: 0,
         renderWorldCopies: false,
         fadeDuration: 0,
@@ -117,6 +158,7 @@ const TransitMap = {
       this.places = new Set(enabled)
       this.syncPlaces()
     })
+    this.handleEvent("live-traffic-changed", ({enabled}) => this.setLiveTraffic(enabled))
     this.handleEvent("map-region", ({region}) => this.showRegion(region))
     this.handleEvent("map-search", ({query}) => this.searchStop(query))
 
@@ -247,13 +289,14 @@ const TransitMap = {
 
   mapPadding() {
     if (window.matchMedia("(min-width: 640px)").matches) {
-      return {top: 56, right: 56, bottom: 56, left: 400}
+      return {top: 56, right: 56, bottom: 56, left: 352}
     }
 
     return {top: 64, right: 28, bottom: Math.round(window.innerHeight * 0.44), left: 28}
   },
 
   destroyed() {
+    this.stopTrainLoop()
     this.el.removeEventListener("map:zoom-in", this.zoomInHandler)
     this.el.removeEventListener("map:zoom-out", this.zoomOutHandler)
     this.el.removeEventListener("map:locate", this.locateHandler)
@@ -417,6 +460,7 @@ const TransitMap = {
         )
       } else {
         this.showLoading("Transit data ready", "All visible layers loaded", 100)
+        if (this.liveTraffic) this.refreshTrains()
         if (this.map.loaded()) this.announceIdle()
       }
     })
@@ -632,24 +676,50 @@ const TransitMap = {
 
   stationPopupHtml(props) {
     const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
-    const groups = this.stationServiceGroups(lines)
-    const content = groups.length
-      ? `<div class="station-popup__services"><div class="station-popup__eyebrow">Services</div>${groups
-          .map(
-            (group) =>
-              `<section class="station-popup__group"><div class="station-popup__operator">${this.escapeHtml(group.agency)}</div>` +
+    const fallback = this.stationFallbackCategory(props)
+    const groups = this.stationModeGroups(lines, fallback)
+    const lineTotal = groups.reduce((sum, group) => sum + group.lines.length, 0)
+
+    const meta = groups.length
+      ? `<div class="station-popup__meta">${lineTotal} ${lineTotal === 1 ? "line" : "lines"}` +
+        ` · ${groups.length} ${groups.length === 1 ? "mode" : "modes"}</div>`
+      : ""
+
+    const body = groups.length
+      ? `<div class="station-popup__modes">${groups
+          .map((group) => {
+            const operator = this.sharedOperator(group.lines)
+            const operatorHtml = operator
+              ? `<span class="station-popup__operator">${this.escapeHtml(operator)}</span>`
+              : ""
+            return (
+              `<section class="station-popup__mode">` +
+              `<header class="station-popup__mode-head">` +
+              `<span class="station-popup__dot" style="background:${this.safeColor(group.color)}"></span>` +
+              `<span class="station-popup__mode-name">${this.escapeHtml(group.label)}</span>` +
+              operatorHtml +
+              `<span class="station-popup__count">${group.lines.length}</span>` +
+              `</header>` +
               `<div class="station-popup__badges">${group.lines
                 .map(
                   (line) =>
                     `<span class="station-popup__badge" style="--line-color:${this.safeColor(line.color)}">` +
                     `${this.escapeHtml(line.label)}</span>`
                 )
-                .join("")}</div></section>`
-          )
+                .join("")}</div>` +
+              `</section>`
+            )
+          })
           .join("")}</div>`
       : `<div class="station-popup__empty">No service information available</div>`
 
-    return `<div class="station-popup"><div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>${content}</div>`
+    return (
+      `<div class="station-popup">` +
+      `<div class="station-popup__header">` +
+      `<div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>` +
+      meta +
+      `</div>${body}</div>`
+    )
   },
 
   async searchStop(query) {
@@ -726,34 +796,288 @@ const TransitMap = {
     return /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#6e6e73"
   },
 
-  stationServices(lines) {
-    const services = new Map()
+  // A stop's single category when it only serves one mode, so fixture and
+  // legacy lines that omit their own `category` still land in a named group.
+  stationFallbackCategory(props) {
+    const raw = props.categories
+    const categories = typeof raw === "string" ? this.safeParse(raw, []) : raw || []
+    return categories.length === 1 ? categories[0] : "other"
+  },
+
+  safeParse(value, fallback) {
+    try {
+      return JSON.parse(value)
+    } catch (_error) {
+      return fallback
+    }
+  },
+
+  // Group a station's lines by transit mode (the way a passenger reads an
+  // interchange), de-duplicating repeated lines and ordering modes by
+  // STATION_MODE_ORDER, with each line sorted naturally within its mode.
+  stationModeGroups(lines, fallbackCategory) {
+    const groups = new Map()
 
     lines.forEach((line) => {
       const label = line.name || line.agency
       if (!label) return
 
+      const category = line.category || fallbackCategory || "other"
       const agency = line.agency && line.agency !== label ? line.agency : null
-      const key = `${label}:${agency || ""}`
-      if (!services.has(key)) services.set(key, {label, agency, color: line.color})
+      const group = groups.get(category) || {category, lines: [], seen: new Set()}
+
+      const key = `${label}::${agency || ""}`
+      if (group.seen.has(key)) return
+      group.seen.add(key)
+      group.lines.push({label, agency, color: line.color})
+      groups.set(category, group)
     })
 
-    return [...services.values()].sort(
-      (a, b) => (a.agency || "").localeCompare(b.agency || "") || a.label.localeCompare(b.label)
-    )
+    return [...groups.values()]
+      .sort((a, b) => modeRank(a.category) - modeRank(b.category) || a.category.localeCompare(b.category))
+      .map((group) => ({
+        category: group.category,
+        label: MODE_LABEL[group.category] || titleCase(group.category),
+        color: MODE_COLOR[group.category] || "#6e6e73",
+        lines: group.lines.sort((a, b) =>
+          a.label.localeCompare(b.label, undefined, {numeric: true, sensitivity: "base"})
+        ),
+      }))
   },
 
-  stationServiceGroups(lines) {
-    const groups = new Map()
+  // The operator to caption a mode group with — only when every line in the
+  // group shares one, so the header stays quiet at mixed-operator stations.
+  sharedOperator(lines) {
+    const agencies = new Set(lines.map((line) => line.agency).filter(Boolean))
+    return agencies.size === 1 ? [...agencies][0] : null
+  },
 
-    this.stationServices(lines).forEach((line) => {
-      const agency = line.agency || "Transit service"
-      const group = groups.get(agency) || {agency, lines: []}
-      group.lines.push(line)
-      groups.set(agency, group)
+  setLiveTraffic(enabled) {
+    this.liveTraffic = enabled
+
+    if (enabled) {
+      this.refreshTrains()
+      return
+    }
+
+    this.stopTrainLoop()
+    this.setTrainVisibility("none")
+    this.trains = []
+    this.setTrainData([])
+  },
+
+  // Rebuild the animated train set from whatever rail-family lines are
+  // currently loaded and enabled, then (re)start the animation. Safe to call
+  // repeatedly — on category toggles, on data load, and on enabling.
+  refreshTrains() {
+    if (!this.liveTraffic || !this.map || !this.map.isStyleLoaded()) return
+
+    this.ensureTrainLayers()
+    this.buildTrains()
+    this.setTrainVisibility("visible")
+
+    if (this.trains.length === 0) {
+      this.stopTrainLoop()
+      this.setTrainData([])
+      return
+    }
+
+    this.startTrainLoop()
+  },
+
+  buildTrains() {
+    const lines = []
+
+    RAIL_TRAFFIC_MODES.forEach((cat) => {
+      if (!this.enabled.has(cat)) return
+      const data = this.categoryData.get(cat)
+      if (!data || !data.routes) return
+
+      ;(data.routes.features || []).forEach((feature) => {
+        const line = this.longestLine(feature.geometry)
+        if (line && line.total > MIN_TRAIN_LINE) {
+          lines.push({line, color: this.safeColor(feature.properties?.color)})
+        }
+      })
     })
 
-    return [...groups.values()].sort((a, b) => a.agency.localeCompare(b.agency))
+    // Even sampling keeps a dense metro from crowding out sparser networks
+    // once we hit the train budget.
+    const step = lines.length > MAX_TRAINS ? lines.length / MAX_TRAINS : 1
+    const trains = []
+    for (let i = 0; i < lines.length; i += step) {
+      const {line, color} = lines[Math.floor(i)]
+      trains.push({
+        ...line,
+        color,
+        pos: Math.random() * line.total,
+        dir: Math.random() < 0.5 ? 1 : -1,
+        speed: TRAIN_SPEED * (0.7 + Math.random() * 0.6),
+      })
+    }
+
+    this.trains = trains
+  },
+
+  longestLine(geometry) {
+    if (!geometry) return null
+
+    let candidates = []
+    if (geometry.type === "LineString") candidates = [geometry.coordinates]
+    else if (geometry.type === "MultiLineString") candidates = geometry.coordinates
+    else return null
+
+    let best = null
+    candidates.forEach((coords) => {
+      const measured = this.measureLine(coords)
+      if (measured && (!best || measured.total > best.total)) best = measured
+    })
+
+    return best
+  },
+
+  measureLine(coords) {
+    if (!Array.isArray(coords) || coords.length < 2) return null
+
+    const cum = [0]
+    let total = 0
+    for (let i = 1; i < coords.length; i++) {
+      total += this.segmentLength(coords[i - 1], coords[i])
+      cum.push(total)
+    }
+
+    return total > 0 ? {coords, cum, total} : null
+  },
+
+  segmentLength(a, b) {
+    const latMid = (((a[1] + b[1]) / 2) * Math.PI) / 180
+    const dx = (b[0] - a[0]) * Math.cos(latMid)
+    const dy = b[1] - a[1]
+    return Math.hypot(dx, dy)
+  },
+
+  pointAt(train) {
+    const {coords, cum, total, pos} = train
+    if (pos <= 0) return coords[0]
+    if (pos >= total) return coords[coords.length - 1]
+
+    let i = 1
+    while (i < cum.length - 1 && cum[i] < pos) i++
+    const segStart = cum[i - 1]
+    const segLen = cum[i] - segStart || 1
+    const t = (pos - segStart) / segLen
+    const a = coords[i - 1]
+    const b = coords[i]
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+  },
+
+  startTrainLoop() {
+    if (this.trainFrame != null) return
+
+    if (this.reducedMotion()) {
+      this.renderTrainsOnce()
+      return
+    }
+
+    this.trainLastTs = 0
+    this.trainFrame = requestAnimationFrame((ts) => this.tickTrains(ts))
+  },
+
+  stopTrainLoop() {
+    if (this.trainFrame != null) {
+      cancelAnimationFrame(this.trainFrame)
+      this.trainFrame = null
+    }
+  },
+
+  tickTrains(ts) {
+    if (!this.liveTraffic) {
+      this.trainFrame = null
+      return
+    }
+
+    let dt = this.trainLastTs ? (ts - this.trainLastTs) / 1000 : 0
+    this.trainLastTs = ts
+    if (dt > 0.1) dt = 0.1 // clamp jumps after the tab was backgrounded
+
+    const features = this.trains.map((train) => {
+      train.pos += train.dir * train.speed * dt
+      if (train.pos >= train.total) {
+        train.pos = train.total
+        train.dir = -1
+      } else if (train.pos <= 0) {
+        train.pos = 0
+        train.dir = 1
+      }
+      return this.trainFeature(train)
+    })
+
+    this.setTrainData(features)
+    this.trainFrame = requestAnimationFrame((next) => this.tickTrains(next))
+  },
+
+  renderTrainsOnce() {
+    this.setTrainData(this.trains.map((train) => this.trainFeature(train)))
+  },
+
+  trainFeature(train) {
+    return {
+      type: "Feature",
+      geometry: {type: "Point", coordinates: this.pointAt(train)},
+      properties: {color: train.color},
+    }
+  },
+
+  setTrainData(features) {
+    const source = this.map.getSource("live-trains")
+    if (source) source.setData({type: "FeatureCollection", features})
+  },
+
+  setTrainVisibility(visibility) {
+    TRAIN_LAYERS.forEach((id) => this.setVisibility(id, visibility))
+  },
+
+  reducedMotion() {
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+  },
+
+  ensureTrainLayers() {
+    if (!this.map.getSource("live-trains")) {
+      this.map.addSource("live-trains", {
+        type: "geojson",
+        data: {type: "FeatureCollection", features: []},
+      })
+    }
+
+    if (!this.map.getLayer("live-trains-glow")) {
+      this.map.addLayer({
+        id: "live-trains-glow",
+        type: "circle",
+        source: "live-trains",
+        paint: {
+          "circle-color": ["get", "color"],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 3, 10, 6, 14, 11, 17, 15],
+          "circle-blur": 1,
+          "circle-opacity": 0.35,
+        },
+      })
+    }
+
+    if (!this.map.getLayer("live-trains-dot")) {
+      this.map.addLayer({
+        id: "live-trains-dot",
+        type: "circle",
+        source: "live-trains",
+        paint: {
+          "circle-color": ["get", "color"],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 1.6, 10, 3, 14, 5, 17, 6.5],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.4,
+          "circle-opacity": 1,
+          "circle-stroke-opacity": 0.95,
+        },
+      })
+    }
   },
 }
 

@@ -96,24 +96,26 @@ const byZoomAndInterchange = (stops, busy) => [
   ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
 ]
 
-// Ribbon rendering: every line keeps its own geometry and carries the slot it
-// occupies where lines run together. The renderer offsets by that slot, in
-// screen pixels, so a bundle holds its width at any zoom instead of collapsing
-// the way baked ground-metre offsets do.
+// Ribbon rendering: a run of track arrives as one line carrying the colours of
+// every service on it, and is drawn as a single thicker line divided into a
+// band per colour. One white casing spans the whole ribbon, and each band is
+// drawn narrower than its share of the width, so the casing shows through
+// between the bands and keeps them apart.
 //
-// The white casing is drawn as wide as the pitch, so neighbouring stripes are
-// separated by a hairline of white rather than meeting as one colour blur.
+// Widths are in screen pixels, so a ribbon holds its proportions at any zoom
+// rather than collapsing the way baked ground-metre offsets do.
+const MAX_STRIPES = 8
 const STRIPE_PITCH = [
   [10, 2.2],
   [13, 3.2],
   [16, 4.6],
   [19, 6],
 ]
-const STRIPE_INK = 0.72
+const STRIPE_INK = 0.66
+const RIBBON_EDGE = 1.6
 
 const ribbonLayerIds = (cat) => ({
   casing: `${cat}-ribbon-casing`,
-  stripe: `${cat}-ribbon-stripe`,
   labels: `${cat}-ribbon-labels`,
 })
 
@@ -126,7 +128,12 @@ const byZoom = (transform) => [
   ...STRIPE_PITCH.flatMap(([zoom, pitch]) => [zoom, transform(pitch)]),
 ]
 
-const stripeOffset = byZoom((pitch) => ["*", pitch, ["get", "slot"]])
+// Band i sits i places across a ribbon `stripes` wide, measured from its
+// centre: with three bands the offsets are -1, 0 and +1 pitches.
+const stripeOffset = (index) =>
+  byZoom((pitch) => ["*", pitch, ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]]])
+
+const stripeLayerId = (cat, index) => `${cat}-ribbon-stripe-${index}`
 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
@@ -142,7 +149,9 @@ const layerIds = (cat) => ({
 const desiredLayerOrder = () =>
   MODE_ORDER.map((cat) => ribbonLayerIds(cat).casing).concat(
     MODE_ORDER.map((cat) => layerIds(cat).casing),
-    MODE_ORDER.map((cat) => ribbonLayerIds(cat).stripe),
+    MODE_ORDER.flatMap((cat) =>
+      Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
+    ),
     MODE_ORDER.map((cat) => layerIds(cat).line),
     MODE_ORDER.map((cat) => ribbonLayerIds(cat).labels),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
@@ -583,12 +592,17 @@ const TransitMap = {
   },
 
   stripeLayerIds(cat) {
-    return Object.values(ribbonLayerIds(cat))
+    const ids = ribbonLayerIds(cat)
+    return [ids.casing, ids.labels].concat(
+      Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
+    )
   },
 
   addStripeLayers(cat) {
     const ids = ribbonLayerIds(cat)
 
+    // One casing spanning the whole ribbon, so a bundle reads as a single
+    // thicker line rather than as a row of separate ones.
     this.addLayerInOrder({
       id: ids.casing,
       type: "line",
@@ -596,22 +610,24 @@ const TransitMap = {
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
         "line-color": "rgba(255,255,255,0.96)",
-        "line-width": byZoom((pitch) => pitch),
-        "line-offset": stripeOffset,
+        "line-width": byZoom((pitch) => ["+", ["*", pitch, ["get", "stripes"]], RIBBON_EDGE]),
       },
     })
 
-    this.addLayerInOrder({
-      id: ids.stripe,
-      type: "line",
-      source: `${cat}-corridors`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": ["to-color", ["get", "color"]],
-        "line-width": byZoom((pitch) => pitch * STRIPE_INK),
-        "line-offset": stripeOffset,
-      },
-    })
+    for (let index = 0; index < MAX_STRIPES; index++) {
+      this.addLayerInOrder({
+        id: stripeLayerId(cat, index),
+        type: "line",
+        source: `${cat}-corridors`,
+        filter: [">", ["get", "stripes"], index],
+        layout: {"line-join": "round", "line-cap": "butt"},
+        paint: {
+          "line-color": ["to-color", ["get", `stripe_${index}`]],
+          "line-width": byZoom((pitch) => pitch * STRIPE_INK),
+          "line-offset": stripeOffset(index),
+        },
+      })
+    }
 
     // Names must come off the ribbon's own geometry. The bundled layer's
     // coordinates carry a baked ground offset, which is tens of pixels away
@@ -651,8 +667,7 @@ const TransitMap = {
     const ribbon = ribbonLayerIds(cat)
     const named = this.details.has("labels")
 
-    this.setVisibility(ribbon.casing, ribbons ? "visible" : "none")
-    this.setVisibility(ribbon.stripe, ribbons ? "visible" : "none")
+    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
     this.setVisibility(ribbon.labels, ribbons && named ? "visible" : "none")
 
     this.setVisibility(ids.casing, lines ? "visible" : "none")

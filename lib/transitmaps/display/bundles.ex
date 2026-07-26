@@ -77,11 +77,6 @@ defmodule Transitmaps.Display.Bundles do
   # cannot drag its bundle sideways off the track.
   @max_correction_km 0.06
 
-  # Ribbon slots are rounded to this before segments are cut. Fine enough that
-  # a taper reads as a smooth slide across the ribbon, coarse enough that a
-  # long corridor does not shatter into a segment per vertex.
-  @slot_quantum 0.125
-
   # Lines join a ribbon only where they would actually be drawn on top of one
   # another. Sharing a fingerprint cell is not enough on its own: a cell is
   # 400 m across, so two lines can sit in one having never come near each
@@ -110,18 +105,19 @@ defmodule Transitmaps.Display.Bundles do
   end
 
   @doc """
-  Every line's own geometry, cut where its place in the bundle changes.
+  One ribbon per run of track, carrying every line that runs along it.
 
-  Each segment is `%{line: index, slot: number, size: count, coordinates:
-  [[lon, lat]]}`: `slot` is the line's position either side of the corridor's
-  centre (the same packing `arrange/1` uses) and `size` how many lines share
-  that stretch. A renderer offsets by `slot` to draw the bundle as one striped
-  ribbon, without the geometry having been moved.
+  Each segment is `%{members: [line index], coordinates: [[lon, lat]]}`, with
+  members in the stable rank order `arrange/1` packs them in, so a renderer can
+  draw one thicker line striped in its members' colours rather than drawing the
+  members alongside each other. A stretch only one line uses comes back as a
+  bundle of one, so the segments cover the whole network.
 
-  Crucially every line still describes its whole length: unlike collapsing a
-  shared run into a single feature, nothing here depends on choosing which
-  line "owns" a stretch, so no line can be left undrawn because a neighbour a
-  few hundred metres away was picked to represent it.
+  A run is drawn by its lowest-ranked member and skipped by the others. That is
+  only sound because membership demands the lines be within `@overlap_km` — a
+  line merely passing through the same fingerprint cell is not on the ribbon,
+  and would otherwise be left undrawn while a neighbour hundreds of metres away
+  stood in for it.
   """
   def corridors(lines) do
     case analyse(lines) do
@@ -182,40 +178,19 @@ defmodule Transitmaps.Display.Bundles do
   # Every vertex lands in exactly one run and runs share their boundary
   # vertex, so the segments tile the line with no gaps.
   defp corridor_segments(points, line_index, line_data, occupancy, scale) do
-    placements = Enum.map(points, &placement_at(&1, line_index, line_data, occupancy))
-
-    # A slot that steps straight from one value to the next puts a visible kink
-    # in the ribbon — obvious by zoom 18, where a slot is tens of pixels. The
-    # slots are smoothed along the line the same way `offset_strand/4` smooths
-    # them, then quantised, so a change arrives as a short taper of small steps
-    # rather than one jump.
-    sizes = Enum.map(placements, &elem(&1, 1))
-
-    slots =
-      points
-      |> smooth_values(Enum.map(placements, &elem(&1, 0)))
-      |> Enum.zip(sizes)
-      # Smoothing pulls a slot toward its neighbours', which can carry it past
-      # the edge of the bundle it is actually in — a stripe drawn off its own
-      # ribbon. Clamp it back to the slots this vertex's bundle really has.
-      |> Enum.map(fn {slot, size} ->
-        limit = (size - 1) / 2
-        slot |> min(limit) |> max(-limit) |> Kernel./(@slot_quantum) |> Float.round()
-      end)
-      |> Enum.map(&(&1 * @slot_quantum))
-
-    [points, slots, sizes]
-    |> Enum.zip()
-    |> Enum.chunk_by(fn {_point, slot, _size} -> slot end)
+    points
+    |> Enum.map(&{&1, members_at(&1, line_index, line_data, occupancy)})
+    |> Enum.chunk_by(fn {_point, members} -> members end)
     |> join_segment_ends()
-    |> Enum.filter(fn {_slot, run} -> match?([_, _ | _], run) end)
-    |> Enum.map(fn {{slot, size}, run} ->
-      %{
-        line: line_index,
-        slot: slot,
-        size: size,
-        coordinates: Enum.map(run, &unproject(&1, scale))
-      }
+    # One ribbon per run, drawn by its lowest-ranked member: the rest of the
+    # members would be laying the same ribbon down on top of it. Safe only
+    # because membership now demands the lines be within @overlap_km, so the
+    # drawn geometry really does stand for every line on it.
+    |> Enum.filter(fn {members, run} ->
+      List.first(members) == line_index and match?([_, _ | _], run)
+    end)
+    |> Enum.map(fn {members, run} ->
+      %{members: members, coordinates: Enum.map(run, &unproject(&1, scale))}
     end)
   end
 
@@ -225,21 +200,23 @@ defmodule Transitmaps.Display.Bundles do
     chunks
     |> Enum.zip(Enum.drop(chunks, 1) ++ [[]])
     |> Enum.map(fn {chunk, next} ->
-      {_point, slot, size} = List.first(chunk)
+      {_point, members} = List.first(chunk)
       points = Enum.map(chunk, &elem(&1, 0)) ++ Enum.map(Enum.take(next, 1), &elem(&1, 0))
-      {{slot, size}, points}
+      {members, points}
     end)
   end
 
-  # This line's slot and bundle size at a vertex — the same packing
-  # `raw_placement/5` offsets by, left as a number for the renderer to apply.
-  defp placement_at(point, line_index, line_data, occupancy) do
+  # The lines sharing this vertex's track, in stable rank order — those running
+  # the same way through the cell *and* close enough to be drawn on top of one
+  # another. The line itself is always in the list, so a stretch nobody else
+  # uses comes back as a bundle of one.
+  defp members_at(point, line_index, line_data, occupancy) do
     cell = cell(point)
     sample = Map.get(line_data[line_index], cell)
 
     case sample && normalize(sample_direction(sample)) do
       nil ->
-        {0.0, 1}
+        [line_index]
 
       own_direction ->
         own_mean = sample_mean(sample)
@@ -251,13 +228,11 @@ defmodule Transitmaps.Display.Bundles do
             dot(own_direction, direction) >= @parallel_cosine and
               distance(own_mean, mean) <= @overlap_km
           end)
-          |> Enum.sort_by(fn {other, _direction, _mean} -> other end)
-          |> Enum.uniq_by(fn {other, _direction, _mean} -> other end)
+          |> Enum.map(fn {other, _direction, _mean} -> other end)
+          |> Enum.uniq()
+          |> Enum.sort()
 
-        case Enum.find_index(members, fn {other, _direction, _mean} -> other == line_index end) do
-          nil -> {0.0, 1}
-          index -> {index - (length(members) - 1) / 2, length(members)}
-        end
+        if line_index in members, do: members, else: [line_index]
     end
   end
 

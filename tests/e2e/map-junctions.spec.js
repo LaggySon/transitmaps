@@ -84,22 +84,21 @@ test("every corridor stripe carries a usable colour", async ({page}) => {
       const {features} = await response.json()
 
       features.forEach(({properties}) => {
-        const {stripes, slot, colour = properties.color, name} = properties
-
-        // A missing or malformed colour is not a subtle bug: MapLibre falls
-        // back to black, and the segment reads as a line that does not exist.
-        if (!/^#[0-9a-f]{6}$/i.test(colour || "")) {
-          found.push(`${category}: "${name}" has colour ${colour}`)
-        }
+        const {stripes, name} = properties
 
         if (!Number.isInteger(stripes) || stripes < 1) {
           found.push(`${category}: "${name}" has stripes=${stripes}`)
+          return
         }
 
-        // A slot must sit inside its own ribbon, or the stripe is drawn
-        // somewhere off the corridor it belongs to.
-        if (!Number.isFinite(slot) || Math.abs(slot) > (stripes - 1) / 2 + 0.001) {
-          found.push(`${category}: "${name}" slot ${slot} outside a ribbon of ${stripes}`)
+        for (let index = 0; index < stripes; index += 1) {
+          const colour = properties[`stripe_${index}`]
+
+          // A missing or malformed colour is not a subtle bug: MapLibre falls
+          // back to black, and the band reads as a line that does not exist.
+          if (!/^#[0-9a-f]{6}$/i.test(colour || "")) {
+            found.push(`${category}: "${name}" band ${index} is ${colour}`)
+          }
         }
       })
     }

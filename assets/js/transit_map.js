@@ -105,33 +105,53 @@ const byZoomAndInterchange = (stops, busy) => [
 // Widths are in screen pixels, so a ribbon holds its proportions at any zoom
 // rather than collapsing the way baked ground-metre offsets do.
 const MAX_STRIPES = 8
+
+// Spacing between band centres. It falls to nothing by the country zooms: a
+// ribbon held open there would be a wide white casing carrying hairline
+// colours across thousands of short segments, which reads as a dashed line
+// rather than a railway. Closed up, the bands sit on one centreline and a
+// corridor draws as the single line it looks like from that far out.
 const STRIPE_PITCH = [
-  [10, 2.2],
+  [6, 0],
+  [9, 0.7],
+  [11, 2],
   [13, 3.2],
   [16, 4.6],
   [19, 6],
 ]
-const STRIPE_INK = 0.66
-const RIBBON_EDGE = 1.6
+
+// Band thickness is set apart from the pitch, so bands stay drawable at the
+// zooms where the pitch has closed to nothing.
+const STRIPE_WIDTH = [
+  [6, 1.3],
+  [11, 1.8],
+  [14, 2.4],
+  [19, 3.6],
+]
+const RIBBON_EDGE = 1.4
 
 const ribbonLayerIds = (cat) => ({
   casing: `${cat}-ribbon-casing`,
   labels: `${cat}-ribbon-labels`,
 })
 
-// Zoom has to be the input of a top-level interpolate, so the slot is applied
-// to each zoom stop's pitch rather than wrapping the interpolate.
-const byZoom = (transform) => [
+// Zoom has to be the input of a top-level interpolate, so anything varying by
+// feature is applied to each zoom stop's output rather than wrapping it.
+const byZoom = (stops, transform = (value) => value) => [
   "interpolate",
   ["linear"],
   ["zoom"],
-  ...STRIPE_PITCH.flatMap(([zoom, pitch]) => [zoom, transform(pitch)]),
+  ...stops.flatMap(([zoom, value]) => [zoom, transform(value)]),
 ]
 
 // Band i sits i places across a ribbon `stripes` wide, measured from its
 // centre: with three bands the offsets are -1, 0 and +1 pitches.
 const stripeOffset = (index) =>
-  byZoom((pitch) => ["*", pitch, ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]]])
+  byZoom(STRIPE_PITCH, (pitch) => [
+    "*",
+    pitch,
+    ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]],
+  ])
 
 const stripeLayerId = (cat, index) => `${cat}-ribbon-stripe-${index}`
 
@@ -610,7 +630,14 @@ const TransitMap = {
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
         "line-color": "rgba(255,255,255,0.96)",
-        "line-width": byZoom((pitch) => ["+", ["*", pitch, ["get", "stripes"]], RIBBON_EDGE]),
+        // Wide enough to hold every band plus a rim. As the pitch closes at
+        // country zooms this falls back to one band's worth, so the casing
+        // never outgrows the colour it is meant to be edging.
+        "line-width": [
+          "+",
+          byZoom(STRIPE_PITCH, (pitch) => ["*", pitch, ["-", ["get", "stripes"], 1]]),
+          byZoom(STRIPE_WIDTH, (width) => width + RIBBON_EDGE),
+        ],
       },
     })
 
@@ -623,7 +650,7 @@ const TransitMap = {
         layout: {"line-join": "round", "line-cap": "butt"},
         paint: {
           "line-color": ["to-color", ["get", `stripe_${index}`]],
-          "line-width": byZoom((pitch) => pitch * STRIPE_INK),
+          "line-width": byZoom(STRIPE_WIDTH),
           "line-offset": stripeOffset(index),
         },
       })

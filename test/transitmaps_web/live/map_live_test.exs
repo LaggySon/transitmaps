@@ -15,15 +15,28 @@ defmodule TransitmapsWeb.MapLiveTest do
     assert has_element?(view, ".map-loading [role='progressbar']")
   end
 
-  test "switches between explore and layer menus", %{conn: conn} do
+  test "switches between explore and trip menus", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 
-    view |> element("#map-menu-layers") |> render_click()
-    assert has_element?(view, "#layers-menu")
+    view |> element("#map-menu-trip") |> render_click()
+    assert has_element?(view, "#trip-menu")
     refute has_element?(view, "#explore-menu")
 
     view |> element("#map-menu-explore") |> render_click()
     assert has_element?(view, "#explore-menu")
+  end
+
+  test "gathers every layer control under map details", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    # The sidebar no longer carries a layers panel of its own.
+    refute has_element?(view, "#map-menu-layers")
+    refute has_element?(view, "#layers-menu")
+
+    view |> element("#map-options-button") |> render_click()
+    assert has_element?(view, "#map-options-menu #layer-toggle-metro")
+    assert has_element?(view, "#map-options-menu #places-menu")
+    assert has_element?(view, "#map-options-menu #map-live-traffic")
   end
 
   test "opens settings and toggles map details", %{conn: conn} do
@@ -35,6 +48,42 @@ defmodule TransitmapsWeb.MapLiveTest do
 
     view |> element("#map-detail-labels") |> render_click()
     assert has_element?(view, "#map-detail-labels[aria-checked='false']")
+  end
+
+  test "toggles a place category and pushes it to the map", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#map-options-button") |> render_click()
+    assert has_element?(view, "#place-toggle-shopping[aria-checked='true']")
+
+    view |> element("#place-toggle-shopping") |> render_click()
+    assert has_element?(view, "#place-toggle-shopping[aria-checked='false']")
+
+    view |> element("#place-toggle-shopping") |> render_click()
+    assert has_element?(view, "#place-toggle-shopping[aria-checked='true']")
+  end
+
+  test "shows and hides every place category at once", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view |> element("#map-options-button") |> render_click()
+
+    view |> element("#group-toggle-places") |> render_click()
+    assert has_element?(view, "#place-toggle-food[aria-checked='false']")
+    assert has_element?(view, "#place-toggle-essentials[aria-checked='false']")
+
+    view |> element("#group-toggle-places") |> render_click()
+    assert has_element?(view, "#place-toggle-food[aria-checked='true']")
+    assert has_element?(view, "#place-toggle-essentials[aria-checked='true']")
+  end
+
+  test "starts with every place category shown", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(
+             view,
+             ~s{#transit-map[data-places='["culture","essentials","food","outdoors","shopping"]']}
+           )
   end
 
   test "toggles the optional live train traffic layer", %{conn: conn} do

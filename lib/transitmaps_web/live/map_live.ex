@@ -24,6 +24,22 @@ defmodule TransitmapsWeb.MapLive do
      ]}
   ]
 
+  # Points of interest come from the basemap's own `poi` vector layer, so a
+  # group only needs an identity here: the sidebar renders the label and swatch
+  # and the map hook paints a matching pin. Which OSM classes belong to a group
+  # is a rendering concern and lives in `assets/js/map_places.js`.
+  #
+  # The colours are deliberately deeper and greyer than the transit palette in
+  # `RouteTypes.default_color/1` — places should read as basemap detail and
+  # never compete with a line colour.
+  @place_groups [
+    {"food", "Food & Drink", "#C2571A"},
+    {"shopping", "Shopping", "#9C4A93"},
+    {"culture", "Culture", "#2F6F9F"},
+    {"outdoors", "Outdoors", "#3F7D4E"},
+    {"essentials", "Essentials", "#6B6B72"}
+  ]
+
   @regions [
     {"great-britain", "Great Britain", "National rail, metro and local transit",
      "London · Edinburgh"},
@@ -33,8 +49,9 @@ defmodule TransitmapsWeb.MapLive do
 
   @default_enabled ~w(metro tram rail intercity ferry)
   @default_details ~w(labels stops)
-  @panels ~w(explore layers trip)
-  @details ~w(labels stops)
+  @panels ~w(explore trip)
+  @details ~w(labels stops ribbons)
+  @place_ids for {id, _label, _color} <- @place_groups, do: id
   @visual_counts %{
     "metro" => 62,
     "tram" => 18,
@@ -70,6 +87,7 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:journey_error, nil)
      |> assign(:enabled, MapSet.new(@default_enabled))
      |> assign(:details, MapSet.new(@default_details))
+     |> assign(:places, MapSet.new(@place_ids))
      |> assign(:live_traffic, false)}
   end
 
@@ -91,6 +109,18 @@ defmodule TransitmapsWeb.MapLive do
       end
 
     {:noreply, put_enabled(socket, enabled)}
+  end
+
+  def handle_event("toggle-place", %{"place" => place}, socket) when place in @place_ids do
+    {:noreply, put_places(socket, toggle_member(socket.assigns.places, place))}
+  end
+
+  def handle_event("toggle-place-group", _params, socket) do
+    places = socket.assigns.places
+
+    places = if all_places_enabled?(places), do: MapSet.new(), else: MapSet.new(@place_ids)
+
+    {:noreply, put_places(socket, places)}
   end
 
   def handle_event("toggle-detail", %{"detail" => detail}, socket) when detail in @details do
@@ -202,12 +232,32 @@ defmodule TransitmapsWeb.MapLive do
     |> push_event("categories-changed", %{enabled: MapSet.to_list(enabled)})
   end
 
+  defp put_places(socket, places) do
+    socket
+    |> assign(:places, places)
+    |> push_event("places-changed", %{enabled: MapSet.to_list(places)})
+  end
+
   defp toggle_member(set, member) do
     if MapSet.member?(set, member), do: MapSet.delete(set, member), else: MapSet.put(set, member)
   end
 
   defp mode_groups, do: @mode_groups
   defp regions, do: @regions
+  defp place_groups, do: @place_groups
+
+  defp all_places_enabled?(places), do: Enum.all?(@place_ids, &MapSet.member?(places, &1))
+
+  # The live zoom readout is a debugging aid, so it stays out of production but
+  # is always on while developing; the visual suite forces it on via a body
+  # class so approved screenshots record the zoom they were taken at.
+  defp zoom_readout?, do: @visual_testing
+
+  # The hook paints each pin in its group's colour, so the catalogue travels to
+  # the client rather than the palette being restated in JavaScript.
+  defp place_catalog do
+    for {id, label, color} <- @place_groups, do: %{id: id, label: label, color: color}
+  end
 
   defp region_label(region) do
     case List.keyfind(@regions, region, 0) do
@@ -259,6 +309,8 @@ defmodule TransitmapsWeb.MapLive do
           phx-update="ignore"
           data-enabled={Jason.encode!(MapSet.to_list(@enabled))}
           data-details={Jason.encode!(MapSet.to_list(@details))}
+          data-places={Jason.encode!(MapSet.to_list(@places))}
+          data-place-catalog={Jason.encode!(place_catalog())}
           data-live-traffic={to_string(@live_traffic)}
           data-region={@region}
           aria-label="Interactive transit map"
@@ -369,14 +421,13 @@ defmodule TransitmapsWeb.MapLive do
               <nav
                 id="map-menu-tabs"
                 aria-label="Map menu sections"
-                class="mt-3 grid grid-cols-3 rounded-[9px] bg-[#e9e9eb] p-[2px]"
+                class="mt-3 grid grid-cols-2 rounded-[9px] bg-[#e9e9eb] p-[2px]"
               >
                 <button
                   :for={
                     {panel, label, icon} <- [
                       {"explore", "Explore", "hero-map-pin"},
-                      {"trip", "Trip", "hero-arrow-long-right"},
-                      {"layers", "Layers", "hero-square-3-stack-3d"}
+                      {"trip", "Trip", "hero-arrow-long-right"}
                     ]
                   }
                   id={"map-menu-#{panel}"}
@@ -409,8 +460,7 @@ defmodule TransitmapsWeb.MapLive do
                       Regions
                     </h2>
                     <span class="inline-flex items-center gap-1.5 text-[10px] font-semibold text-[#34c759]">
-                      <span class="size-1.5 rounded-full bg-[#34c759]"></span>
-                      Live
+                      <span class="size-1.5 rounded-full bg-[#34c759]"></span> Live
                     </span>
                   </div>
 
@@ -463,8 +513,7 @@ defmodule TransitmapsWeb.MapLive do
                 <button
                   id="explore-layers-shortcut"
                   type="button"
-                  phx-click="open-panel"
-                  phx-value-panel="layers"
+                  phx-click="toggle-options"
                   class="flex w-full items-center gap-2.5 rounded-xl border border-black/[0.06] bg-white/70 px-3 py-2.5 text-left transition hover:bg-white active:scale-[0.99]"
                 >
                   <span class="grid size-7 shrink-0 place-items-center rounded-lg bg-[#f1ecff] text-[#7357d4]">
@@ -472,10 +521,10 @@ defmodule TransitmapsWeb.MapLive do
                   </span>
                   <span class="min-w-0 flex-1">
                     <span class="block text-[12px] font-semibold text-[#1d1d1f]">
-                      Transit layers
+                      Map details
                     </span>
                     <span class="mt-0.5 block text-[10px] font-medium text-[#8a8a8e]">
-                      Choose the services you see
+                      Choose the layers and places you see
                     </span>
                   </span>
                   <.icon name="hero-chevron-right" class="size-4 shrink-0 text-[#b0b0b4]" />
@@ -585,8 +634,7 @@ defmodule TransitmapsWeb.MapLive do
                       </div>
                       <div class="mt-2.5 space-y-1.5 pl-1">
                         <div class="flex items-center gap-2">
-                          <span class="size-2 shrink-0 rounded-full border-2 border-[#34c759]">
-                          </span>
+                          <span class="size-2 shrink-0 rounded-full border-2 border-[#34c759]"></span>
                           <span class="text-[12px] font-semibold text-[#2c2c2e]">
                             Board at {leg.from.name}
                           </span>
@@ -602,93 +650,6 @@ defmodule TransitmapsWeb.MapLive do
                       </div>
                     </li>
                   </ol>
-                </div>
-              </section>
-
-              <section :if={@active_panel == "layers"} id="layers-menu" class="pt-4">
-                <div class="flex items-center justify-between px-0.5">
-                  <h2 class="text-[12px] font-bold tracking-[-0.01em] text-[#1d1d1f]">
-                    Transit layers
-                  </h2>
-                  <span class="text-[10px] font-medium text-[#8a8a8e]">Tap to show or hide</span>
-                </div>
-
-                <div class="mt-2.5 space-y-2">
-                  <section
-                    :for={{group, group_label, group_icon, modes} <- mode_groups()}
-                    class="overflow-hidden rounded-xl border border-black/[0.06] bg-white/70"
-                  >
-                    <header class="flex h-8 items-center gap-2 px-3">
-                      <.icon name={group_icon} class="size-3.5 text-[#9a9a9f]" />
-                      <h3 class="flex-1 text-[10px] font-bold tracking-[0.05em] text-[#9a9a9f] uppercase">
-                        {group_label}
-                      </h3>
-                      <button
-                        :if={length(group_categories(group, @counts)) > 1}
-                        id={"group-toggle-#{group}"}
-                        type="button"
-                        phx-click="toggle-group"
-                        phx-value-group={group}
-                        class="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-[#007aff] transition hover:bg-[#007aff]/[0.08] active:scale-95"
-                      >
-                        {if group_all_enabled?(group, @counts, @enabled),
-                          do: "Hide all",
-                          else: "Show all"}
-                      </button>
-                    </header>
-
-                    <div>
-                      <button
-                        :for={{cat, label, _description} <- modes}
-                        id={"layer-toggle-#{cat}"}
-                        type="button"
-                        role="switch"
-                        aria-checked={to_string(MapSet.member?(@enabled, cat))}
-                        phx-click="toggle"
-                        phx-value-cat={cat}
-                        disabled={route_count(@counts, cat) == 0}
-                        class="layer-row group flex w-full items-center gap-2.5 px-3 py-2 text-left transition hover:bg-black/[0.025] disabled:cursor-not-allowed disabled:opacity-35"
-                      >
-                        <span
-                          class="size-2.5 shrink-0 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]"
-                          style={"background: #{RouteTypes.default_color(cat)}"}
-                        >
-                        </span>
-                        <span class="min-w-0 flex-1 truncate text-[12px] font-semibold tracking-[-0.01em] text-[#2c2c2e]">
-                          {label}
-                        </span>
-                        <span class="shrink-0 text-[10px] font-medium tabular-nums text-[#a4a4a8]">
-                          {route_count(@counts, cat) |> format_count()}
-                        </span>
-                        <span
-                          class={[
-                            "apple-switch relative h-[20px] w-[34px] shrink-0 rounded-full p-0.5 transition-colors duration-200",
-                            if(MapSet.member?(@enabled, cat),
-                              do: "bg-[#34c759]",
-                              else: "bg-[#d1d1d6]"
-                            )
-                          ]}
-                          aria-hidden="true"
-                        >
-                          <span class={[
-                            "block size-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200",
-                            MapSet.member?(@enabled, cat) && "translate-x-3.5"
-                          ]}>
-                          </span>
-                        </span>
-                      </button>
-                    </div>
-                  </section>
-                </div>
-
-                <div
-                  :if={@counts == %{}}
-                  id="empty-feed-notice"
-                  class="mt-3 rounded-xl bg-[#fff7df] p-3"
-                >
-                  <p class="text-[11px] font-semibold leading-4 text-[#6f5813]">
-                    No feeds have been imported yet. Add a GTFS feed to start drawing routes.
-                  </p>
                 </div>
               </section>
             </div>
@@ -770,19 +731,20 @@ defmodule TransitmapsWeb.MapLive do
           :if={@options_open?}
           id="map-options-menu"
           aria-label="Map settings"
-          class="map-popover absolute top-[4.25rem] right-4 z-40 w-[min(15rem,calc(100vw-2rem))] overflow-hidden sm:top-[4.5rem] sm:right-5"
+          class="map-popover absolute top-[4.25rem] right-4 z-40 flex max-h-[min(42rem,calc(100dvh-6rem))] w-[min(15rem,calc(100vw-2rem))] flex-col overflow-hidden sm:top-[4.5rem] sm:right-5"
         >
-          <header class="px-3.5 pt-3 pb-1.5">
+          <header class="shrink-0 px-3.5 pt-3 pb-1.5">
             <h2 class="text-[13px] font-bold tracking-[-0.02em] text-[#1d1d1f]">
               Map details
             </h2>
           </header>
-          <div class="p-1.5">
+          <div class="apple-scrollbar min-h-0 flex-1 overflow-y-auto p-1.5">
             <button
               :for={
                 {detail, label, icon} <- [
                   {"labels", "Station names", "hero-tag"},
-                  {"stops", "Stop markers", "hero-map-pin"}
+                  {"stops", "Stop markers", "hero-map-pin"},
+                  {"ribbons", "Striped corridors", "hero-bars-3"}
                 ]
               }
               id={"map-detail-#{detail}"}
@@ -836,12 +798,133 @@ defmodule TransitmapsWeb.MapLive do
                 </span>
               </span>
             </button>
+
+            <div :for={{group, group_label, _icon, modes} <- mode_groups()} id={"layers-#{group}"}>
+              <div class="my-1.5 h-px bg-black/[0.06]"></div>
+
+              <div class="flex h-6 items-center gap-2 px-2.5">
+                <h3 class="flex-1 text-[9px] font-bold tracking-[0.06em] text-[#9a9a9f] uppercase">
+                  {group_label}
+                </h3>
+                <button
+                  :if={length(group_categories(group, @counts)) > 1}
+                  id={"group-toggle-#{group}"}
+                  type="button"
+                  phx-click="toggle-group"
+                  phx-value-group={group}
+                  class="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-[#007aff] transition hover:bg-[#007aff]/[0.08] active:scale-95"
+                >
+                  {if group_all_enabled?(group, @counts, @enabled), do: "Hide all", else: "Show all"}
+                </button>
+              </div>
+
+              <button
+                :for={{cat, label, _description} <- modes}
+                id={"layer-toggle-#{cat}"}
+                type="button"
+                role="switch"
+                aria-checked={to_string(MapSet.member?(@enabled, cat))}
+                phx-click="toggle"
+                phx-value-cat={cat}
+                disabled={route_count(@counts, cat) == 0}
+                class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035] disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <span
+                  class="size-2.5 shrink-0 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]"
+                  style={"background: #{RouteTypes.default_color(cat)}"}
+                >
+                </span>
+                <span class="flex-1 truncate text-[12px] font-medium text-[#2c2c2e]">{label}</span>
+                <span class="shrink-0 text-[10px] font-medium tabular-nums text-[#a4a4a8]">
+                  {route_count(@counts, cat) |> format_count()}
+                </span>
+                <span
+                  class={[
+                    "apple-switch relative h-[20px] w-[34px] shrink-0 rounded-full p-0.5 transition-colors duration-200",
+                    if(MapSet.member?(@enabled, cat), do: "bg-[#34c759]", else: "bg-[#d1d1d6]")
+                  ]}
+                  aria-hidden="true"
+                >
+                  <span class={[
+                    "block size-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200",
+                    MapSet.member?(@enabled, cat) && "translate-x-3.5"
+                  ]}>
+                  </span>
+                </span>
+              </button>
+            </div>
+
+            <div id="places-menu">
+              <div class="my-1.5 h-px bg-black/[0.06]"></div>
+
+              <div class="flex h-6 items-center gap-2 px-2.5">
+                <h3 class="flex-1 text-[9px] font-bold tracking-[0.06em] text-[#9a9a9f] uppercase">
+                  Places
+                </h3>
+                <button
+                  id="group-toggle-places"
+                  type="button"
+                  phx-click="toggle-place-group"
+                  class="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-[#007aff] transition hover:bg-[#007aff]/[0.08] active:scale-95"
+                >
+                  {if all_places_enabled?(@places), do: "Hide all", else: "Show all"}
+                </button>
+              </div>
+
+              <button
+                :for={{place, label, color} <- place_groups()}
+                id={"place-toggle-#{place}"}
+                type="button"
+                role="switch"
+                aria-checked={to_string(MapSet.member?(@places, place))}
+                phx-click="toggle-place"
+                phx-value-place={place}
+                class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035]"
+              >
+                <span
+                  class="size-2.5 shrink-0 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]"
+                  style={"background: #{color}"}
+                >
+                </span>
+                <span class="flex-1 truncate text-[12px] font-medium text-[#2c2c2e]">{label}</span>
+                <span
+                  class={[
+                    "apple-switch relative h-[20px] w-[34px] shrink-0 rounded-full p-0.5 transition-colors duration-200",
+                    if(MapSet.member?(@places, place), do: "bg-[#34c759]", else: "bg-[#d1d1d6]")
+                  ]}
+                  aria-hidden="true"
+                >
+                  <span class={[
+                    "block size-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200",
+                    MapSet.member?(@places, place) && "translate-x-3.5"
+                  ]}>
+                  </span>
+                </span>
+              </button>
+
+              <p class="px-2.5 pt-1 pb-0.5 text-[9px] font-medium text-[#a4a4a8]">
+                Places appear from zoom 14 · © OpenStreetMap
+              </p>
+            </div>
+
+            <div
+              :if={@counts == %{}}
+              id="empty-feed-notice"
+              class="mt-1.5 rounded-lg bg-[#fff7df] p-2.5"
+            >
+              <p class="text-[11px] font-semibold leading-4 text-[#6f5813]">
+                No feeds have been imported yet. Add a GTFS feed to start drawing routes.
+              </p>
+            </div>
           </div>
         </section>
 
         <div
           id="map-zoom-readout"
-          class="pointer-events-none absolute right-4 bottom-7 z-20 hidden rounded-lg bg-white/75 px-2 py-1 font-mono text-[9px] font-semibold text-[#6e6e73] shadow-sm backdrop-blur-md [body.playwright-visuals_&]:block"
+          class={[
+            "pointer-events-none absolute right-4 bottom-7 z-20 rounded-lg bg-white/75 px-2 py-1 font-mono text-[9px] font-semibold text-[#6e6e73] shadow-sm backdrop-blur-md",
+            if(zoom_readout?(), do: "block", else: "hidden [body.playwright-visuals_&]:block")
+          ]}
           aria-hidden="true"
         >
           z5.5

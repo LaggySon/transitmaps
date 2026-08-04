@@ -20,7 +20,7 @@ mix phx.server     # then visit http://localhost:4000
 ## Visual testing
 
 The Playwright suite uses deterministic transit fixtures and captures the map
-at every supported integer zoom level (4 through 17), plus desktop and mobile
+at every supported integer zoom level (4 through 19), plus desktop and mobile
 menu states:
 
 ```sh

@@ -186,11 +186,48 @@ defmodule Transitmaps.GtfsTest do
       assert length(station.lines) == 2
     end
 
-    test "does not combine stations in different grid cells" do
+    test "does not combine stations that are genuinely apart" do
       first = %Stop{name: "First", lat: 40.0, lon: -74.0, categories: ["rail"], lines: []}
       second = %Stop{name: "Second", lat: 40.01, lon: -74.01, categories: ["rail"], lines: []}
 
       assert length(Gtfs.merge_colocated_stops([first, second])) == 2
+    end
+
+    test "combines an interchange whose entrances straddle a grid boundary" do
+      # Three points along King's Cross St Pancras: each hop is short, but the
+      # complex spans further than any single rounding cell would hold, which
+      # is what used to draw it as three separate dots.
+      st_pancras = %Stop{
+        name: "London St Pancras International",
+        lat: 51.5320,
+        lon: -0.1263,
+        categories: ["intercity"],
+        lines: [%{name: "Eurostar", agency: "Eurostar", color: "#0B2343"}]
+      }
+
+      tube = %Stop{
+        name: "King's Cross St Pancras",
+        lat: 51.5308,
+        lon: -0.1238,
+        categories: ["metro"],
+        lines: [%{name: "Victoria", agency: "Transport for London", color: "#0098D4"}]
+      }
+
+      kings_cross = %Stop{
+        name: "London Kings Cross",
+        lat: 51.5304,
+        lon: -0.1237,
+        categories: ["rail"],
+        lines: [%{name: "LNER", agency: "London North Eastern Railway", color: "#CE0E2D"}]
+      }
+
+      assert [station] = Gtfs.merge_colocated_stops([st_pancras, tube, kings_cross])
+      assert Enum.sort(station.categories) == ["intercity", "metro", "rail"]
+      assert length(station.lines) == 3
+
+      # The single marker sits between the entrances it now stands for.
+      assert_in_delta station.lat, 51.5311, 0.0005
+      assert_in_delta station.lon, -0.1246, 0.0005
     end
   end
 
@@ -331,8 +368,8 @@ defmodule Transitmaps.GtfsTest do
       trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
 
       branch =
-        (for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4004])) ++
-          (for(i <- 1..10, do: [-0.9, 51.4 + i * 0.005]))
+        for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4004]) ++
+          for(i <- 1..10, do: [-0.9, 51.4 + i * 0.005])
 
       assert [^trunk, unique_branch] = Geometry.extract_network_lines([trunk, branch], 0.15)
       [join_lon, join_lat] = hd(unique_branch)

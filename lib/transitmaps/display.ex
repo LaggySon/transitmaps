@@ -33,8 +33,39 @@ defmodule Transitmaps.Display do
   """
   def drawn_lines(routes) do
     routes
+    |> cleaned_lines()
+    |> Bundles.arrange()
+  end
+
+  @doc """
+  The same network drawn as corridor ribbons: one segment per run of track,
+  carrying the colours of every line that runs along it.
+
+  Where `drawn_lines/1` moves lines apart so a shared corridor reads as
+  several neighbouring lines, this keeps the geometry where the track is and
+  leaves the renderer to draw it as one thicker line striped in those colours.
+  """
+  def corridor_ribbons(routes) do
+    lines = cleaned_lines(routes)
+    by_index = lines |> Enum.with_index() |> Map.new(fn {line, index} -> {index, line} end)
+
+    lines
+    |> Bundles.corridors()
+    |> Enum.map(fn %{members: members, coordinates: coordinates} ->
+      drawn = Enum.map(members, &Map.fetch!(by_index, &1))
+
+      %{
+        coordinates: coordinates,
+        colors: Enum.map(drawn, & &1.color),
+        names: Enum.map(drawn, & &1.name),
+        category: drawn |> List.first() |> Map.get(:category)
+      }
+    end)
+  end
+
+  defp cleaned_lines(routes) do
+    routes
     |> Identity.lines()
     |> Enum.map(&%{&1 | geometry: Network.clean(&1.geometry)})
-    |> Bundles.arrange()
   end
 end

@@ -212,6 +212,57 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
+  describe "Bundles.corridors/1" do
+    test "every line is drawn, wherever the corridor falls on the lookup grid" do
+      # Three tracks a hundred metres apart, swept across a lookup cell. Their
+      # geometry relative to each other never changes, so neither should the
+      # map: reading membership from one cell of a grid used to hand back a
+      # ribbon of three, a ribbon of two, or a ribbon and a stray line beside
+      # it, purely by where the invisible grid fell — and at four of these ten
+      # positions a line was left off the map altogether.
+      for shift <- 0..9 do
+        base = shift * 0.05 / @km_per_lat
+        step = 0.1 / @km_per_lat
+
+        lines =
+          for offset <- [0.0, step, 2 * step] do
+            line([for(i <- 0..100, do: [-1.0 + i * 0.004, 51.4 + base + offset])])
+          end
+
+        drawn =
+          lines
+          |> Bundles.corridors()
+          |> Enum.flat_map(& &1.members)
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        assert drawn == [0, 1, 2], "line missing from the map at #{shift * 50} m of shift"
+      end
+    end
+
+    test "a line too far from the corridor keeps its own ribbon" do
+      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
+      away = for i <- 0..100, do: [-1.0 + i * 0.004, 51.41]
+
+      members = [line([corridor]), line([corridor]), line([away])] |> Bundles.corridors()
+
+      assert [0, 1] in Enum.map(members, & &1.members)
+      assert [2] in Enum.map(members, & &1.members)
+    end
+
+    test "a line joining partway through splits the corridor, and both parts are drawn" do
+      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
+      half = for i <- 75..150, do: [-1.0 + i * 0.004, 51.4]
+
+      segments = Bundles.corridors([line([full]), line([half])])
+
+      # The lone stretch and the shared stretch are separate ribbons, and
+      # between them they still tile the whole of the first line.
+      assert [0] in Enum.map(segments, & &1.members)
+      assert [0, 1] in Enum.map(segments, & &1.members)
+    end
+  end
+
   describe "Display.drawn_lines/1" do
     test "runs identity, cleanup, and bundling end to end" do
       corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]

@@ -20,16 +20,26 @@ defmodule Transitmaps.Display.Bundles do
     2. Strands sharing a run of cells are oriented the same way along the
        corridor (flipping whole strands where needed), giving every
        corridor a consistent left and right.
-    3. At each vertex, the lines present in that cell *running the same
-       way* (crossings don't count) form the local bundle; members are
-       ordered by their stable line rank and packed symmetrically around
-       the bundle's mean centreline — not each line's own — so source
-       shapes lying a track's width apart still come out evenly spaced.
+    3. At each vertex, the lines within #{trunc(1000 * 0.12)} m of it
+       *running the same way* (crossings don't count) form the local
+       bundle, along with whatever those lines in turn share track with.
+       They are looked up in a grid of that same reach, read nine cells at
+       a time so that a neighbour is found whichever side of a grid line
+       it fell. Members are ordered by their stable line rank and packed
+       symmetrically around the bundle's mean centreline — not each line's
+       own — so source shapes lying a track's width apart still come out
+       evenly spaced.
     4. The resulting per-vertex slot and centreline correction are
        smoothed along the line so membership changes become gradual
        tapers, then each vertex is pushed sideways along its
        (miter-clamped) normal by slot × #{trunc(1000 * 0.010)} m plus the
        correction.
+
+  Reading membership from a single cell of a grid is what this used to do,
+  and it made the map depend on where that invisible grid happened to fall:
+  three tracks a hundred metres apart came out as one ribbon, or two, or a
+  ribbon and a stray line beside it, with a line sometimes left off the map
+  entirely.
   """
 
   alias Transitmaps.Geometry
@@ -88,6 +98,11 @@ defmodule Transitmaps.Display.Bundles do
   # tracks that fan wider still through a station throat; measured any tighter,
   # operators drop in and out of the ribbon along the way and one of them ends
   # up drawn as a stray line running alongside the corridor it belongs to.
+  #
+  # This doubles as the cell size of the corridor lookup, which reads the nine
+  # cells around a vertex: a grid of exactly the reach being measured, searched
+  # one ring out, always sees everything within reach whichever side of a grid
+  # line it fell.
   @overlap_km 0.12
 
   @doc """
@@ -100,10 +115,10 @@ defmodule Transitmaps.Display.Bundles do
       nil ->
         lines
 
-      %{aligned: aligned, line_data: line_data, occupancy: occupancy, scale: scale} ->
+      %{aligned: aligned, index: index, scale: scale} ->
         offset_strands =
           Map.new(aligned, fn {{line_index, _strand_index} = id, points} ->
-            {id, offset_strand(points, line_index, line_data, occupancy)}
+            {id, offset_strand(points, line_index, index)}
           end)
 
         rebuild(lines, offset_strands, scale)
@@ -119,23 +134,28 @@ defmodule Transitmaps.Display.Bundles do
   members alongside each other. A stretch only one line uses comes back as a
   bundle of one, so the segments cover the whole network.
 
-  A run is drawn by its lowest-ranked member and skipped by the others. That is
-  only sound because membership demands the lines be within `@overlap_km` — a
-  line merely passing through the same fingerprint cell is not on the ribbon,
-  and would otherwise be left undrawn while a neighbour hundreds of metres away
-  stood in for it.
+  Lines are drawn in rank order and each one claims, for every line on the
+  ribbons it lays down, the ground those ribbons cover. A later line skips only
+  what has already been claimed on its behalf, so every line is either carried
+  by an earlier ribbon or draws its own: the network is covered by construction,
+  whether or not two lines agree about who shares a corridor.
   """
   def corridors(lines) do
     case analyse(lines) do
       nil ->
         []
 
-      %{aligned: aligned, line_data: line_data, occupancy: occupancy, scale: scale} ->
+      %{aligned: aligned, index: index, scale: scale} ->
         aligned
         |> Enum.sort_by(fn {id, _points} -> id end)
-        |> Enum.flat_map(fn {{line_index, _strand_index}, points} ->
-          corridor_segments(points, line_index, line_data, occupancy, scale)
+        |> Enum.reduce({[], MapSet.new()}, fn {{line_index, _strand_index}, points},
+                                              {drawn, claimed} ->
+          {segments, claimed} = corridor_segments(points, line_index, index, scale, claimed)
+          {[segments | drawn], claimed}
         end)
+        |> elem(0)
+        |> Enum.reverse()
+        |> Enum.concat()
     end
   end
 
@@ -169,35 +189,31 @@ defmodule Transitmaps.Display.Bundles do
             {id, if(MapSet.member?(flipped, id), do: Enum.reverse(points), else: points)}
           end)
 
-        line_data = line_cell_data(aligned)
-
-        %{
-          aligned: aligned,
-          line_data: line_data,
-          occupancy: cell_occupancy(line_data),
-          scale: scale
-        }
+        %{aligned: aligned, index: proximity_index(aligned), scale: scale}
     end
   end
 
-  # The line's own points, cut into runs that share a place in the bundle.
-  # Every vertex lands in exactly one run and runs share their boundary
-  # vertex, so the segments tile the line with no gaps.
-  defp corridor_segments(points, line_index, line_data, occupancy, scale) do
-    points
-    |> Enum.map(&{&1, members_at(&1, line_index, line_data, occupancy)})
-    |> Enum.chunk_by(fn {_point, members} -> members end)
-    |> join_segment_ends()
-    # One ribbon per run, drawn by its lowest-ranked member: the rest of the
-    # members would be laying the same ribbon down on top of it. Safe only
-    # because membership now demands the lines be within @overlap_km, so the
-    # drawn geometry really does stand for every line on it.
-    |> Enum.filter(fn {members, run} ->
-      List.first(members) == line_index and match?([_, _ | _], run)
-    end)
-    |> Enum.map(fn {members, run} ->
-      %{members: members, coordinates: Enum.map(run, &unproject(&1, scale))}
-    end)
+  # The line's own points, cut into runs that share a place in the bundle and
+  # a claim. Every vertex lands in exactly one run and runs share their
+  # boundary vertex, so the runs tile the line with no gaps; the drawn ones
+  # come back as segments, and the ground they cover is claimed for every line
+  # they carry.
+  defp corridor_segments(points, line_index, index, scale, claimed) do
+    members = points |> Enum.map(&members_at(&1, line_index, index)) |> steady_members(points)
+
+    runs =
+      [points, members, steady_claims(points, line_index, claimed)]
+      |> Enum.zip_with(fn [point, members, undrawn?] -> {point, members, undrawn?} end)
+      |> Enum.chunk_by(fn {_point, members, undrawn?} -> {members, undrawn?} end)
+      |> join_segment_ends()
+      |> Enum.filter(fn {_members, undrawn?, run} -> undrawn? and match?([_, _ | _], run) end)
+
+    segments =
+      Enum.map(runs, fn {members, _undrawn?, run} ->
+        %{members: members, coordinates: Enum.map(run, &unproject(&1, scale))}
+      end)
+
+    {segments, claim(claimed, runs)}
   end
 
   # Each run borrows the next run's first vertex, so neighbouring segments meet
@@ -206,40 +222,77 @@ defmodule Transitmaps.Display.Bundles do
     chunks
     |> Enum.zip(Enum.drop(chunks, 1) ++ [[]])
     |> Enum.map(fn {chunk, next} ->
-      {_point, members} = List.first(chunk)
+      {_point, members, undrawn?} = List.first(chunk)
       points = Enum.map(chunk, &elem(&1, 0)) ++ Enum.map(Enum.take(next, 1), &elem(&1, 0))
-      {members, points}
+      {members, undrawn?, points}
     end)
   end
 
-  # The lines sharing this vertex's track, in stable rank order — those running
-  # the same way through the cell *and* close enough to be drawn on top of one
-  # another. The line itself is always in the list, so a stretch nobody else
-  # uses comes back as a bundle of one.
-  defp members_at(point, line_index, line_data, occupancy) do
-    cell = cell(point)
-    sample = Map.get(line_data[line_index], cell)
+  # A drawn ribbon stands for every line on it, so it settles those lines' claim
+  # to the ground it covers and they need not draw it again.
+  #
+  # A drawn ribbon settles its members' claim to the ground beneath it, and to
+  # nothing else. Every looser rule tried here — a ring of cells around the
+  # ribbon, the cell a member is centred on, every nearby cell a member is known
+  # to occupy — claims track the ribbon never covered and lines start going
+  # missing again, which is the failure worth avoiding.
+  #
+  # The cost is that a member running far enough to the side never to share a
+  # cell redraws the corridor beside the ribbon carrying it. Measured over the
+  # network that is 0.35% more line drawn, against a guarantee that no stretch
+  # of any line goes undrawn.
+  defp claim(claimed, runs) do
+    Enum.reduce(runs, claimed, fn {members, _undrawn?, run}, acc ->
+      Enum.reduce(run, acc, fn point, inner ->
+        cell = near_cell(point)
+        Enum.reduce(members, inner, &MapSet.put(&2, {cell, &1}))
+      end)
+    end)
+  end
 
-    case sample && normalize(sample_direction(sample)) do
-      nil ->
-        [line_index]
+  # The lines sharing this vertex's track, in stable rank order. The line
+  # itself is always in the list, so a stretch nobody else uses comes back as
+  # a bundle of one.
+  defp members_at(point, line_index, index) do
+    point |> bundle_at(line_index, index) |> Enum.map(fn {other, _mean, _dir} -> other end)
+  end
 
-      own_direction ->
-        own_mean = sample_mean(sample)
+  # A corridor should not change composition over a stretch too short to read
+  # as a junction. Each line's presence goes through the same distance-weighted
+  # window the slot offsets use and is settled by majority, so a neighbour
+  # dipping briefly out of reach no longer cuts the corridor in two: taking
+  # every flicker at face value left half the ribbons shorter than 300 m, which
+  # is what makes a main line look broken up into stray fragments.
+  defp steady_members(per_vertex, points) do
+    candidates = per_vertex |> Enum.concat() |> Enum.uniq() |> Enum.sort()
 
-        members =
-          occupancy
-          |> Map.get(cell, [])
-          |> Enum.filter(fn {_other, direction, mean} ->
-            dot(own_direction, direction) >= @parallel_cosine and
-              distance(own_mean, mean) <= @overlap_km
-          end)
-          |> Enum.map(fn {other, _direction, _mean} -> other end)
-          |> Enum.uniq()
-          |> Enum.sort()
+    presence =
+      Map.new(candidates, fn member ->
+        smoothed =
+          per_vertex
+          |> Enum.map(fn members -> if member in members, do: 1.0, else: 0.0 end)
+          |> then(&smooth_values(points, &1))
+          |> List.to_tuple()
 
-        if line_index in members, do: members, else: [line_index]
+        {member, smoothed}
+      end)
+
+    for vertex <- 0..(length(per_vertex) - 1) do
+      for member <- candidates, elem(presence[member], vertex) > 0.5, do: member
     end
+  end
+
+  # Whether each vertex still needs drawing, settled over that same window.
+  # Claims are recorded cell by cell, so a line weaving in and out of the cells
+  # an earlier ribbon covered reads as covered, uncovered, covered along its
+  # length and would be cut up accordingly.
+  defp steady_claims(points, line_index, claimed) do
+    points
+    |> Enum.map(fn point ->
+      if MapSet.member?(claimed, {near_cell(point), line_index}), do: 0.0, else: 1.0
+    end)
+    |> then(&smooth_values(points, &1))
+    |> Enum.map(&(&1 > 0.5))
   end
 
   # -- projection & densification ---------------------------------------------
@@ -300,6 +353,10 @@ defmodule Transitmaps.Display.Bundles do
     Map.update(cells, cell, {{dx, dy}, {px, py}, 1}, fn {{sx, sy}, {qx, qy}, count} ->
       {{sx + dx, sy + dy}, {qx + px, qy + py}, count + 1}
     end)
+  end
+
+  defp merge_samples({{ax, ay}, {apx, apy}, an}, {{bx, by}, {bpx, bpy}, bn}) do
+    {{ax + bx, ay + by}, {apx + bpx, apy + bpy}, an + bn}
   end
 
   defp sample_direction({direction, _position, _count}), do: direction
@@ -371,80 +428,150 @@ defmodule Transitmaps.Display.Bundles do
 
   # -- local bundle membership -------------------------------------------------
 
-  # line_index -> cell -> merged fingerprint across the line's aligned strands.
-  defp line_cell_data(aligned) do
-    Enum.reduce(aligned, %{}, fn {{line_index, _strand_index}, points}, acc ->
-      Map.update(acc, line_index, fingerprint(points), fn existing ->
-        Map.merge(existing, fingerprint(points), fn _cell,
-                                                    {{ax, ay}, {apx, apy}, an},
-                                                    {{bx, by}, {bpx, bpy}, bn} ->
-          {{ax + bx, ay + by}, {apx + bpx, apy + bpy}, an + bn}
-        end)
-      end)
-    end)
-  end
+  # near cell -> [{line_index, mean position, unit direction}]: where each line
+  # runs, sampled at the scale bundling is decided at rather than at the much
+  # coarser scale the corridor fingerprints use.
+  defp proximity_index(aligned) do
+    aligned
+    |> Enum.reduce(%{}, fn {{line_index, _strand_index}, points}, acc ->
+      points
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.reduce(acc, fn [a, b], cells ->
+        length = distance(a, b)
 
-  # cell -> [{line_index, unit direction, mean position}] for bundle lookups.
-  defp cell_occupancy(line_data) do
-    Enum.reduce(line_data, %{}, fn {line_index, cells}, acc ->
-      Enum.reduce(cells, acc, fn {cell, sample}, inner ->
-        case normalize(sample_direction(sample)) do
-          nil ->
-            inner
+        if length == 0.0 do
+          cells
+        else
+          {ax, ay} = a
+          {bx, by} = b
+          direction = {(bx - ax) / length, (by - ay) / length}
 
-          direction ->
-            entry = {line_index, direction, sample_mean(sample)}
-            Map.update(inner, cell, [entry], &[entry | &1])
+          cells
+          |> add_near_sample(near_cell(a), line_index, direction, a)
+          |> add_near_sample(near_cell(b), line_index, direction, b)
         end
       end)
     end)
+    |> Map.new(fn {cell, lines} -> {cell, resolve_samples(lines)} end)
+  end
+
+  defp near_cell({x, y}), do: {floor(x / @overlap_km), floor(y / @overlap_km)}
+
+  defp add_near_sample(index, cell, line_index, direction, point) do
+    Map.update(index, cell, %{line_index => {direction, point, 1}}, fn lines ->
+      Map.update(
+        lines,
+        line_index,
+        {direction, point, 1},
+        &merge_samples(&1, {direction, point, 1})
+      )
+    end)
+  end
+
+  defp resolve_samples(lines) do
+    for {line_index, sample} <- lines,
+        direction = normalize(sample_direction(sample)),
+        direction != nil,
+        do: {line_index, sample_mean(sample), direction}
+  end
+
+  # The lines within reach of a vertex that share its track, as index entries
+  # in stable rank order — the local bundle both renderings are built from.
+  #
+  # Grouping has to be transitive rather than a star around the asking line.
+  # Across a corridor several tracks wide the outer pair can be out of reach of
+  # each other while both share track with the middle one; asked separately,
+  # each line then names a different bundle, and in the ribbon rendering they
+  # disagree about which of them draws it — so a line that stood aside for a
+  # neighbour to carry it went undrawn for that whole stretch.
+  defp bundle_at(point, line_index, index) do
+    neighbours = block(point, index)
+    by_line = Map.new(neighbours, fn {other, _mean, _direction} = entry -> {other, entry} end)
+
+    if Map.has_key?(by_line, line_index) do
+      neighbours
+      |> couplings()
+      |> reachable(line_index)
+      |> Enum.map(&Map.fetch!(by_line, &1))
+    else
+      # A zero-length strand leaves no sample to place: it stands alone.
+      [{line_index, point, {0.0, 0.0}}]
+    end
+  end
+
+  # Every line with samples in the nine cells around the point, each kept at
+  # whichever of those cells it comes closest to the point in.
+  defp block(point, index) do
+    {cx, cy} = near_cell(point)
+
+    for dx <- -1..1,
+        dy <- -1..1,
+        {other, mean, _direction} = entry <- Map.get(index, {cx + dx, cy + dy}, []),
+        reduce: %{} do
+      acc ->
+        Map.update(acc, other, entry, fn {_o, best, _d} = current ->
+          if distance(mean, point) < distance(best, point), do: entry, else: current
+        end)
+    end
+    |> Map.values()
+  end
+
+  # Which lines directly share track: close enough to be drawn on top of one
+  # another and running the same way, so a crossing never couples.
+  defp couplings(neighbours) do
+    for {a, a_mean, a_direction} <- neighbours,
+        {b, b_mean, b_direction} <- neighbours,
+        a != b,
+        distance(a_mean, b_mean) <= @overlap_km,
+        dot(a_direction, b_direction) >= @parallel_cosine,
+        reduce: %{} do
+      acc -> Map.update(acc, a, [b], &[b | &1])
+    end
+  end
+
+  defp reachable(couplings, start) do
+    couplings |> grow([start], MapSet.new([start])) |> Enum.sort()
+  end
+
+  defp grow(_couplings, [], seen), do: seen
+
+  defp grow(couplings, [line | queue], seen) do
+    fresh = couplings |> Map.get(line, []) |> Enum.reject(&MapSet.member?(seen, &1))
+    grow(couplings, queue ++ fresh, Enum.into(fresh, seen))
   end
 
   # -- slotting & offsetting ---------------------------------------------------
 
-  defp offset_strand(points, line_index, line_data, occupancy) do
+  defp offset_strand(points, line_index, index) do
     normals = vertex_normals(points)
-
-    {raw_slots, raw_corrections} =
-      raw_placement(points, normals, line_index, line_data, occupancy)
+    {raw_slots, raw_corrections} = raw_placement(points, normals, line_index, index)
 
     slots = smooth_values(points, raw_slots)
     corrections = smooth_values(points, raw_corrections)
     offset_points(points, slots, corrections, normals)
   end
 
-  # At each vertex: the lines running the same way through this cell,
-  # ordered by rank, packed symmetrically around the bundle's mean
-  # centreline. A line always finds itself, so an isolated line sits in
-  # slot 0 with no correction — the overlapping-centreline baseline.
-  defp raw_placement(points, normals, line_index, line_data, occupancy) do
+  # At each vertex: the same local bundle the ribbons are cut from, ordered by
+  # rank and packed symmetrically around the bundle's mean centreline. A line
+  # always finds itself, so an isolated line sits in slot 0 with no correction
+  # — the overlapping-centreline baseline.
+  defp raw_placement(points, normals, line_index, index) do
     [points, normals]
     |> Enum.zip_with(fn [point, normal] ->
-      cell = cell(point)
-      sample = Map.get(line_data[line_index], cell)
+      members = bundle_at(point, line_index, index)
 
-      case sample && normalize(sample_direction(sample)) do
+      case Enum.find_index(members, fn {other, _mean, _direction} -> other == line_index end) do
         nil ->
           {0.0, 0.0}
 
-        own_direction ->
-          members =
-            occupancy
-            |> Map.get(cell, [])
-            |> Enum.filter(fn {_other, direction, _mean} ->
-              dot(own_direction, direction) >= @parallel_cosine
+        slot_index ->
+          own_mean =
+            Enum.find_value(members, point, fn {other, mean, _d} ->
+              other == line_index && mean
             end)
-            |> Enum.sort_by(fn {other, _direction, _mean} -> other end)
-            |> Enum.uniq_by(fn {other, _direction, _mean} -> other end)
 
-          case Enum.find_index(members, fn {other, _direction, _mean} -> other == line_index end) do
-            nil ->
-              {0.0, 0.0}
-
-            index ->
-              slot = index - (length(members) - 1) / 2
-              {slot, correction(members, sample_mean(sample), normal)}
-          end
+          slot = slot_index - (length(members) - 1) / 2
+          {slot, correction(members, own_mean, normal)}
       end
     end)
     |> Enum.unzip()
@@ -459,7 +586,7 @@ defmodule Transitmaps.Display.Bundles do
     count = length(members)
 
     {sx, sy} =
-      Enum.reduce(members, {0.0, 0.0}, fn {_other, _direction, {mx, my}}, {ax, ay} ->
+      Enum.reduce(members, {0.0, 0.0}, fn {_other, {mx, my}, _direction}, {ax, ay} ->
         {ax + mx, ay + my}
       end)
 

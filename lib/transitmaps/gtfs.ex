@@ -215,6 +215,25 @@ defmodule Transitmaps.Gtfs do
     |> Map.get(:name)
   end
 
+  # Names a ribbon can carry before the label stops being read and starts
+  # being scenery. A trunk route runs ten operators over one pair of tracks;
+  # set out in full along the line that is a sentence, and the map has to find
+  # room for it at every repeat.
+  @label_names 3
+
+  # What a ribbon calls itself. Repeats are dropped — a corridor can carry two
+  # drawn lines of the same name, and "Mildmay · Suffragette · Mildmay" reads
+  # as a mistake wherever it lands.
+  defp corridor_label(names) do
+    case Enum.uniq(names) do
+      few when length(few) <= @label_names ->
+        Enum.join(few, " · ")
+
+      many ->
+        Enum.join(Enum.take(many, @label_names), " · ") <> " +#{length(many) - @label_names}"
+    end
+  end
+
   # Stripe colours go out as `stripe_0`, `stripe_1`, … rather than one list:
   # a GeoJSON source flattens list properties to strings on the way into the
   # renderer, leaving no way to index them from a style expression.
@@ -229,7 +248,7 @@ defmodule Transitmaps.Gtfs do
       geometry: %{type: "LineString", coordinates: corridor.coordinates},
       properties:
         Map.merge(stripes, %{
-          name: Enum.join(corridor.names, " · "),
+          name: corridor_label(corridor.names),
           category: corridor.category,
           # How many colours the ribbon carries: it sets the ribbon's thickness
           # and where each stripe sits across it.

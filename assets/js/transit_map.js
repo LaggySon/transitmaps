@@ -156,6 +156,51 @@ const stripeOffset = (index) =>
     ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]],
   ])
 
+// Value of a zoom-stop ramp at `zoom`, clamped at both ends — the same
+// piecewise-linear reading MapLibre would do.
+const rampAt = (stops, zoom) => {
+  const [firstZoom, firstValue] = stops[0]
+  if (zoom <= firstZoom) return firstValue
+
+  for (let i = 1; i < stops.length; i++) {
+    const [previousZoom, previousValue] = stops[i - 1]
+    const [nextZoom, nextValue] = stops[i]
+
+    if (zoom <= nextZoom) {
+      const t = (zoom - previousZoom) / (nextZoom - previousZoom)
+      return previousValue + (nextValue - previousValue) * t
+    }
+  }
+
+  return stops[stops.length - 1][1]
+}
+
+// One ramp carrying both the pitch and the band thickness. A style expression
+// may hold only a single zoom-based interpolate, so the obvious way of writing
+// this — adding a pitch ramp to a width ramp — is rejected outright, and the
+// layer it belongs to silently keeps the 1 px default. Reading both ramps at
+// the union of their stops is exact: between two neighbouring stops each ramp
+// is linear, so their sum is too.
+const ribbonWidth = (pitchStops, widthStops) => {
+  const zooms = [...new Set([...pitchStops, ...widthStops].map(([zoom]) => zoom))].sort(
+    (a, b) => a - b
+  )
+
+  return [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    ...zooms.flatMap((zoom) => [
+      zoom,
+      [
+        "+",
+        ["*", rampAt(pitchStops, zoom), ["-", ["get", "stripes"], 1]],
+        rampAt(widthStops, zoom) + RIBBON_EDGE,
+      ],
+    ]),
+  ]
+}
+
 const stripeLayerId = (cat, index) => `${cat}-ribbon-stripe-${index}`
 
 const layerIds = (cat) => ({
@@ -636,11 +681,7 @@ const TransitMap = {
         // Wide enough to hold every band plus a rim. As the pitch closes at
         // country zooms this falls back to one band's worth, so the casing
         // never outgrows the colour it is meant to be edging.
-        "line-width": [
-          "+",
-          byZoom(STRIPE_PITCH, (pitch) => ["*", pitch, ["-", ["get", "stripes"], 1]]),
-          byZoom(STRIPE_WIDTH, (width) => width + RIBBON_EDGE),
-        ],
+        "line-width": ribbonWidth(STRIPE_PITCH, STRIPE_WIDTH),
       },
     })
 

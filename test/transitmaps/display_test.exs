@@ -303,11 +303,14 @@ defmodule Transitmaps.DisplayTest do
 
       # A line parts from a corridor gradually, and stays within bundling reach
       # — so still drawn as a band of the ribbon — well after it has visibly
-      # begun to leave. Its own line has to start behind the point the shared
-      # ribbon gives out, or it begins in mid-air with a hole between it and
-      # the corridor it is leaving.
-      [[branch_lon, _] | _] = branch.coordinates
-      assert branch_lon < shared.coordinates |> List.last() |> hd()
+      # begun to leave. Left where it actually runs by then, its own line would
+      # start a bundle's width out to the side, in mid-air, with a hole between
+      # it and the corridor the eye was following it along. It has to set off
+      # from where the ribbon leaves off instead.
+      # Well inside the reach a line can still be bundled at, which is how far
+      # out it would otherwise surface.
+      [start | _] = branch.coordinates
+      assert km_apart(start, List.last(shared.coordinates)) < 0.06
 
       # Exactly one shared ribbon: the trunk's colour used to be carried a few
       # hundred metres down the branch as a stray fragment of its own.
@@ -353,6 +356,12 @@ defmodule Transitmaps.DisplayTest do
 
   defp line(strands) do
     %{geometry: %{type: "MultiLineString", coordinates: strands}}
+  end
+
+  defp km_apart([lon1, lat1], [lon2, lat2]) do
+    kx = 111.320 * :math.cos(lat1 * :math.pi() / 180)
+
+    :math.sqrt(:math.pow((lon2 - lon1) * kx, 2) + :math.pow((lat2 - lat1) * @km_per_lat, 2))
   end
 
   # Lateral distance in km between two lines' strands, sampled at the

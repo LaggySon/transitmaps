@@ -94,10 +94,11 @@ defmodule Transitmaps.Display.Bundles do
   # thickness rather than as one railway that gains a line and carries on.
   @min_run_km 0.35
 
-  # How far a line's own drawing reaches back into the ribbon that was carrying
-  # it, so joining and leaving a corridor closes up. Roughly the reach a line
-  # can be bundled at, which is how far out of step the two can get.
-  @lead_in_km 0.45
+  # How far a line takes to settle onto its own track after leaving a ribbon,
+  # or to rise off it before joining one. Long enough that the turn out of a
+  # corridor is a curve rather than a kink, short enough that the line is
+  # visibly leaving rather than running alongside.
+  @taper_km 0.3
 
   # Lines join a ribbon only where they would actually be drawn on top of one
   # another. Sharing a fingerprint cell is not enough on its own: a cell is
@@ -160,9 +161,10 @@ defmodule Transitmaps.Display.Bundles do
 
   Two rules keep what comes out of that readable as railways rather than as
   fragments. A ribbon may not change composition over a stretch too short to
-  read as a junction, and a line that joins or leaves a corridor draws a little
-  way back into the ribbon that was carrying it, so its line meets that ribbon
-  instead of starting beside it.
+  read as a junction, and a line joining or leaving a corridor has the first
+  stretch of its own line eased off the corridor's centreline and onto its own
+  track, so it turns out of the ribbon that was carrying it rather than
+  surfacing beside it.
   """
   def corridors(lines) do
     case analyse(lines) do
@@ -252,7 +254,7 @@ defmodule Transitmaps.Display.Bundles do
         {members, undrawn?}
       end)
       |> join_segment_ends()
-      |> lead_into_ribbons()
+      |> join_to_ribbons()
       |> Enum.filter(fn {_members, undrawn?, run} -> undrawn? and match?([_, _ | _], run) end)
 
     segments =
@@ -297,75 +299,95 @@ defmodule Transitmaps.Display.Bundles do
     end)
   end
 
-  # A line that starts or stops being carried draws a little way into the
-  # stretch a ribbon was covering for it, keeping its own composition, so its
-  # line reaches back into that ribbon instead of beginning in mid-air.
+  # A line joins and leaves a corridor at the ribbon, not beside it: the first
+  # stretch of its own line on either side of the change is eased off the
+  # corridor's centreline and onto its own track.
   #
-  # A line leaves a corridor gradually: it is still within bundling reach, and
-  # so still drawn as a band running parallel to the ribbon, for the first
-  # couple of hundred metres after it has visibly begun to part from it. Its own
-  # line used to pick up only at the far end of that stretch, a bundle's width
-  # off the ribbon, leaving a hole exactly where the eye follows the line out of
-  # the corridor. The overlap is drawn twice over, which costs a little ink and
-  # reads as the line peeling away.
-  defp lead_into_ribbons(runs) do
+  # A ribbon carries a line until the two are a bundle's reach apart — a couple
+  # of hundred metres — but only ever draws it a band's width off the corridor,
+  # a few metres of ground. So a line that has been drawn as a band all the way
+  # to the moment it leaves has to appear, abruptly, where it actually runs:
+  # its own line starts in mid-air out to one side, with a hole between it and
+  # the ribbon the eye was following it along.
+  #
+  # Bending its first stretch back to where the ribbon leaves off closes that
+  # hole with the line itself, which is what a diagram of a shared corridor
+  # does — the band turns out of the bundle and away. Drawing the line back
+  # along the corridor instead would close the hole with a second copy of a
+  # corridor already drawn, running straight where nothing runs straight.
+  defp join_to_ribbons(runs) do
     runs
     |> Enum.with_index()
     |> Enum.map(fn
       {{members, true, [_, _ | _] = run}, position} ->
-        {members, true, reach_back(runs, position, run) ++ run ++ reach_on(runs, position, run)}
+        eased =
+          run
+          |> ease_onto(leaving_anchor(Enum.at(runs, position - 1, nil), position))
+          |> Enum.reverse()
+          |> ease_onto(joining_anchor(Enum.at(runs, position + 1, nil)))
+          |> Enum.reverse()
+
+        {members, true, eased}
 
       {run, _position} ->
         run
     end)
   end
 
-  # Every run back to the last one this line drew for itself, laid end to end.
-  # Composition changes as a line leaves a corridor, so the stretch it was
-  # carried over is several runs rather than one, and each of them can be a
-  # couple of vertices long: reaching back only as far as the run next door
-  # covered no distance at all.
-  defp reach_back(runs, position, run) do
-    runs
-    |> Enum.take(position)
-    |> Enum.reverse()
-    |> Enum.take_while(&carried?/1)
-    |> Enum.reverse()
-    |> vertices_of()
-    |> Enum.reverse()
-    |> within_reach(hd(run))
-    |> Enum.reverse()
+  # Where the corridor's centreline lay the last moment this line was on it.
+  # Runs share their boundary vertex, so the last vertex the ribbon actually
+  # carried is the one before that — at the shared vertex the line already
+  # stands alone and names no corridor.
+  defp leaving_anchor(_previous, 0), do: nil
+  defp leaving_anchor({_members, false, vertices}, _position), do: anchor(Enum.at(vertices, -2))
+  defp leaving_anchor(_previous, _position), do: nil
+
+  defp joining_anchor({_members, false, vertices}), do: anchor(Enum.at(vertices, 1))
+  defp joining_anchor(_next), do: nil
+
+  defp anchor(nil), do: nil
+
+  defp anchor({{x, y}, _centre, [_, _ | _] = entries}) do
+    count = length(entries)
+
+    {sx, sy} =
+      Enum.reduce(entries, {0.0, 0.0}, fn {_other, {mx, my}, _direction}, {ax, ay} ->
+        {ax + mx, ay + my}
+      end)
+
+    {sx / count - x, sy / count - y}
   end
 
-  defp reach_on(runs, position, run) do
-    runs
-    |> Enum.drop(position + 1)
-    |> Enum.take_while(&carried?/1)
-    |> vertices_of()
-    |> Enum.drop(1)
-    |> within_reach(List.last(run))
-  end
+  defp anchor(_vertex), do: nil
 
-  defp carried?({_members, undrawn?, _vertices}), do: not undrawn?
+  defp ease_onto(run, nil), do: run
 
-  # Runs share their boundary vertex with the run after, so each contributes
-  # all but its last to a single unbroken list.
-  defp vertices_of(runs) do
-    Enum.flat_map(runs, fn {_members, _undrawn?, vertices} -> Enum.drop(vertices, -1) end)
-  end
+  defp ease_onto(run, offset) do
+    points = Enum.map(run, fn {point, _centre, _entries} -> point end)
+    [head | _] = normals = vertex_normals(points)
+    lateral = dot(offset, head)
 
-  defp within_reach(vertices, {anchor, _centre, _entries}) do
-    vertices
-    |> Enum.reduce_while({[], anchor, 0.0}, fn {point, _centre, _entries} = vertex,
-                                               {taken, previous, total} ->
-      total = total + distance(previous, point)
+    [run, normals, cumulative_distances(points)]
+    |> Enum.zip_with(fn [{{px, py} = point, {cx, cy}, entries}, {nx, ny}, travelled] ->
+      # Between where the corridor ran and where this line's own ribbon goes.
+      # Adding the one to the other instead overshoots by whatever correction
+      # the line still carries here, which is most of a bundle's width.
+      weight = eased(travelled / @taper_km)
+      corridor_x = px + nx * lateral
+      corridor_y = py + ny * lateral
 
-      if total > @lead_in_km,
-        do: {:halt, {taken, point, total}},
-        else: {:cont, {[vertex | taken], point, total}}
+      {point, {cx + (corridor_x - cx) * weight, cy + (corridor_y - cy) * weight}, entries}
     end)
-    |> elem(0)
-    |> Enum.reverse()
+  end
+
+  # Falls from one to nothing over the taper, flat at both ends. Fading the
+  # pull off in a straight ramp instead leaves a corner in the line where the
+  # ramp starts and another where it runs out.
+  defp eased(fraction) when fraction >= 1.0, do: 0.0
+
+  defp eased(fraction) do
+    remaining = 1.0 - fraction
+    remaining * remaining * (3.0 - 2.0 * remaining)
   end
 
   # A drawn ribbon stands for every line on it, so it settles those lines' claim

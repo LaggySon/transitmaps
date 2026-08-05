@@ -217,6 +217,11 @@ const ribbonWidth = (pitchStops, widthStops) => {
 }
 
 const stripeLayerId = (cat, index) => `${cat}-ribbon-stripe-${index}`
+const stripeLabelId = (cat, index) => `${cat}-ribbon-label-${index}`
+
+// Where the fan finishes opening, and so where a ribbon stops being one line
+// with a list of names and becomes bands that can be named one at a time.
+const FAN_OPEN = 14.3
 
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
@@ -237,6 +242,9 @@ const desiredLayerOrder = () =>
     ),
     MODE_ORDER.map((cat) => layerIds(cat).line),
     MODE_ORDER.map((cat) => ribbonLayerIds(cat).labels),
+    MODE_ORDER.flatMap((cat) =>
+      Array.from({length: MAX_STRIPES}, (_, index) => stripeLabelId(cat, index))
+    ),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -673,12 +681,21 @@ const TransitMap = {
     if (!this.loaded.has(cat)) return
     Object.values(layerIds(cat)).forEach((id) => this.setVisibility(id, "none"))
     this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, "none"))
+    this.ribbonLabelIds(cat).forEach((id) => this.setVisibility(id, "none"))
   },
 
   stripeLayerIds(cat) {
-    const ids = ribbonLayerIds(cat)
-    return [ids.casing, ids.labels].concat(
+    return [ribbonLayerIds(cat).casing].concat(
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
+    )
+  },
+
+  // Every label the ribbon rendering draws: the whole-corridor one below the
+  // fan and the per-band ones above it. They follow the "labels" toggle
+  // together, so turning names off turns all of them off.
+  ribbonLabelIds(cat) {
+    return [ribbonLayerIds(cat).labels].concat(
+      Array.from({length: MAX_STRIPES}, (_, index) => stripeLabelId(cat, index))
     )
   },
 
@@ -728,11 +745,16 @@ const TransitMap = {
     // Names must come off the ribbon's own geometry. The bundled layer's
     // coordinates carry a baked ground offset, which is tens of pixels away
     // by zoom 18 — far enough to leave a label stranded off its line.
+    //
+    // While the fan is shut the corridor is one line and takes one name for
+    // the whole ribbon. There is no band to attribute anything to, so listing
+    // the operators is the most that can be said.
     this.addLayerInOrder({
       id: ids.labels,
       type: "symbol",
       source: `${cat}-corridors`,
       minzoom: 10.5,
+      maxzoom: FAN_OPEN,
       layout: {
         "symbol-placement": "line",
         "symbol-spacing": 420,
@@ -750,6 +772,45 @@ const TransitMap = {
         "text-halo-blur": 0.3,
       },
     })
+
+    // Once the fan is open every band is its own line and can say so, in its
+    // own colour. Thirty rail operators will not fit in a palette anyone can
+    // read a legend from — two of them are always going to be a similar blue —
+    // so past this zoom the colour says *which band* and the name says *which
+    // operator*. A corridor labelled "Avanti · Northern · TransPennine" tells
+    // you three operators run it; three names in three colours along their own
+    // bands tell you which is which.
+    for (let index = 0; index < MAX_STRIPES; index++) {
+      this.addLayerInOrder({
+        id: stripeLabelId(cat, index),
+        type: "symbol",
+        source: `${cat}-corridors`,
+        minzoom: FAN_OPEN,
+        filter: [">", ["get", "stripes"], index],
+        layout: {
+          "symbol-placement": "line",
+          // Wider than the single label's spacing: every band competes for the
+          // same stretch of corridor, and they read better taking turns along
+          // it than crowding one place and mostly losing the collision.
+          "symbol-spacing": 620,
+          "text-field": ["get", `name_${index}`],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], FAN_OPEN, 10, 17, 12.5],
+          "text-letter-spacing": -0.01,
+          "text-padding": 4,
+          "text-optional": true,
+          // Bands nearer the top of the ribbon get first refusal, so which
+          // names appear does not shuffle as the map moves.
+          "symbol-sort-key": index,
+        },
+        paint: {
+          "text-color": ["to-color", ["get", `stripe_${index}`]],
+          "text-halo-color": "rgba(255,255,255,0.96)",
+          "text-halo-width": 1.8,
+          "text-halo-blur": 0.3,
+        },
+      })
+    }
   },
 
   setCategoryVisibility(cat) {
@@ -760,11 +821,12 @@ const TransitMap = {
     const ribbons = visible && this.details.has("ribbons")
     const lines = visible && !this.details.has("ribbons")
 
-    const ribbon = ribbonLayerIds(cat)
     const named = this.details.has("labels")
 
     this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
-    this.setVisibility(ribbon.labels, ribbons && named ? "visible" : "none")
+    this.ribbonLabelIds(cat).forEach((id) =>
+      this.setVisibility(id, ribbons && named ? "visible" : "none")
+    )
 
     this.setVisibility(ids.casing, lines ? "visible" : "none")
     this.setVisibility(ids.line, lines ? "visible" : "none")

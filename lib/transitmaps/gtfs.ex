@@ -243,11 +243,21 @@ defmodule Transitmaps.Gtfs do
       |> Enum.with_index()
       |> Map.new(fn {color, index} -> {:"stripe_#{index}", color} end)
 
+    # Each band's own name, beside its own colour and in the same order, so a
+    # band can be labelled for the line it stands for rather than the ribbon
+    # carrying one list of names for all of them.
+    band_names =
+      corridor.names
+      |> Enum.with_index()
+      |> Map.new(fn {name, index} -> {:"name_#{index}", name} end)
+
     %{
       type: "Feature",
       geometry: %{type: "LineString", coordinates: corridor.coordinates},
       properties:
-        Map.merge(stripes, %{
+        stripes
+        |> Map.merge(band_names)
+        |> Map.merge(%{
           name: corridor_label(corridor.names),
           category: corridor.category,
           # How many colours the ribbon carries: it sets the ribbon's thickness

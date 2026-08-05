@@ -23,7 +23,54 @@ defmodule Transitmaps.Display.Identity do
     routes
     |> Enum.group_by(fn route -> {route.category, route.agency_name, color(route)} end)
     |> Enum.map(fn {{category, agency, color}, group} -> line(category, agency, color, group) end)
+    |> merge_same_name()
     |> Enum.sort_by(&{&1.category, &1.agency, &1.name})
+  end
+
+  # Named services, where one operator writing its own name two ways in a feed
+  # is the likely cause of two drawn lines sharing a name. Bus route names are
+  # not distinctive — half the operators in the country run a route "1" — so
+  # buses and coaches keep whatever the grouping gave them.
+  @named_categories ~w(rail intercity metro tram)
+
+  # Two drawn lines of the same name in the same category are one service that
+  # the feed described twice: an operator arriving under two agency spellings,
+  # or with a brand colour on some of its routes and the feed's colour on the
+  # rest. Drawn, they are two bands of a corridor with one name repeated across
+  # it — "Mildmay · Suffragette · Mildmay" — and a passenger counting lines on
+  # a ribbon counts one too many.
+  #
+  # The survivor keeps the brand-coloured group's identity where there is one,
+  # since that is the operator the colour was chosen for, and otherwise the
+  # group carrying the most track.
+  defp merge_same_name(lines) do
+    lines
+    |> Enum.group_by(fn line ->
+      if line.category in @named_categories,
+        do: {line.category, line.name},
+        else: {:kept_apart, line.id}
+    end)
+    |> Enum.map(fn
+      {_key, [only]} -> only
+      {_key, group} -> merge(group)
+    end)
+  end
+
+  defp merge(group) do
+    primary =
+      Enum.min_by(group, fn line ->
+        branded? = if brand_color(line.agency, line.category), do: 0, else: 1
+        {branded?, -length(line.geometry.coordinates), line.id}
+      end)
+
+    %{
+      primary
+      | id: group |> Enum.map(& &1.id) |> Enum.min(),
+        geometry: %{
+          type: "MultiLineString",
+          coordinates: group |> Enum.sort_by(& &1.id) |> Enum.flat_map(& &1.geometry.coordinates)
+        }
+    }
   end
 
   defp line(category, agency, color, group) do
@@ -43,38 +90,47 @@ defmodule Transitmaps.Display.Identity do
   end
 
   # Checked in order, so more specific names come before names they
-  # contain ("great northern" before "northern"). Colours approximate each
-  # operator's brand and stay distinguishable side by side.
+  # contain ("great northern" before "northern").
+  #
+  # Colours approximate each operator's brand, then are pulled apart until no
+  # two are closer than about 14 ΔE — roughly what two bands three pixels wide
+  # with white between them need before they read as two colours rather than
+  # one. Nine of these are off-brand for that reason, lightness and saturation
+  # moved with the hue held: West Midlands away from London Overground's orange
+  # and Northern away from ScotRail's navy matter most, since each pair shares
+  # track. Asking for the ~22 that would let you name a line from a legend is
+  # not satisfiable across thirty brand-constrained hues — it turns navy into
+  # royal blue and red into pink, and buys nothing the label does not.
   @brand_colors [
     {"london north eastern", "#CE0E2D"},
     {"lner", "#CE0E2D"},
     {"great western", "#0A493E"},
     {"great northern", "#30104F"},
     {"london northwestern", "#00BF6F"},
-    {"west midlands", "#FF8200"},
+    {"west midlands", "#F89C3D"},
     {"east midlands", "#4C2F48"},
     {"south western", "#24398C"},
     {"island line", "#24398C"},
     {"southeastern", "#00AFE9"},
     {"south eastern", "#00AFE9"},
-    {"gatwick express", "#EB1E2D"},
+    {"gatwick express", "#EA1726"},
     {"stansted express", "#76232F"},
     {"heathrow express", "#532E63"},
     {"southern", "#8CC63E"},
     {"thameslink", "#E9438D"},
     {"avanti", "#004354"},
-    {"caledonian sleeper", "#1D2545"},
+    {"caledonian sleeper", "#111523"},
     {"scotrail", "#002664"},
-    {"transpennine", "#009DDB"},
+    {"transpennine", "#0087BC"},
     {"merseyrail", "#EFB700"},
-    {"northern", "#262262"},
-    {"transport for wales", "#E4002B"},
-    {"greater anglia", "#D70926"},
+    {"northern", "#14113D"},
+    {"transport for wales", "#A80625"},
+    {"greater anglia", "#FF2E4B"},
     {"c2c", "#B7007C"},
     {"chiltern", "#0047BB"},
-    {"crosscountry", "#660F21"},
-    {"cross country", "#660F21"},
-    {"grand central", "#1C1B17"},
+    {"crosscountry", "#4D0917"},
+    {"cross country", "#4D0917"},
+    {"grand central", "#1D1C16"},
     {"hull trains", "#DE005C"},
     {"lumo", "#2B6EF5"},
     {"elizabeth line", "#6950A1"},

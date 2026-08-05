@@ -7,6 +7,7 @@ import {
   placePinId,
   placeSubtitle,
   renderPlacePin,
+  setPlacesProminence,
 } from "./map_places"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
@@ -109,22 +110,28 @@ const byZoomAndInterchange = (stops, busy) => [
 // drawn — the operator vanishes from the ribbon with nothing to show for it.
 const MAX_STRIPES = 12
 
-// Spacing between band centres. It falls to nothing by the country zooms: a
-// ribbon held open there would be a wide white casing carrying hairline
-// colours across thousands of short segments, which reads as a dashed line
-// rather than a railway. Closed up, the bands sit on one centreline and a
-// corridor draws as the single line it looks like from that far out.
+// Spacing between band centres. A ribbon is either shut or open: shut, the
+// bands sit on one centreline and a corridor draws as the single line it looks
+// like from that far out; open, there is room for white between them.
+//
+// The half-open range in between is the one to avoid. Holding the fan a couple
+// of pixels ajar under a band two pixels wide leaves a fraction of a pixel of
+// casing showing, and a five-operator corridor renders as a smear of hairlines
+// in mixed colours — worse to read than either end. So the fan stays shut until
+// there is room to open it properly, then opens over half a zoom level: the
+// half-open range used to run from about z9.5 to z12.5 and now spans 13.8 to
+// 14.3, where the bands are wide enough that the overlap reads as one thick
+// line rather than as hairlines.
 const STRIPE_PITCH = [
   [6, 0],
-  [9, 0.8],
-  [11, 2.4],
-  [13, 4.2],
-  [16, 6],
-  [19, 7.5],
+  [13.8, 0],
+  [14.3, 5.2],
+  [16, 6.4],
+  [19, 8],
 ]
 
 // Band thickness is set apart from the pitch, so bands stay drawable at the
-// zooms where the pitch has closed to nothing.
+// zooms where the fan is shut.
 const STRIPE_WIDTH = [
   [6, 1.3],
   [11, 2],
@@ -132,6 +139,14 @@ const STRIPE_WIDTH = [
   [19, 4.6],
 ]
 const RIBBON_EDGE = 1.4
+
+// Bands carry the same mode hierarchy the plain-line rendering has had all
+// along, rather than every mode drawing at one width: at an interchange like
+// Willesden Junction a tube line otherwise reads as no more important than the
+// twelfth operator over the main line beside it. Rail is the baseline, so the
+// ribbon rendering keeps roughly the weight it had.
+const bandScale = (cat) => (LINE_WIDTH[cat] || 2.0) / LINE_WIDTH.rail
+const scaleStops = (stops, factor) => stops.map(([zoom, value]) => [zoom, value * factor])
 
 const ribbonLayerIds = (cat) => ({
   casing: `${cat}-ribbon-casing`,
@@ -149,8 +164,8 @@ const byZoom = (stops, transform = (value) => value) => [
 
 // Band i sits i places across a ribbon `stripes` wide, measured from its
 // centre: with three bands the offsets are -1, 0 and +1 pitches.
-const stripeOffset = (index) =>
-  byZoom(STRIPE_PITCH, (pitch) => [
+const stripeOffset = (pitchStops, index) =>
+  byZoom(pitchStops, (pitch) => [
     "*",
     pitch,
     ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]],
@@ -527,6 +542,7 @@ const TransitMap = {
     // layer is simply switched off.
     if (groups.length > 0) this.map.setFilter(PLACES_LAYER_ID, placeFilter(groups))
     this.setVisibility(PLACES_LAYER_ID, groups.length > 0 ? "visible" : "none")
+    setPlacesProminence(this.map, this.details.has("ribbons"))
   },
 
   bindPlacePopup() {
@@ -668,6 +684,9 @@ const TransitMap = {
 
   addStripeLayers(cat) {
     const ids = ribbonLayerIds(cat)
+    const factor = bandScale(cat)
+    const pitch = scaleStops(STRIPE_PITCH, factor)
+    const width = scaleStops(STRIPE_WIDTH, factor)
 
     // One casing spanning the whole ribbon, so a bundle reads as a single
     // thicker line rather than as a row of separate ones.
@@ -681,7 +700,7 @@ const TransitMap = {
         // Wide enough to hold every band plus a rim. As the pitch closes at
         // country zooms this falls back to one band's worth, so the casing
         // never outgrows the colour it is meant to be edging.
-        "line-width": ribbonWidth(STRIPE_PITCH, STRIPE_WIDTH),
+        "line-width": ribbonWidth(pitch, width),
       },
     })
 
@@ -700,8 +719,8 @@ const TransitMap = {
         layout: {"line-join": "round", "line-cap": "round"},
         paint: {
           "line-color": ["to-color", ["get", `stripe_${index}`]],
-          "line-width": byZoom(STRIPE_WIDTH),
-          "line-offset": stripeOffset(index),
+          "line-width": byZoom(width),
+          "line-offset": stripeOffset(pitch, index),
         },
       })
     }
@@ -756,6 +775,9 @@ const TransitMap = {
 
   syncDetails() {
     this.loaded.forEach((cat) => this.setCategoryVisibility(cat))
+    // Which rendering is on decides how far the places stand back, so they
+    // have to be re-set here and not only when the place toggles change.
+    setPlacesProminence(this.map, this.details.has("ribbons"))
   },
 
   setVisibility(id, visibility) {

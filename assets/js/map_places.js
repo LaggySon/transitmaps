@@ -249,6 +249,22 @@ export const placeLayer = () => ({
   },
 })
 
+// How far place pins stand back while the network is the subject. A junction
+// like Willesden carries sixty-odd pins in saturated orange and purple, each
+// competing for exactly the attention the lines want, and the eye has no way
+// to tell which layer it is meant to be reading. Held back they are still
+// there to find, still clickable, and no longer the loudest thing on a map
+// that is about trains.
+export const PLACES_RECEDED = 0.45
+
+export const setPlacesProminence = (map, receded) => {
+  if (!map.getLayer(PLACES_LAYER_ID)) return
+  const opacity = receded ? PLACES_RECEDED : 1
+
+  map.setPaintProperty(PLACES_LAYER_ID, "icon-opacity", opacity)
+  map.setPaintProperty(PLACES_LAYER_ID, "text-opacity", opacity)
+}
+
 export const groupForClass = (className) =>
   allGroups().find((group) => PLACE_CLASSES[group].includes(className))
 

@@ -45,6 +45,48 @@ defmodule Transitmaps.DisplayTest do
       assert lines |> Enum.map(& &1.color) |> Enum.sort() == ["#0098D4", "#E32017"]
     end
 
+    test "one service described twice by a feed comes back as one line" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.5]
+
+      # One line under two agency spellings, carrying a different colour under
+      # each — which is how a corridor came to be labelled "Mildmay ·
+      # Suffragette · Mildmay" and to draw two bands for one service.
+      lines =
+        Identity.lines([
+          route("lo:mildmay", "London Overground", [corridor],
+            category: "metro",
+            short_name: "Mildmay",
+            color: "#4B7BB0"
+          ),
+          route("tfl:mildmay", "Transport for London", [corridor],
+            category: "metro",
+            short_name: "Mildmay",
+            color: "#0077AD"
+          )
+        ])
+
+      assert [%{name: "Mildmay"} = line] = lines
+      assert length(line.geometry.coordinates) == 2
+    end
+
+    test "same-named routes of different bus operators stay apart" do
+      corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.5]
+
+      # Route "1" is not an identity — half the operators in the country run
+      # one, and merging them would splice unrelated track into a single line.
+      lines =
+        Identity.lines([
+          route("a:1", "Arriva", [corridor], category: "bus", short_name: "1", color: "#111111"),
+          route("b:1", "Stagecoach", [corridor],
+            category: "bus",
+            short_name: "1",
+            color: "#222222"
+          )
+        ])
+
+      assert length(lines) == 2
+    end
+
     test "categories never merge even when agency and colour match" do
       corridor = for i <- 0..40, do: [-1.0 + i * 0.005, 51.5]
 

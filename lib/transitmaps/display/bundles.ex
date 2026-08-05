@@ -87,6 +87,18 @@ defmodule Transitmaps.Display.Bundles do
   # cannot drag its bundle sideways off the track.
   @max_correction_km 0.06
 
+  # A ribbon may not change composition over a stretch shorter than this. Even
+  # smoothed, membership settles a band on and off again over a few hundred
+  # metres around a junction throat, and every change is a step in the ribbon's
+  # width: the corridor reads as a row of stubby ribbons of alternating
+  # thickness rather than as one railway that gains a line and carries on.
+  @min_run_km 0.35
+
+  # How far a line's own drawing reaches back into the ribbon that was carrying
+  # it, so joining and leaving a corridor closes up. Roughly the reach a line
+  # can be bundled at, which is how far out of step the two can get.
+  @lead_in_km 0.45
+
   # Lines join a ribbon only where they would actually be drawn on top of one
   # another. Sharing a fingerprint cell is not enough on its own: a cell is
   # 400 m across, so two lines can sit in one having never come near each
@@ -134,11 +146,23 @@ defmodule Transitmaps.Display.Bundles do
   members alongside each other. A stretch only one line uses comes back as a
   bundle of one, so the segments cover the whole network.
 
+  A segment lies on the corridor's own centreline — the shared axis `arrange/1`
+  packs its bundles around — rather than on the track of whichever member
+  produced it. Ribbons of one corridor therefore continue one another however
+  the work is divided up between its members.
+
   Lines are drawn in rank order and each one claims, for every line on the
-  ribbons it lays down, the ground those ribbons cover. A later line skips only
-  what has already been claimed on its behalf, so every line is either carried
-  by an earlier ribbon or draws its own: the network is covered by construction,
-  whether or not two lines agree about who shares a corridor.
+  ribbons it lays down, the ground those ribbons cover — both under the drawing
+  line and under each member itself. A later line skips only what has already
+  been claimed on its behalf, so every line is either carried by an earlier
+  ribbon or draws its own: the network is covered by construction, whether or
+  not two lines agree about who shares a corridor.
+
+  Two rules keep what comes out of that readable as railways rather than as
+  fragments. A ribbon may not change composition over a stretch too short to
+  read as a junction, and a line that joins or leaves a corridor draws a little
+  way back into the ribbon that was carrying it, so its line meets that ribbon
+  instead of starting beside it.
   """
   def corridors(lines) do
     case analyse(lines) do
@@ -193,27 +217,67 @@ defmodule Transitmaps.Display.Bundles do
     end
   end
 
-  # The line's own points, cut into runs that share a place in the bundle and
-  # a claim. Every vertex lands in exactly one run and runs share their
+  # The corridor's own points, cut into runs that share a place in the bundle
+  # and a claim. Every vertex lands in exactly one run and runs share their
   # boundary vertex, so the runs tile the line with no gaps; the drawn ones
   # come back as segments, and the ground they cover is claimed for every line
   # they carry.
+  #
+  # A ribbon stands for a corridor rather than for the line that happened to
+  # draw it, so it is laid on the corridor's centreline — the same shared axis
+  # `arrange/1` packs its bundles around — and not on the drawing line's own
+  # shape. Drawn on the drawing line's shape, one corridor came out as a chain
+  # of ribbons each lying on a different member's track: consecutive ribbons
+  # stepped sideways by the width of the railway, crossed over each other where
+  # they met, and the stretch a neighbour had already covered was re-drawn as a
+  # ribbon floating alongside, because a claim recorded on one member's cells
+  # never matched the cells the next member ran through.
   defp corridor_segments(points, line_index, index, scale, claimed) do
-    members = points |> Enum.map(&members_at(&1, line_index, index)) |> steady_members(points)
+    bundles = Enum.map(points, &bundle_at(&1, line_index, index))
+
+    members =
+      bundles
+      |> Enum.map(fn entries -> Enum.map(entries, fn {other, _mean, _dir} -> other end) end)
+      |> steady_members(points)
+      |> settle_short_runs(points)
+
+    centreline = corridor_centreline(points, bundles, line_index)
 
     runs =
-      [points, members, steady_claims(points, line_index, claimed)]
-      |> Enum.zip_with(fn [point, members, undrawn?] -> {point, members, undrawn?} end)
-      |> Enum.chunk_by(fn {_point, members, undrawn?} -> {members, undrawn?} end)
+      [points, centreline, bundles, members, steady_claims(points, bundles, line_index, claimed)]
+      |> Enum.zip_with(fn [point, centre, entries, members, undrawn?] ->
+        {point, centre, entries, members, undrawn?}
+      end)
+      |> Enum.chunk_by(fn {_point, _centre, _entries, members, undrawn?} ->
+        {members, undrawn?}
+      end)
       |> join_segment_ends()
+      |> lead_into_ribbons()
       |> Enum.filter(fn {_members, undrawn?, run} -> undrawn? and match?([_, _ | _], run) end)
 
     segments =
       Enum.map(runs, fn {members, _undrawn?, run} ->
-        %{members: members, coordinates: Enum.map(run, &unproject(&1, scale))}
+        %{
+          members: members,
+          coordinates:
+            Enum.map(run, fn {_point, centre, _entries} -> unproject(centre, scale) end)
+        }
       end)
 
     {segments, claim(claimed, runs)}
+  end
+
+  # The corridor's shared axis under this line: its own vertices pushed
+  # sideways onto the bundle's mean centreline, by the same smoothed correction
+  # `arrange/1` adds to a slot offset. Every member of a corridor lands on
+  # nearly the same axis, so whichever of them draws a stretch, the ribbon
+  # continues where its neighbour left off.
+  defp corridor_centreline(points, bundles, line_index) do
+    normals = vertex_normals(points)
+    {_slots, raw_corrections} = raw_placement(points, normals, bundles, line_index)
+    corrections = smooth_values(points, raw_corrections)
+
+    offset_points(points, List.duplicate(0.0, length(points)), corrections, normals)
   end
 
   # Each run borrows the next run's first vertex, so neighbouring segments meet
@@ -222,39 +286,124 @@ defmodule Transitmaps.Display.Bundles do
     chunks
     |> Enum.zip(Enum.drop(chunks, 1) ++ [[]])
     |> Enum.map(fn {chunk, next} ->
-      {_point, members, undrawn?} = List.first(chunk)
-      points = Enum.map(chunk, &elem(&1, 0)) ++ Enum.map(Enum.take(next, 1), &elem(&1, 0))
-      {members, undrawn?, points}
+      {_point, _centre, _entries, members, undrawn?} = List.first(chunk)
+
+      vertices =
+        Enum.map(chunk ++ Enum.take(next, 1), fn {point, centre, entries, _m, _u} ->
+          {point, centre, entries}
+        end)
+
+      {members, undrawn?, vertices}
     end)
+  end
+
+  # A line that starts or stops being carried draws a little way into the
+  # stretch a ribbon was covering for it, keeping its own composition, so its
+  # line reaches back into that ribbon instead of beginning in mid-air.
+  #
+  # A line leaves a corridor gradually: it is still within bundling reach, and
+  # so still drawn as a band running parallel to the ribbon, for the first
+  # couple of hundred metres after it has visibly begun to part from it. Its own
+  # line used to pick up only at the far end of that stretch, a bundle's width
+  # off the ribbon, leaving a hole exactly where the eye follows the line out of
+  # the corridor. The overlap is drawn twice over, which costs a little ink and
+  # reads as the line peeling away.
+  defp lead_into_ribbons(runs) do
+    runs
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {{members, true, [_, _ | _] = run}, position} ->
+        {members, true, reach_back(runs, position, run) ++ run ++ reach_on(runs, position, run)}
+
+      {run, _position} ->
+        run
+    end)
+  end
+
+  # Every run back to the last one this line drew for itself, laid end to end.
+  # Composition changes as a line leaves a corridor, so the stretch it was
+  # carried over is several runs rather than one, and each of them can be a
+  # couple of vertices long: reaching back only as far as the run next door
+  # covered no distance at all.
+  defp reach_back(runs, position, run) do
+    runs
+    |> Enum.take(position)
+    |> Enum.reverse()
+    |> Enum.take_while(&carried?/1)
+    |> Enum.reverse()
+    |> vertices_of()
+    |> Enum.reverse()
+    |> within_reach(hd(run))
+    |> Enum.reverse()
+  end
+
+  defp reach_on(runs, position, run) do
+    runs
+    |> Enum.drop(position + 1)
+    |> Enum.take_while(&carried?/1)
+    |> vertices_of()
+    |> Enum.drop(1)
+    |> within_reach(List.last(run))
+  end
+
+  defp carried?({_members, undrawn?, _vertices}), do: not undrawn?
+
+  # Runs share their boundary vertex with the run after, so each contributes
+  # all but its last to a single unbroken list.
+  defp vertices_of(runs) do
+    Enum.flat_map(runs, fn {_members, _undrawn?, vertices} -> Enum.drop(vertices, -1) end)
+  end
+
+  defp within_reach(vertices, {anchor, _centre, _entries}) do
+    vertices
+    |> Enum.reduce_while({[], anchor, 0.0}, fn {point, _centre, _entries} = vertex,
+                                               {taken, previous, total} ->
+      total = total + distance(previous, point)
+
+      if total > @lead_in_km,
+        do: {:halt, {taken, point, total}},
+        else: {:cont, {[vertex | taken], point, total}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
   end
 
   # A drawn ribbon stands for every line on it, so it settles those lines' claim
   # to the ground it covers and they need not draw it again.
   #
-  # A drawn ribbon settles its members' claim to the ground beneath it, and to
-  # nothing else. Every looser rule tried here — a ring of cells around the
-  # ribbon, the cell a member is centred on, every nearby cell a member is known
-  # to occupy — claims track the ribbon never covered and lines start going
-  # missing again, which is the failure worth avoiding.
+  # Ground is measured in each line's own track, never in the ribbon's, because
+  # that is where a line asks its question: a claim recorded on the corridor
+  # centreline would answer for nobody but the line lying exactly under it.
+  # A ribbon therefore settles the claim of every member both where the drawing
+  # line runs and where that member itself runs — the sample the bundle lookup
+  # already found for it. That second half is what a corridor several tracks
+  # wide needs: its outer members never share a cell with the line drawing the
+  # ribbon, and without it each of them drew the whole corridor again as a
+  # ribbon of its own, floating a railway's width to the side of the one
+  # already carrying it.
   #
-  # The cost is that a member running far enough to the side never to share a
-  # cell redraws the corridor beside the ribbon carrying it. Measured over the
-  # network that is 0.35% more line drawn, against a guarantee that no stretch
-  # of any line goes undrawn.
+  # Nothing is claimed for a line that is not on the ribbon, and nothing beyond
+  # the samples the lookup vouches for, so a line still draws every stretch no
+  # ribbon carries.
   defp claim(claimed, runs) do
     Enum.reduce(runs, claimed, fn {members, _undrawn?, run}, acc ->
-      Enum.reduce(run, acc, fn point, inner ->
+      on_ribbon = MapSet.new(members)
+
+      Enum.reduce(run, acc, fn {point, _centre, entries}, inner ->
         cell = near_cell(point)
-        Enum.reduce(members, inner, &MapSet.put(&2, {cell, &1}))
+
+        member_cells =
+          for {other, mean, _direction} <- entries,
+              MapSet.member?(on_ribbon, other),
+              do: {near_cell(mean), other}
+
+        Enum.reduce(
+          Enum.map(members, &{cell, &1}) ++ member_cells,
+          inner,
+          &MapSet.put(&2, &1)
+        )
       end)
     end)
-  end
-
-  # The lines sharing this vertex's track, in stable rank order. The line
-  # itself is always in the list, so a stretch nobody else uses comes back as
-  # a bundle of one.
-  defp members_at(point, line_index, index) do
-    point |> bundle_at(line_index, index) |> Enum.map(fn {other, _mean, _dir} -> other end)
   end
 
   # A corridor should not change composition over a stretch too short to read
@@ -282,14 +431,111 @@ defmodule Transitmaps.Display.Bundles do
     end
   end
 
+  # Composition changes that come and go again inside `@min_run_km` are read as
+  # noise rather than as a junction: the shortest such run takes the membership
+  # of whichever neighbour it has most in common with, and the pass repeats
+  # until every run is long enough to read. Smoothing alone cannot do this —
+  # it settles each line's presence independently, so two lines swapping over a
+  # few hundred metres still leaves three runs behind.
+  defp settle_short_runs(per_vertex, points) do
+    distances = points |> cumulative_distances() |> List.to_tuple()
+
+    per_vertex
+    |> membership_runs()
+    |> settle_runs(distances)
+    |> Enum.flat_map(fn {members, first, last} ->
+      List.duplicate(members, last - first + 1)
+    end)
+  end
+
+  defp membership_runs(per_vertex) do
+    per_vertex
+    |> Enum.with_index()
+    |> Enum.chunk_by(fn {members, _vertex} -> members end)
+    |> Enum.map(fn chunk ->
+      {members, first} = hd(chunk)
+      {_members, last} = List.last(chunk)
+      {members, first, last}
+    end)
+  end
+
+  defp settle_runs([_only] = runs, _distances), do: runs
+
+  defp settle_runs(runs, distances) do
+    shortest =
+      runs
+      |> Enum.with_index()
+      |> Enum.filter(fn {run, _position} -> run_km(run, distances) < @min_run_km end)
+      |> Enum.min_by(fn {run, _position} -> run_km(run, distances) end, fn -> nil end)
+
+    case shortest do
+      nil ->
+        runs
+
+      {_run, position} ->
+        # Each pass leaves the run identical to a neighbour, so the two coalesce
+        # and the count falls by at least one: the recursion always ends.
+        runs
+        |> adopt_neighbour(position, distances)
+        |> coalesce_runs()
+        |> settle_runs(distances)
+    end
+  end
+
+  defp adopt_neighbour(runs, position, distances) do
+    {_members, first, last} = Enum.at(runs, position)
+    {members, _first, _last} = preferred_neighbour(runs, position, distances)
+
+    List.replace_at(runs, position, {members, first, last})
+  end
+
+  # The neighbour a short run is most plausibly part of: the one sharing the
+  # most lines with it, and failing that the longer of the two.
+  defp preferred_neighbour(runs, position, distances) do
+    {members, _first, _last} = Enum.at(runs, position)
+
+    [position - 1, position + 1]
+    |> Enum.filter(&(&1 >= 0 and &1 < length(runs)))
+    |> Enum.map(&Enum.at(runs, &1))
+    |> Enum.max_by(fn {neighbour, _first, _last} = run ->
+      {length(neighbour -- (neighbour -- members)), run_km(run, distances)}
+    end)
+  end
+
+  defp coalesce_runs(runs) do
+    runs
+    |> Enum.reduce([], fn
+      {members, _first, last}, [{members, kept_first, _kept_last} | rest] ->
+        [{members, kept_first, last} | rest]
+
+      run, acc ->
+        [run | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp run_km({_members, first, last}, distances) do
+    elem(distances, last) - elem(distances, first)
+  end
+
   # Whether each vertex still needs drawing, settled over that same window.
   # Claims are recorded cell by cell, so a line weaving in and out of the cells
   # an earlier ribbon covered reads as covered, uncovered, covered along its
   # length and would be cut up accordingly.
-  defp steady_claims(points, line_index, claimed) do
-    points
-    |> Enum.map(fn point ->
-      if MapSet.member?(claimed, {near_cell(point), line_index}), do: 0.0, else: 1.0
+  #
+  # A line standing on its own track is never treated as carried, whatever the
+  # cells say. That is the counterweight to claiming ground under each member
+  # as well as under the ribbon: claims now reach cells the drawing line never
+  # touched, and nothing else stops one of them landing on a stretch the same
+  # line comes back to alone later — which is how a line goes missing.
+  defp steady_claims(points, bundles, line_index, claimed) do
+    [points, bundles]
+    |> Enum.zip_with(fn [point, bundle] ->
+      carried? =
+        match?([_, _ | _], bundle) and
+          MapSet.member?(claimed, {near_cell(point), line_index})
+
+      if carried?, do: 0.0, else: 1.0
     end)
     |> then(&smooth_values(points, &1))
     |> Enum.map(&(&1 > 0.5))
@@ -543,8 +789,9 @@ defmodule Transitmaps.Display.Bundles do
   # -- slotting & offsetting ---------------------------------------------------
 
   defp offset_strand(points, line_index, index) do
+    bundles = Enum.map(points, &bundle_at(&1, line_index, index))
     normals = vertex_normals(points)
-    {raw_slots, raw_corrections} = raw_placement(points, normals, line_index, index)
+    {raw_slots, raw_corrections} = raw_placement(points, normals, bundles, line_index)
 
     slots = smooth_values(points, raw_slots)
     corrections = smooth_values(points, raw_corrections)
@@ -555,11 +802,9 @@ defmodule Transitmaps.Display.Bundles do
   # rank and packed symmetrically around the bundle's mean centreline. A line
   # always finds itself, so an isolated line sits in slot 0 with no correction
   # — the overlapping-centreline baseline.
-  defp raw_placement(points, normals, line_index, index) do
-    [points, normals]
-    |> Enum.zip_with(fn [point, normal] ->
-      members = bundle_at(point, line_index, index)
-
+  defp raw_placement(points, normals, bundles, line_index) do
+    [points, normals, bundles]
+    |> Enum.zip_with(fn [point, normal, members] ->
       case Enum.find_index(members, fn {other, _mean, _direction} -> other == line_index end) do
         nil ->
           {0.0, 0.0}

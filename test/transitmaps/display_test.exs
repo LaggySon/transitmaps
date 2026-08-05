@@ -261,6 +261,58 @@ defmodule Transitmaps.DisplayTest do
       assert [0] in Enum.map(segments, & &1.members)
       assert [0, 1] in Enum.map(segments, & &1.members)
     end
+
+    test "a corridor several tracks wide is drawn once, not once per track" do
+      # Three tracks fifty metres apart, about the width of a real railway.
+      # None of them shares a lookup cell with the outermost of the others, so
+      # each used to settle only its own neighbours' claim and lay down a
+      # ribbon carrying all three colours: the corridor came out as a stack of
+      # near-identical ribbons a railway's width apart, each ending in mid-air
+      # where the next took over.
+      step = 0.05 / @km_per_lat
+
+      tracks =
+        for shift <- [0.0, step, 2 * step] do
+          line([for(i <- 0..150, do: [-1.0 + i * 0.004, 51.4 + shift])])
+        end
+
+      segments = Bundles.corridors(tracks)
+
+      assert Enum.map(segments, & &1.members) == [[0, 1, 2]]
+
+      # And that one ribbon lies on the corridor's shared axis — the middle
+      # track — rather than on whichever member happened to draw it.
+      assert Enum.all?(segments, fn segment ->
+               Enum.all?(segment.coordinates, fn [_lon, lat] ->
+                 abs(lat - (51.4 + step)) * @km_per_lat < 0.01
+               end)
+             end)
+    end
+
+    test "a line leaving a corridor sets off from the ribbon that carried it" do
+      trunk = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
+
+      leaving =
+        for(i <- 0..75, do: [-1.0 + i * 0.004, 51.4]) ++
+          for i <- 1..60, do: [-1.0 + (75 + i) * 0.004, 51.4 - i * i * 0.00002]
+
+      segments = Bundles.corridors([line([trunk]), line([leaving])])
+
+      [shared] = Enum.filter(segments, &(&1.members == [0, 1]))
+      [branch] = Enum.filter(segments, &(&1.members == [1]))
+
+      # A line parts from a corridor gradually, and stays within bundling reach
+      # — so still drawn as a band of the ribbon — well after it has visibly
+      # begun to leave. Its own line has to start behind the point the shared
+      # ribbon gives out, or it begins in mid-air with a hole between it and
+      # the corridor it is leaving.
+      [[branch_lon, _] | _] = branch.coordinates
+      assert branch_lon < shared.coordinates |> List.last() |> hd()
+
+      # Exactly one shared ribbon: the trunk's colour used to be carried a few
+      # hundred metres down the branch as a stray fragment of its own.
+      assert Enum.count(segments, &(&1.members == [0, 1])) == 1
+    end
   end
 
   describe "Display.drawn_lines/1" do

@@ -650,7 +650,13 @@ const TransitMap = {
         type: "line",
         source: `${cat}-corridors`,
         filter: [">", ["get", "stripes"], index],
-        layout: {"line-join": "round", "line-cap": "butt"},
+        // Round, like the casing around them and like the plain lines the
+        // other rendering draws. Ribbons meet end to end where a corridor
+        // gains or loses a line, and butt-ended bands left a notch across the
+        // ribbon at every one of those joins; rounded, each band's tip laps
+        // over its neighbour and the corridor reads as continuous. It is also
+        // what a line ought to look like where it genuinely ends.
+        layout: {"line-join": "round", "line-cap": "round"},
         paint: {
           "line-color": ["to-color", ["get", `stripe_${index}`]],
           "line-width": byZoom(STRIPE_WIDTH),

@@ -224,9 +224,6 @@ const stripeLabelId = (cat, index) => `${cat}-ribbon-label-${index}`
 const FAN_OPEN = 14.3
 
 const layerIds = (cat) => ({
-  casing: `${cat}-casing`,
-  line: `${cat}-line`,
-  lineLabels: `${cat}-line-labels`,
   stops: `${cat}-stops`,
   labels: `${cat}-station-labels`,
 })
@@ -236,16 +233,13 @@ const layerIds = (cat) => ({
 // never cut into a neighbouring mode's line.
 const desiredLayerOrder = () =>
   MODE_ORDER.map((cat) => ribbonLayerIds(cat).casing).concat(
-    MODE_ORDER.map((cat) => layerIds(cat).casing),
     MODE_ORDER.flatMap((cat) =>
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
     ),
-    MODE_ORDER.map((cat) => layerIds(cat).line),
     MODE_ORDER.map((cat) => ribbonLayerIds(cat).labels),
     MODE_ORDER.flatMap((cat) =>
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLabelId(cat, index))
     ),
-    MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
   )
@@ -550,7 +544,7 @@ const TransitMap = {
     // layer is simply switched off.
     if (groups.length > 0) this.map.setFilter(PLACES_LAYER_ID, placeFilter(groups))
     this.setVisibility(PLACES_LAYER_ID, groups.length > 0 ? "visible" : "none")
-    setPlacesProminence(this.map, this.details.has("ribbons"))
+    setPlacesProminence(this.map, true)
   },
 
   bindPlacePopup() {
@@ -645,25 +639,19 @@ const TransitMap = {
 
   async loadCategory(cat) {
     try {
-      const [routeResponse, stopResponse, corridorResponse] = await Promise.all([
-        fetch(`/api/routes.geojson?cats=${encodeURIComponent(cat)}`),
+      const [stopResponse, corridorResponse] = await Promise.all([
         fetch(`/api/stops.geojson?cats=${encodeURIComponent(cat)}`),
         fetch(`/api/corridors.geojson?cats=${encodeURIComponent(cat)}`),
       ])
 
-      if (!routeResponse.ok || !stopResponse.ok || !corridorResponse.ok) {
+      if (!stopResponse.ok || !corridorResponse.ok) {
         throw new Error(`Could not load ${cat} data`)
       }
 
-      const [routes, stops, corridors] = await Promise.all([
-        routeResponse.json(),
-        stopResponse.json(),
-        corridorResponse.json(),
-      ])
-      this.categoryData.set(cat, {routes, stops})
+      const [stops, corridors] = await Promise.all([stopResponse.json(), corridorResponse.json()])
+      this.categoryData.set(cat, {corridors, stops})
 
-      if (!this.map.getSource(`${cat}-routes`)) {
-        this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
+      if (!this.map.getSource(`${cat}-corridors`)) {
         this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
         this.map.addSource(`${cat}-corridors`, {type: "geojson", data: corridors})
         this.addCategoryLayers(cat)
@@ -816,30 +804,19 @@ const TransitMap = {
   setCategoryVisibility(cat) {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
-    // The two renderings draw the same network, so only one may be on at a
-    // time or every shared corridor would be painted twice.
-    const ribbons = visible && this.details.has("ribbons")
-    const lines = visible && !this.details.has("ribbons")
-
     const named = this.details.has("labels")
 
-    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
+    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, visible ? "visible" : "none"))
     this.ribbonLabelIds(cat).forEach((id) =>
-      this.setVisibility(id, ribbons && named ? "visible" : "none")
+      this.setVisibility(id, visible && named ? "visible" : "none")
     )
 
-    this.setVisibility(ids.casing, lines ? "visible" : "none")
-    this.setVisibility(ids.line, lines ? "visible" : "none")
-    this.setVisibility(ids.lineLabels, lines && named ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
     this.setVisibility(ids.labels, visible && this.details.has("labels") ? "visible" : "none")
   },
 
   syncDetails() {
     this.loaded.forEach((cat) => this.setCategoryVisibility(cat))
-    // Which rendering is on decides how far the places stand back, so they
-    // have to be re-set here and not only when the place toggles change.
-    setPlacesProminence(this.map, this.details.has("ribbons"))
   },
 
   setVisibility(id, visibility) {
@@ -848,65 +825,6 @@ const TransitMap = {
 
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
-    const width = LINE_WIDTH[cat] || 2.0
-    const zoomedWidth = (base) => [
-      "interpolate", ["linear"], ["zoom"],
-      4, base * 0.48,
-      7, base * 0.68,
-      10, base,
-      14, base * 1.72,
-      17, base * 1.9,
-    ]
-    // Bundle placement is baked into the served geometry: lines sharing a
-    // corridor arrive already offset side by side (and collapse into the
-    // space a departing line leaves), so the client draws plain lines and
-    // no renderer offset math can distort the bundle.
-    this.addLayerInOrder({
-      id: ids.casing,
-      type: "line",
-      source: `${cat}-routes`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": "rgba(255,255,255,0.96)",
-        "line-width": zoomedWidth(width + 2.15),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
-      },
-    })
-
-    this.addLayerInOrder({
-      id: ids.line,
-      type: "line",
-      source: `${cat}-routes`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": ["get", "color"],
-        "line-width": zoomedWidth(width),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
-      },
-    })
-
-    this.addLayerInOrder({
-      id: ids.lineLabels,
-      type: "symbol",
-      source: `${cat}-routes`,
-      minzoom: 10.5,
-      layout: {
-        "symbol-placement": "line",
-        "symbol-spacing": 420,
-        "text-field": ["get", "name"],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 10.5, 9.5, 16, 12.5],
-        "text-letter-spacing": -0.01,
-        "text-padding": 4,
-        "text-optional": true,
-      },
-      paint: {
-        "text-color": ["get", "color"],
-        "text-halo-color": "rgba(255,255,255,0.96)",
-        "text-halo-width": 1.8,
-        "text-halo-blur": 0.3,
-      },
-    })
 
     this.addLayerInOrder({
       id: ids.stops,
@@ -988,26 +906,49 @@ const TransitMap = {
       this.openPopup(event.lngLat, this.stationPopupHtml(props))
     })
 
-    this.map.on("click", ids.line, (event) => {
-      if (this.transitFeaturesAt(event.point).length > 0) return
+    // One handler per band, because which band was hit is the whole answer:
+    // the layer a click lands on names the line, where a click on the ribbon
+    // could only ever name the corridor.
+    const bandLayers = Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
 
-      const props = event.features[0].properties
-      const title = props.long_name || props.name || "Transit route"
-      const agency = props.agency && props.agency !== title
-        ? `<div class="map-route-popup__agency">${this.escapeHtml(props.agency)}</div>`
-        : ""
-      this.openPopup(
-        event.lngLat,
-        `<div class="map-route-popup"><div class="map-route-popup__name" style="color:${this.safeColor(props.color)}">` +
-          `${this.escapeHtml(title)}</div>${agency}</div>`
-      )
+    bandLayers.forEach((id, index) => {
+      this.map.on("click", id, (event) => {
+        if (this.transitFeaturesAt(event.point).length > 0) return
+
+        const props = event.features[0].properties
+        const title = props[`name_${index}`] || "Transit route"
+        const alongside = this.bandNeighbours(props, index)
+        const shared = alongside.length
+          ? `<div class="map-route-popup__agency">with ${this.escapeHtml(alongside.join(", "))}</div>`
+          : ""
+
+        this.openPopup(
+          event.lngLat,
+          `<div class="map-route-popup"><div class="map-route-popup__name" style="color:${this.safeColor(props[`stripe_${index}`])}">` +
+            `${this.escapeHtml(title)}</div>${shared}</div>`
+        )
+      })
     })
 
     const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
-    ;[ids.stops, ids.line].forEach((id) => {
+    ;[ids.stops, ...bandLayers].forEach((id) => {
       this.map.on("mouseenter", id, setPointer(true))
       this.map.on("mouseleave", id, setPointer(false))
     })
+  },
+
+  // The other lines sharing this stretch of track — something only the
+  // corridor rendering knows, and the most useful thing to say about a band
+  // beyond its own name.
+  bandNeighbours(props, index) {
+    const names = []
+
+    for (let other = 0; other < (props.stripes || 0); other++) {
+      const name = props[`name_${other}`]
+      if (other !== index && name && !names.includes(name)) names.push(name)
+    }
+
+    return names
   },
 
   stationPopupHtml(props) {
@@ -1227,12 +1168,16 @@ const TransitMap = {
     RAIL_TRAFFIC_MODES.forEach((cat) => {
       if (!this.enabled.has(cat)) return
       const data = this.categoryData.get(cat)
-      if (!data || !data.routes) return
+      if (!data || !data.corridors) return
 
-      ;(data.routes.features || []).forEach((feature) => {
+      // Trains run along the track as drawn — the corridor segments — rather
+      // than along a separate set of shapes, so a train never glides beside
+      // the line it is meant to be on. A segment carries several operators;
+      // the first band's colour stands for the run.
+      ;(data.corridors.features || []).forEach((feature) => {
         const line = this.longestLine(feature.geometry)
         if (line && line.total > MIN_TRAIN_LINE) {
-          lines.push({line, color: this.safeColor(feature.properties?.color)})
+          lines.push({line, color: this.safeColor(feature.properties?.stripe_0)})
         }
       })
     })

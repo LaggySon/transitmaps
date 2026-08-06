@@ -25,51 +25,39 @@ const CLOSE_UPS = [
   {name: "baker-street-z19", center: [-0.1566, 51.5222], zoom: 19},
 ]
 
-// Each rendering draws the same network a different way, so both are worth a
-// picture at every junction.
-const RENDERINGS = [
-  {name: "bundled", stripes: false},
-  {name: "striped", stripes: true},
-]
-
 // These load the real network rather than a handful of fixture shapes, which
 // takes far longer than the default per-test budget allows.
 const LOAD_BUDGET_MS = 240_000
 
 test.beforeEach(({}, testInfo) => testInfo.setTimeout(LOAD_BUDGET_MS))
 
-// One test per rendering rather than per junction: loading the real network
+// One test for all the close-ups and one for all the junctions: loading the
+// real network
 // costs far more than moving around it, so the map is opened once and then
 // flown between the junctions.
-for (const rendering of RENDERINGS) {
-  test(`draws every close-up as approved, ${rendering.name}`, async ({page}) => {
-    await openLiveMap(page, {stripes: rendering.stripes})
+test("draws every close-up as approved", async ({page}) => {
+  await openLiveMap(page)
 
-    for (const junction of CLOSE_UPS) {
-      await setMapZoom(page, junction.zoom, junction.center)
-      await page.waitForTimeout(2500)
+  for (const junction of CLOSE_UPS) {
+    await setMapZoom(page, junction.zoom, junction.center)
+    await page.waitForTimeout(2500)
 
-      await expect(page.locator("#transit-map")).toHaveScreenshot(
-        `${rendering.name}-${junction.name}.png`
-      )
-    }
-  })
+    await expect(page.locator("#transit-map")).toHaveScreenshot(`${junction.name}.png`)
+  }
+})
 
-  test(`draws every junction as approved, ${rendering.name}`, async ({page}) => {
-    await openLiveMap(page, {stripes: rendering.stripes})
+test("draws every junction as approved", async ({page}) => {
+  await openLiveMap(page)
 
-    for (const junction of JUNCTIONS) {
-      await setMapZoom(page, junction.zoom, junction.center)
-      // Overzoomed basemap tiles and long corridors keep arriving after the
-      // first idle, so settle before judging the drawing.
-      await page.waitForTimeout(2500)
+  for (const junction of JUNCTIONS) {
+    await setMapZoom(page, junction.zoom, junction.center)
+    // Overzoomed basemap tiles and long corridors keep arriving after the
+    // first idle, so settle before judging the drawing.
+    await page.waitForTimeout(2500)
 
-      await expect(page.locator("#transit-map")).toHaveScreenshot(
-        `${rendering.name}-${junction.name}.png`
-      )
-    }
-  })
-}
+    await expect(page.locator("#transit-map")).toHaveScreenshot(`${junction.name}.png`)
+  }
+})
 
 // The eye catches these instantly and a screenshot diff does not explain them,
 // so they are asserted directly against what the server serves.

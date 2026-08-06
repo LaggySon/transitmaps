@@ -8,8 +8,9 @@ const CATEGORY_COLORS = {
   ferry: "#32ADE6",
 }
 
-// Bundle offsets are baked into served geometry, so fixtures emulate the
-// server by shifting each category's line slightly north of the last.
+// The map draws corridor segments, so fixtures serve those: one segment per
+// category, shifted slightly north of the last so the categories are visible
+// side by side the way real bundled track is.
 const CATEGORY_SHIFT = {ferry: -3, coach: -2, bus: -1, rail: 0, intercity: 1, tram: 2, metro: 3}
 
 const ROUTE_COORDINATES = [
@@ -37,9 +38,10 @@ const stopFeature = (name, coordinates, color, category) => ({
 })
 
 export const mockTransitApis = async (page) => {
-  await page.route("**/api/routes.geojson?cats=*", async (route) => {
+  await page.route("**/api/corridors.geojson?cats=*", async (route) => {
     const category = new URL(route.request().url()).searchParams.get("cats") || "rail"
     const color = CATEGORY_COLORS[category] || "#6E6E73"
+    const name = `${category[0].toUpperCase()}${category.slice(1)} Line`
 
     await route.fulfill({
       contentType: "application/json",
@@ -48,14 +50,14 @@ export const mockTransitApis = async (page) => {
         features: [
           {
             type: "Feature",
-            geometry: {type: "MultiLineString", coordinates: [shiftedRoute(category)]},
+            geometry: {type: "LineString", coordinates: shiftedRoute(category)},
             properties: {
-              name: `${category[0].toUpperCase()}${category.slice(1)} Line`,
-              long_name: `${category[0].toUpperCase()}${category.slice(1)} visual route`,
-              agency: "Visual Transit",
+              name,
+              name_0: name,
+              stripe_0: color,
+              stripes: 1,
               category,
               color,
-              text_color: "#FFFFFF",
             },
           },
         ],
@@ -93,7 +95,7 @@ export const openStableMap = async (page) => {
 // deliberately skips the synthetic fixtures above and renders whatever the
 // database holds. That makes its screenshots move when a feed is re-imported:
 // they are approved drawings of live data, not fixed expectations.
-export const openLiveMap = async (page, {stripes = false} = {}) => {
+export const openLiveMap = async (page) => {
   await page.goto("/")
   await page.locator("body").evaluate((body) => body.classList.add("playwright-visuals"))
   await page.locator("#transit-map[data-map-ready='true']").waitFor({timeout: 180_000})
@@ -103,7 +105,6 @@ export const openLiveMap = async (page, {stripes = false} = {}) => {
   // Places are noise when the subject is track: switch them off so a shop
   // opening or closing never re-approves a junction drawing.
   await page.locator("#group-toggle-places").click({force: true})
-  if (stripes) await page.locator("#map-detail-ribbons").click({force: true})
   await page.locator("#map-options-button").click()
   await page.locator("#hide-map-sidebar").click()
 

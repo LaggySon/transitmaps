@@ -15,35 +15,36 @@ defmodule Transitmaps.Display do
        rounded corners. Rendered as-is this stage is the baseline map:
        every line on its true centreline, overlapping where track is
        shared.
-    3. `Bundles` — *how* corridor-sharing lines sit together: bundle
-       offsets are computed locally along each corridor and baked into
-       the geometry, so lines render side by side, collapse smoothly into
-       the space a departing line leaves behind, and the client draws
-       plain lines with no renderer offset tricks.
+    3. `Bundles` — *who shares each run of track*: the corridor is read
+       locally along every line, and the network comes back cut into
+       segments, each carrying the lines that run along it and lying on
+       that corridor's own centreline. The renderer spaces the members
+       across it in screen pixels, which is the only way a bundle holds
+       its shape at every zoom.
   """
 
   alias Transitmaps.Display.{Bundles, Identity, Network}
 
   @doc """
-  Drawn lines for `routes`: display identity plus bundle-offset geometry,
-  ready to serve as GeoJSON features. Routes need `route_id`,
+  Drawn lines for `routes`: display identity plus cleaned geometry, each on
+  its own true centreline. The map draws `corridor_ribbons/1` instead, which
+  is the same network cut into shared runs of track; this is the per-line
+  view of it. Routes need `route_id`,
   `agency_name`, `short_name`, `long_name`, `category`, `color`,
   `text_color`, and `geometry` keys. Output order and content are stable
   for identical input.
   """
   def drawn_lines(routes) do
-    routes
-    |> cleaned_lines()
-    |> Bundles.arrange()
+    cleaned_lines(routes)
   end
 
   @doc """
-  The same network drawn as corridor ribbons: one segment per run of track,
-  carrying the colours of every line that runs along it.
+  The network cut into corridor ribbons: one segment per run of track,
+  carrying the colours and names of every line that runs along it.
 
-  Where `drawn_lines/1` moves lines apart so a shared corridor reads as
-  several neighbouring lines, this keeps the geometry where the track is and
-  leaves the renderer to draw it as one thicker line striped in those colours.
+  This is what the map draws. The geometry stays where the track is and the
+  renderer spaces the members across it in screen pixels, so a corridor holds
+  its shape at every zoom.
   """
   def corridor_ribbons(routes) do
     lines = cleaned_lines(routes)

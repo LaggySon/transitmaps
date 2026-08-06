@@ -173,87 +173,6 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
-  describe "Bundles.arrange/1" do
-    test "corridor-sharing lines separate side by side" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, second] = Bundles.arrange([line([corridor]), line([corridor])])
-
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.010, 0.004
-    end
-
-    test "lines running opposite directions still bundle to opposite sides" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, second] = Bundles.arrange([line([corridor]), line([Enum.reverse(corridor)])])
-
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.010, 0.004
-    end
-
-    test "remaining lines collapse into the space a departing line leaves" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 0..75, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, _short, third] = Bundles.arrange([line([full]), line([half]), line([full])])
-
-      # Three abreast on the shared half: outer lines sit a full spacing
-      # apart on each side of the middle one.
-      assert_in_delta lateral_km(first, third, -0.9), 0.020, 0.006
-
-      # After the middle line leaves, the outer pair collapses to a single
-      # spacing, centred on the corridor.
-      assert_in_delta lateral_km(first, third, -0.5), 0.010, 0.004
-    end
-
-    test "bundle offsets taper smoothly, never jump" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 0..75, do: [-1.0 + i * 0.004, 51.4]
-
-      [first | _rest] = Bundles.arrange([line([full]), line([half]), line([full])])
-      [strand] = first.geometry.coordinates
-      kx = 111.320 * :math.cos(51.4 * :math.pi() / 180)
-
-      # Sideways drift per km travelled: a taper is a gentle ramp, a gap
-      # left unfilled or a hard slot change would show as a steep step.
-      slopes =
-        strand
-        |> Enum.chunk_every(2, 1, :discard)
-        |> Enum.map(fn [[lon1, lat1], [lon2, lat2]] ->
-          dx = (lon2 - lon1) * kx
-          dy = (lat2 - lat1) * @km_per_lat
-          abs(dy) / max(abs(dx), 0.001)
-        end)
-
-      assert Enum.max(slopes) < 0.06
-    end
-
-    test "an isolated line keeps its centreline" do
-      away = for i <- 0..100, do: [-1.0 + i * 0.004, 53.0]
-
-      [only] = Bundles.arrange([line([away])])
-      [strand] = only.geometry.coordinates
-
-      assert hd(strand) == [-1.0, 53.0]
-      assert List.last(strand) == [-0.6, 53.0]
-      assert Enum.all?(strand, fn [_lon, lat] -> abs(lat - 53.0) * @km_per_lat < 0.001 end)
-    end
-
-    test "crossing lines keep their own centrelines" do
-      west_east = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-      south_north = for i <- 0..100, do: [-0.8, 51.2 + i * 0.004]
-
-      [horizontal, vertical] = Bundles.arrange([line([west_east]), line([south_north])])
-
-      [h_strand] = horizontal.geometry.coordinates
-      [v_strand] = vertical.geometry.coordinates
-
-      assert Enum.all?(h_strand, fn [_lon, lat] -> abs(lat - 51.4) * @km_per_lat < 0.002 end)
-      assert Enum.all?(v_strand, fn [lon, _lat] -> abs(lon + 0.8) * 69.0 < 0.002 end)
-    end
-  end
-
   describe "Bundles.corridors/1" do
     test "every line is drawn, wherever the corridor falls on the lookup grid" do
       # Three tracks a hundred metres apart, swept across a lookup cell. Their
@@ -361,7 +280,7 @@ defmodule Transitmaps.DisplayTest do
   end
 
   describe "Display.drawn_lines/1" do
-    test "runs identity, cleanup, and bundling end to end" do
+    test "runs identity and cleanup end to end, each line on its own track" do
       corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
       variant = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4003]
 
@@ -375,9 +294,11 @@ defmodule Transitmaps.DisplayTest do
       assert [%{name: "CrossCountry"}, %{name: "Great Western Railway"}] =
                Enum.sort_by(lines, & &1.name)
 
+      # Nothing is moved sideways to make room any more: how far apart shared
+      # track is drawn is a screen measurement the renderer makes from
+      # `corridor_ribbons/1`, so these stay on the centrelines they came in on.
       [first, second] = lines
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.010, 0.005
+      assert lateral_km(first, second, -0.8) < 0.001
     end
   end
 

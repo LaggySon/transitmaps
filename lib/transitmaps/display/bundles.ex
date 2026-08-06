@@ -1,16 +1,12 @@
 defmodule Transitmaps.Display.Bundles do
   @moduledoc """
-  Places corridor-sharing lines side by side by offsetting their geometry.
+  Works out which lines share each run of track, and where that track runs.
 
-  Where several lines run along the same track they must render as a
-  bundle of adjacent parallel lines — never overlapping — the way Apple
-  Maps and OpenRailwayMap draw shared corridors. The bundle is packed
-  *locally*: at every point along a line, only the lines actually present
-  on that stretch of corridor occupy slots, centred on the corridor. When
-  a line leaves mid-bundle the remaining lines collapse smoothly into the
-  space it vacated instead of leaving a gap, and a line joining fans the
-  bundle open. Offsets are baked into the served geometry, so the client
-  draws plain lines and no renderer offset math can distort the result.
+  Where several lines follow the same corridor they must render side by
+  side — never overlapping — the way Apple Maps and OpenRailwayMap draw
+  shared track. The corridor is read *locally*: at every point along a
+  line, only the lines actually present on that stretch belong to the
+  bundle there.
 
   How it works:
 
@@ -25,15 +21,17 @@ defmodule Transitmaps.Display.Bundles do
        bundle, along with whatever those lines in turn share track with.
        They are looked up in a grid of that same reach, read nine cells at
        a time so that a neighbour is found whichever side of a grid line
-       it fell. Members are ordered by their stable line rank and packed
-       symmetrically around the bundle's mean centreline — not each line's
-       own — so source shapes lying a track's width apart still come out
-       evenly spaced.
-    4. The resulting per-vertex slot and centreline correction are
-       smoothed along the line so membership changes become gradual
-       tapers, then each vertex is pushed sideways along its
-       (miter-clamped) normal by slot × #{trunc(1000 * 0.010)} m plus the
-       correction.
+       it fell.
+    4. Membership is smoothed along the line so it changes at junctions
+       rather than at every wobble, and each vertex is pushed sideways
+       along its (miter-clamped) normal onto the bundle's mean centreline
+       — so shapes lying a track's width apart come out on one axis.
+
+  What it does not do is decide how far apart to draw the members. That is
+  a screen measurement, not a ground one: ten metres of ground is a fifth
+  of a pixel at the country zooms and fifty pixels at z19, so a spacing
+  baked into the geometry can only be right at one zoom. The renderer
+  spaces the bands, in pixels, off the member count this module reports.
 
   Reading membership from a single cell of a grid is what this used to do,
   and it made the map depend on where that invisible grid happened to fall:
@@ -57,13 +55,6 @@ defmodule Transitmaps.Display.Bundles do
   # alignment conflict running opposite) keeps its own centreline.
   @parallel_cosine 0.7
 
-  # Ground distance between neighbouring lines of a bundle. Ten metres packs
-  # the strands just tight enough to read as one ribbon following a corridor
-  # rather than as separate lines that happen to run alongside; a rendered
-  # line is ~12 m of ground around z15, so neighbours touch there and any
-  # tighter they would overpaint each other.
-  @slot_spacing_km 0.010
-
   # Vertices are capped this far apart before slotting, so slot tapers and
   # curved corridors bend smoothly instead of in long straight jumps.
   @densify_km 0.15
@@ -77,11 +68,6 @@ defmodule Transitmaps.Display.Bundles do
   # rounding left slightly angular. Clamping harder stops the outer strand
   # of a bundle flaring away from its neighbours around tight curves.
   @miter_limit 1.45
-
-  # Offset strands are re-simplified before serving (~4 m tolerance):
-  # densification is needed for smooth ramps but straight runs collapse
-  # back to sparse vertices, keeping payloads close to the input size.
-  @output_tolerance 0.00004
 
   # Cap on the shared-axis correction, so one badly georeferenced shape
   # cannot drag its bundle sideways off the track.
@@ -119,38 +105,17 @@ defmodule Transitmaps.Display.Bundles do
   @overlap_km 0.12
 
   @doc """
-  Returns `lines` with corridor-sharing geometry offset into bundles.
-  Line order, count, and every non-geometry field are preserved; output
-  is stable for identical input.
-  """
-  def arrange(lines) do
-    case analyse(lines) do
-      nil ->
-        lines
-
-      %{aligned: aligned, index: index, scale: scale} ->
-        offset_strands =
-          Map.new(aligned, fn {{line_index, _strand_index} = id, points} ->
-            {id, offset_strand(points, line_index, index)}
-          end)
-
-        rebuild(lines, offset_strands, scale)
-    end
-  end
-
-  @doc """
   One ribbon per run of track, carrying every line that runs along it.
 
   Each segment is `%{members: [line index], coordinates: [[lon, lat]]}`, with
-  members in the stable rank order `arrange/1` packs them in, so a renderer can
-  draw one thicker line striped in its members' colours rather than drawing the
-  members alongside each other. A stretch only one line uses comes back as a
-  bundle of one, so the segments cover the whole network.
+  members in a stable rank order, so a renderer can draw one thicker line
+  divided into a band per member rather than drawing the members alongside
+  each other. A stretch only one line uses comes back as a bundle of one, so
+  the segments cover the whole network.
 
-  A segment lies on the corridor's own centreline — the shared axis `arrange/1`
-  packs its bundles around — rather than on the track of whichever member
-  produced it. Ribbons of one corridor therefore continue one another however
-  the work is divided up between its members.
+  A segment lies on the corridor's own centreline rather than on the track of
+  whichever member produced it. Ribbons of one corridor therefore continue one
+  another however the work is divided up between its members.
 
   Lines are drawn in rank order and each one claims, for every line on the
   ribbons it lays down, the ground those ribbons cover — both under the drawing
@@ -227,7 +192,7 @@ defmodule Transitmaps.Display.Bundles do
   #
   # A ribbon stands for a corridor rather than for the line that happened to
   # draw it, so it is laid on the corridor's centreline — the same shared axis
-  # `arrange/1` packs its bundles around — and not on the drawing line's own
+  # the members are packed around — and not on the drawing line's own
   # shape. Drawn on the drawing line's shape, one corridor came out as a chain
   # of ribbons each lying on a different member's track: consecutive ribbons
   # stepped sideways by the width of the railway, crossed over each other where
@@ -270,16 +235,15 @@ defmodule Transitmaps.Display.Bundles do
   end
 
   # The corridor's shared axis under this line: its own vertices pushed
-  # sideways onto the bundle's mean centreline, by the same smoothed correction
-  # `arrange/1` adds to a slot offset. Every member of a corridor lands on
+  # sideways onto the bundle's mean centreline, smoothed along the line so the
+  # axis bends rather than steps. Every member of a corridor lands on
   # nearly the same axis, so whichever of them draws a stretch, the ribbon
   # continues where its neighbour left off.
   defp corridor_centreline(points, bundles, line_index) do
     normals = vertex_normals(points)
-    {_slots, raw_corrections} = raw_placement(points, normals, bundles, line_index)
-    corrections = smooth_values(points, raw_corrections)
+    raw = corridor_corrections(points, normals, bundles, line_index)
 
-    offset_points(points, List.duplicate(0.0, length(points)), corrections, normals)
+    offset_points(points, smooth_values(points, raw), normals)
   end
 
   # Each run borrows the next run's first vertex, so neighbouring segments meet
@@ -810,38 +774,20 @@ defmodule Transitmaps.Display.Bundles do
 
   # -- slotting & offsetting ---------------------------------------------------
 
-  defp offset_strand(points, line_index, index) do
-    bundles = Enum.map(points, &bundle_at(&1, line_index, index))
-    normals = vertex_normals(points)
-    {raw_slots, raw_corrections} = raw_placement(points, normals, bundles, line_index)
+  # The lateral correction at each vertex that puts this line on its corridor's
+  # shared axis. Where a line stands alone it finds only itself, the correction
+  # is nothing, and the axis is its own centreline.
+  defp corridor_corrections(points, normals, bundles, line_index) do
+    Enum.zip_with([points, normals, bundles], fn [point, normal, members] ->
+      if Enum.any?(members, fn {other, _mean, _direction} -> other == line_index end) do
+        own_mean =
+          Enum.find_value(members, point, fn {other, mean, _d} -> other == line_index && mean end)
 
-    slots = smooth_values(points, raw_slots)
-    corrections = smooth_values(points, raw_corrections)
-    offset_points(points, slots, corrections, normals)
-  end
-
-  # At each vertex: the same local bundle the ribbons are cut from, ordered by
-  # rank and packed symmetrically around the bundle's mean centreline. A line
-  # always finds itself, so an isolated line sits in slot 0 with no correction
-  # — the overlapping-centreline baseline.
-  defp raw_placement(points, normals, bundles, line_index) do
-    [points, normals, bundles]
-    |> Enum.zip_with(fn [point, normal, members] ->
-      case Enum.find_index(members, fn {other, _mean, _direction} -> other == line_index end) do
-        nil ->
-          {0.0, 0.0}
-
-        slot_index ->
-          own_mean =
-            Enum.find_value(members, point, fn {other, mean, _d} ->
-              other == line_index && mean
-            end)
-
-          slot = slot_index - (length(members) - 1) / 2
-          {slot, correction(members, own_mean, normal)}
+        correction(members, own_mean, normal)
+      else
+        0.0
       end
     end)
-    |> Enum.unzip()
   end
 
   # Lateral distance from this line's local centreline to the bundle's
@@ -920,13 +866,10 @@ defmodule Transitmaps.Display.Bundles do
     Enum.reverse(reversed)
   end
 
-  # Push each vertex sideways along its miter-clamped normal. Positive
-  # slots go to the left of travel; alignment made "left" consistent for
-  # the whole corridor.
-  defp offset_points(points, slots, corrections, normals) do
-    Enum.zip_with([points, slots, corrections, normals], fn [{x, y}, slot, correction, {nx, ny}] ->
-      distance = slot * @slot_spacing_km + correction
-      {x + nx * distance, y + ny * distance}
+  # Push each vertex sideways along its miter-clamped normal.
+  defp offset_points(points, corrections, normals) do
+    Enum.zip_with([points, corrections, normals], fn [{x, y}, correction, {nx, ny}] ->
+      {x + nx * correction, y + ny * correction}
     end)
   end
 
@@ -966,28 +909,6 @@ defmodule Transitmaps.Display.Bundles do
   end
 
   # -- output ------------------------------------------------------------------
-
-  defp rebuild(lines, offset_strands, scale) do
-    lines
-    |> Enum.with_index()
-    |> Enum.map(fn {line, line_index} ->
-      strands =
-        line.geometry
-        |> strand_list()
-        |> Enum.with_index()
-        |> Enum.map(fn {strand, strand_index} ->
-          case Map.get(offset_strands, {line_index, strand_index}) do
-            nil ->
-              strand
-
-            points ->
-              points |> Enum.map(&unproject(&1, scale)) |> Geometry.simplify(@output_tolerance)
-          end
-        end)
-
-      %{line | geometry: %{type: "MultiLineString", coordinates: strands}}
-    end)
-  end
 
   defp strand_list(%{"type" => "MultiLineString", "coordinates" => strands}), do: strands
   defp strand_list(%{type: "MultiLineString", coordinates: strands}), do: strands

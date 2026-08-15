@@ -8,8 +8,9 @@ const CATEGORY_COLORS = {
   ferry: "#32ADE6",
 }
 
-// Bundle offsets are baked into served geometry, so fixtures emulate the
-// server by shifting each category's line slightly north of the last.
+// The server builds one line graph per category, so lines of different modes
+// never share a corridor and never bundle with each other. Fixtures keep the
+// modes apart the same way, by giving each its own course.
 const CATEGORY_SHIFT = {ferry: -3, coach: -2, bus: -1, rail: 0, intercity: 1, tram: 2, metro: 3}
 
 const ROUTE_COORDINATES = [
@@ -19,6 +20,8 @@ const ROUTE_COORDINATES = [
   [0.0032, 51.5413],
   [0.129, 51.5681],
 ]
+
+const lineName = (category) => `${category[0].toUpperCase()}${category.slice(1)} Line`
 
 const shiftedRoute = (category) => {
   const shift = (CATEGORY_SHIFT[category] || 0) * 0.0006
@@ -32,7 +35,7 @@ const stopFeature = (name, coordinates, color, category) => ({
     name,
     station: true,
     categories: [category],
-    lines: [{name: `${category[0].toUpperCase()}${category.slice(1)} Line`, agency: "Visual Transit", color}],
+    lines: [{name: lineName(category), agency: "Visual Transit", color}],
   },
 })
 
@@ -48,14 +51,45 @@ export const mockTransitApis = async (page) => {
         features: [
           {
             type: "Feature",
-            geometry: {type: "MultiLineString", coordinates: [shiftedRoute(category)]},
+            geometry: {type: "LineString", coordinates: shiftedRoute(category)},
             properties: {
-              name: `${category[0].toUpperCase()}${category.slice(1)} Line`,
+              line: `${category}-line`,
+              name: lineName(category),
               long_name: `${category[0].toUpperCase()}${category.slice(1)} visual route`,
               agency: "Visual Transit",
               category,
               color,
               text_color: "#FFFFFF",
+              // One line to a corridor here, so it sits on the centreline.
+              slot: 0,
+              bundle: 1,
+            },
+          },
+        ],
+      }),
+    })
+  })
+
+  // Names come off the corridor in both renderings, so the fixture serves the
+  // same course again as the corridor the line runs along.
+  await page.route("**/api/corridors.geojson?cats=*", async (route) => {
+    const category = new URL(route.request().url()).searchParams.get("cats") || "rail"
+    const color = CATEGORY_COLORS[category] || "#6E6E73"
+
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: {type: "LineString", coordinates: shiftedRoute(category)},
+            properties: {
+              name: lineName(category),
+              category,
+              color,
+              stripes: 1,
+              stripe_0: color,
             },
           },
         ],

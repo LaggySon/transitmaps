@@ -12,6 +12,10 @@ defmodule Transitmaps.Display.Network do
   platform-detour slivers dropped, fragments that continue one another
   stitched back together, and every corner rounded into an arc so nothing
   downstream ever meets a jagged vertex.
+
+  What comes out is one line's course, not the network's. Lines still
+  overlap wherever they share track; `LineGraph` is what makes them share
+  the geometry rather than merely lie on top of it.
   """
 
   alias Transitmaps.Geometry
@@ -31,8 +35,12 @@ defmodule Transitmaps.Display.Network do
   # Fragments whose endpoints meet within this are one broken line.
   @stitch_km 0.05
 
-  # Corners round into arcs blending across up to this much track, so
-  # parallel bundle lines stay evenly spaced through bends.
+  # Corners round into arcs blending across up to this much track. A line
+  # drawn beside its neighbours is shifted sideways along the normal at each
+  # vertex, and a corner held in a single sharp vertex is where that goes
+  # wrong for every renderer that does it: the two sides of the join move to
+  # different places and tear the offset line open. Arcs have no sharp
+  # vertices to tear at.
   @corner_radius_km 0.15
 
   def clean(%{type: "MultiLineString", coordinates: strands}) do

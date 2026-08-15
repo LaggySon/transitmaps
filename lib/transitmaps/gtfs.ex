@@ -229,7 +229,8 @@ defmodule Transitmaps.Gtfs do
       geometry: %{type: "LineString", coordinates: corridor.coordinates},
       properties:
         Map.merge(stripes, %{
-          name: Enum.join(corridor.names, " · "),
+          name: corridor.name,
+          color: corridor.color,
           category: corridor.category,
           # How many colours the ribbon carries: it sets the ribbon's thickness
           # and where each stripe sits across it.
@@ -243,12 +244,21 @@ defmodule Transitmaps.Gtfs do
       type: "Feature",
       geometry: line.geometry,
       properties: %{
+        # A line is served as several features — one per run of track it holds
+        # one place across the corridor along — so the client needs its
+        # identity to stitch the runs back into a line.
+        line: line.id,
         name: line.name,
         long_name: line.long_name,
         agency: line.agency,
         category: line.category,
         color: line.color,
-        text_color: line.text_color
+        text_color: line.text_color,
+        # Where this run sits across the bundle it belongs to, counted in
+        # places from the middle. The renderer multiplies it by a pixel pitch,
+        # so the corridor keeps its shape at every zoom.
+        slot: line.slot,
+        bundle: line.bundle
       }
     }
   end

@@ -144,11 +144,19 @@ small enough to render the whole country at once.
 - `Transitmaps.Display` — the drawn-line pipeline, one stage per module:
   `Identity` (one line per national-rail operator or per TfL-style line,
   with brand colours), `Network` (each line's shapes merged into one
-  clean high-fidelity network), and `Bundles` (corridor-sharing lines
-  packed side by side around a shared axis, with offsets computed locally
-  along each corridor and baked into the geometry — so when a line leaves
-  mid-bundle the rest collapse smoothly into its space, and the client
-  just draws plain lines)
+  clean high-fidelity course), `LineGraph` (every line's course collapsed
+  onto *shared tracks*, cut into edges that each carry a fixed set of
+  lines — so "who runs along here" is a fact about the graph rather than a
+  measurement taken separately by every line), `Ordering` (which order
+  those lines sit in across each edge, chosen to minimise the crossings a
+  reader sees at junctions — the metro-line crossing minimisation problem),
+  and `Render` (each line served on the track it runs on, carrying the
+  *slot* it holds across the bundle)
+- Bundle spacing is applied by the renderer in **screen pixels**, not baked
+  into the served coordinates. A ground distance can only be right at one
+  zoom — ten metres is a third of a pixel at z10 and about fifty at z19 —
+  so slots stay dimensionless on the wire and open into a bundle as the map
+  zooms in, closing back onto one centreline at the country zooms
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
   rail-family categories (rail/intercity/metro/tram) are bundled
   together, so serving one loads the family
@@ -159,7 +167,9 @@ small enough to render the whole country at once.
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM
-- `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`
+- `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`,
+  `/api/corridors.geojson` (the same network as one striped ribbon per
+  stretch of track, and the geometry every line label is placed on)
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
   MapLibre hook; layers lazy-load per category on first toggle. An optional
   "Live trains" setting animates markers along the drawn rail-family track

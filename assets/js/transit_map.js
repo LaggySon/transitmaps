@@ -135,8 +135,42 @@ const RIBBON_EDGE = 1.4
 
 const ribbonLayerIds = (cat) => ({
   casing: `${cat}-ribbon-casing`,
-  labels: `${cat}-ribbon-labels`,
 })
+
+// Bundle rendering: a line is served once per run of track it holds one place
+// along, carrying that place as a signed `slot`. The sideways shift is applied
+// here, in screen pixels, so a corridor keeps its shape at every zoom — the
+// one thing a shift baked into the served coordinates can never do, since the
+// ground distance that reads correctly at z15 is a third of a pixel at z10 and
+// fifty pixels at z19.
+//
+// The pitch between neighbours is the drawn width plus a casing's worth of
+// white, and it closes to nothing by the country zooms, where a corridor
+// should read as the single line it looks like from that far out.
+const WIDTH_STOPS = [[4, 0.48], [7, 0.68], [10, 1], [14, 1.72], [17, 1.9]]
+const OFFSET_FADE_STOPS = [[4, 0], [8, 0], [10, 0.35], [12, 0.7], [14, 1]]
+const OFFSET_ZOOMS = [4, 7, 8, 10, 12, 14, 17, 19]
+const OFFSET_GAP = 1.6
+
+// Piecewise-linear read of a `[[zoom, value], …]` curve, clamped at both ends.
+const valueAt = (stops, zoom) => {
+  const [firstZoom, firstValue] = stops[0]
+  if (zoom <= firstZoom) return firstValue
+
+  for (let i = 1; i < stops.length; i++) {
+    const [z0, v0] = stops[i - 1]
+    const [z1, v1] = stops[i]
+    if (zoom <= z1) return v0 + ((v1 - v0) * (zoom - z0)) / (z1 - z0)
+  }
+
+  return stops[stops.length - 1][1]
+}
+
+const offsetPitch = (base) =>
+  OFFSET_ZOOMS.map((zoom) => [
+    zoom,
+    valueAt(OFFSET_FADE_STOPS, zoom) * (valueAt(WIDTH_STOPS, zoom) * base * 1.15 + OFFSET_GAP),
+  ])
 
 // Zoom has to be the input of a top-level interpolate, so anything varying by
 // feature is applied to each zoom stop's output rather than wrapping it.
@@ -158,6 +192,11 @@ const stripeOffset = (index) =>
 
 const stripeLayerId = (cat, index) => `${cat}-ribbon-stripe-${index}`
 
+// Responses cached before slots were served carry none, so those lines fall
+// back to the corridor centreline rather than failing to draw at all.
+const lineOffset = (base) =>
+  byZoom(offsetPitch(base), (pitch) => ["*", pitch, ["coalesce", ["get", "slot"], 0]])
+
 const layerIds = (cat) => ({
   casing: `${cat}-casing`,
   line: `${cat}-line`,
@@ -176,7 +215,6 @@ const desiredLayerOrder = () =>
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
     ),
     MODE_ORDER.map((cat) => layerIds(cat).line),
-    MODE_ORDER.map((cat) => ribbonLayerIds(cat).labels),
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -615,8 +653,7 @@ const TransitMap = {
   },
 
   stripeLayerIds(cat) {
-    const ids = ribbonLayerIds(cat)
-    return [ids.casing, ids.labels].concat(
+    return [ribbonLayerIds(cat).casing].concat(
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
     )
   },
@@ -658,32 +695,6 @@ const TransitMap = {
         },
       })
     }
-
-    // Names must come off the ribbon's own geometry. The bundled layer's
-    // coordinates carry a baked ground offset, which is tens of pixels away
-    // by zoom 18 — far enough to leave a label stranded off its line.
-    this.addLayerInOrder({
-      id: ids.labels,
-      type: "symbol",
-      source: `${cat}-corridors`,
-      minzoom: 10.5,
-      layout: {
-        "symbol-placement": "line",
-        "symbol-spacing": 420,
-        "text-field": ["get", "name"],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 10.5, 9.5, 16, 12.5],
-        "text-letter-spacing": -0.01,
-        "text-padding": 4,
-        "text-optional": true,
-      },
-      paint: {
-        "text-color": ["to-color", ["get", "color"]],
-        "text-halo-color": "rgba(255,255,255,0.96)",
-        "text-halo-width": 1.8,
-        "text-halo-blur": 0.3,
-      },
-    })
   },
 
   setCategoryVisibility(cat) {
@@ -694,15 +705,14 @@ const TransitMap = {
     const ribbons = visible && this.details.has("ribbons")
     const lines = visible && !this.details.has("ribbons")
 
-    const ribbon = ribbonLayerIds(cat)
     const named = this.details.has("labels")
 
     this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
-    this.setVisibility(ribbon.labels, ribbons && named ? "visible" : "none")
 
     this.setVisibility(ids.casing, lines ? "visible" : "none")
     this.setVisibility(ids.line, lines ? "visible" : "none")
-    this.setVisibility(ids.lineLabels, lines && named ? "visible" : "none")
+    // Names come off the corridor, which both renderings draw the same way.
+    this.setVisibility(ids.lineLabels, visible && named ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
     this.setVisibility(ids.labels, visible && this.details.has("labels") ? "visible" : "none")
   },
@@ -726,10 +736,13 @@ const TransitMap = {
       14, base * 1.72,
       17, base * 1.9,
     ]
-    // Bundle placement is baked into the served geometry: lines sharing a
-    // corridor arrive already offset side by side (and collapse into the
-    // space a departing line leaves), so the client draws plain lines and
-    // no renderer offset math can distort the bundle.
+    // A line arrives on the track it runs on, carrying the place it holds
+    // across the corridor. The shift into that place happens here and is
+    // measured in screen pixels, so a bundle opens as the map zooms in and
+    // closes back onto one centreline at the country zooms — rather than
+    // holding one ground distance that is right at exactly one zoom.
+    const offset = lineOffset(width)
+
     this.addLayerInOrder({
       id: ids.casing,
       type: "line",
@@ -738,6 +751,7 @@ const TransitMap = {
       paint: {
         "line-color": "rgba(255,255,255,0.96)",
         "line-width": zoomedWidth(width + 2.15),
+        "line-offset": offset,
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
       },
     })
@@ -750,14 +764,21 @@ const TransitMap = {
       paint: {
         "line-color": ["get", "color"],
         "line-width": zoomedWidth(width),
+        "line-offset": offset,
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
       },
     })
 
+    // Names come off the corridor, not off the lines running along it. A
+    // line's drawn position is a screen-space shift that a symbol layer has
+    // no way to follow, so a name placed on a line's own geometry would sit
+    // tens of pixels off the line it names by z18. The corridor is the one
+    // place a label can point at honestly, and it is the same geometry in
+    // both renderings — so the label says who runs along here.
     this.addLayerInOrder({
       id: ids.lineLabels,
       type: "symbol",
-      source: `${cat}-routes`,
+      source: `${cat}-corridors`,
       minzoom: 10.5,
       layout: {
         "symbol-placement": "line",
@@ -1098,11 +1119,15 @@ const TransitMap = {
       const data = this.categoryData.get(cat)
       if (!data || !data.routes) return
 
-      ;(data.routes.features || []).forEach((feature) => {
-        const line = this.longestLine(feature.geometry)
-        if (line && line.total > MIN_TRAIN_LINE) {
-          lines.push({line, color: this.safeColor(feature.properties?.color)})
-        }
+      // A line is served as several runs — one per stretch it holds a single
+      // place across its corridor along — so the runs are joined back up
+      // before a train is put on one. Without that, trains shuttle back and
+      // forth inside a junction throat instead of running the line.
+      this.joinRuns(data.routes.features || []).forEach(({paths, color}) => {
+        paths.forEach((coords) => {
+          const line = this.measureLine(coords)
+          if (line && line.total > MIN_TRAIN_LINE) lines.push({line, color})
+        })
       })
     })
 
@@ -1124,21 +1149,70 @@ const TransitMap = {
     this.trains = trains
   },
 
-  longestLine(geometry) {
-    if (!geometry) return null
+  // Groups a category's run features back into whole lines, stitching runs
+  // that meet end to end. Runs of one line share their boundary coordinate
+  // exactly, so matching endpoints is all it takes.
+  joinRuns(features) {
+    const grouped = new Map()
 
-    let candidates = []
-    if (geometry.type === "LineString") candidates = [geometry.coordinates]
-    else if (geometry.type === "MultiLineString") candidates = geometry.coordinates
-    else return null
+    features.forEach((feature) => {
+      const parts = this.geometryParts(feature.geometry)
+      if (parts.length === 0) return
 
-    let best = null
-    candidates.forEach((coords) => {
-      const measured = this.measureLine(coords)
-      if (measured && (!best || measured.total > best.total)) best = measured
+      const key = feature.properties?.line ?? feature.properties?.name ?? ""
+      const group =
+        grouped.get(key) || {color: this.safeColor(feature.properties?.color), parts: []}
+      group.parts.push(...parts)
+      grouped.set(key, group)
     })
 
-    return best
+    return [...grouped.values()].map(({color, parts}) => ({color, paths: this.stitch(parts)}))
+  },
+
+  geometryParts(geometry) {
+    if (!geometry) return []
+    const parts =
+      geometry.type === "LineString"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiLineString"
+          ? geometry.coordinates
+          : []
+
+    return parts.filter((coords) => Array.isArray(coords) && coords.length >= 2)
+  },
+
+  stitch(parts) {
+    const at = (point) => `${point[0].toFixed(6)},${point[1].toFixed(6)}`
+    const remaining = parts.slice()
+    const paths = []
+
+    while (remaining.length > 0) {
+      let path = remaining.pop()
+
+      for (let grew = true; grew; ) {
+        grew = false
+
+        for (let i = 0; i < remaining.length; i++) {
+          const part = remaining[i]
+
+          if (at(path[path.length - 1]) === at(part[0])) {
+            path = path.concat(part.slice(1))
+          } else if (at(path[0]) === at(part[part.length - 1])) {
+            path = part.slice(0, -1).concat(path)
+          } else {
+            continue
+          }
+
+          remaining.splice(i, 1)
+          grew = true
+          break
+        }
+      }
+
+      paths.push(path)
+    }
+
+    return paths
   },
 
   measureLine(coords) {

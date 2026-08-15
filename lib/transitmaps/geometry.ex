@@ -303,19 +303,6 @@ defmodule Transitmaps.Geometry do
   end
 
   @doc """
-  Grid cells of size `cell_km` that `line` passes through, given a `scale`
-  from `km_scale/1`. A coarse corridor fingerprint: two lines sharing a
-  stretch of track share a run of cells.
-  """
-  def covered_cells(line, scale, cell_km) when length(line) >= 2 do
-    line
-    |> sample_points(scale, cell_km / 2)
-    |> MapSet.new(&cell(&1, cell_km))
-  end
-
-  def covered_cells(_line, _scale, _cell_km), do: MapSet.new()
-
-  @doc """
   Drops short strands that merely shadow longer kept lines.
 
   After reversal-splitting and dedupe a route can still hold little

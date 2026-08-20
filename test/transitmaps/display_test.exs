@@ -284,6 +284,42 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
+  describe "Display.corridor_ribbons/1" do
+    test "includes an unbroken centreline beneath segmented corridor bands" do
+      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
+      half = for i <- 75..150, do: [-1.0 + i * 0.004, 51.4]
+
+      corridors =
+        Display.corridor_ribbons([
+          route("full", "Full Rail", [full], color: "#112233"),
+          route("half", "Half Rail", [half], color: "#445566")
+        ])
+
+      continuity = Enum.filter(corridors, &(&1.role == "continuity"))
+      ribbons = Enum.filter(corridors, &(&1.role == "ribbon"))
+
+      assert Enum.sort(Enum.map(continuity, & &1.colors)) == [["#112233"], ["#445566"]]
+      assert Enum.any?(ribbons, &(length(&1.colors) == 2))
+
+      full_underlay = Enum.find(continuity, &(&1.colors == ["#112233"]))
+      assert hd(full_underlay.coordinates) == hd(full)
+      assert List.last(full_underlay.coordinates) == List.last(full)
+    end
+
+    test "omits ribbon fragments that are too short to read as corridors" do
+      shared = for i <- 0..20, do: [-1.0 + i * 0.0001, 51.4]
+
+      corridors =
+        Display.corridor_ribbons([
+          route("one", "One Rail", [shared], color: "#112233"),
+          route("two", "Two Rail", [shared], color: "#445566")
+        ])
+
+      assert Enum.count(corridors, &(&1.role == "continuity")) == 2
+      refute Enum.any?(corridors, &(&1.role == "ribbon"))
+    end
+  end
+
   # -- helpers ----------------------------------------------------------------
 
   defp route(id, agency, strands, opts \\ []) do

@@ -231,6 +231,7 @@ defmodule Transitmaps.Gtfs do
         Map.merge(stripes, %{
           name: Enum.join(corridor.names, " · "),
           category: corridor.category,
+          role: corridor.role,
           # How many colours the ribbon carries: it sets the ribbon's thickness
           # and where each stripe sits across it.
           stripes: length(corridor.colors)

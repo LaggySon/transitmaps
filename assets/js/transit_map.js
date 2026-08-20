@@ -134,6 +134,8 @@ const STRIPE_WIDTH = [
 const RIBBON_EDGE = 1.4
 
 const ribbonLayerIds = (cat) => ({
+  continuityCasing: `${cat}-ribbon-continuity-casing`,
+  continuity: `${cat}-ribbon-continuity`,
   casing: `${cat}-ribbon-casing`,
   labels: `${cat}-ribbon-labels`,
 })
@@ -170,7 +172,9 @@ const layerIds = (cat) => ({
 // (a tube line running beside national rail) one mode's white casing can
 // never cut into a neighbouring mode's line.
 const desiredLayerOrder = () =>
-  MODE_ORDER.map((cat) => ribbonLayerIds(cat).casing).concat(
+  MODE_ORDER.map((cat) => ribbonLayerIds(cat).continuityCasing).concat(
+    MODE_ORDER.map((cat) => ribbonLayerIds(cat).continuity),
+    MODE_ORDER.map((cat) => ribbonLayerIds(cat).casing),
     MODE_ORDER.map((cat) => layerIds(cat).casing),
     MODE_ORDER.flatMap((cat) =>
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
@@ -616,7 +620,7 @@ const TransitMap = {
 
   stripeLayerIds(cat) {
     const ids = ribbonLayerIds(cat)
-    return [ids.casing, ids.labels].concat(
+    return [ids.continuityCasing, ids.continuity, ids.casing, ids.labels].concat(
       Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
     )
   },
@@ -624,12 +628,41 @@ const TransitMap = {
   addStripeLayers(cat) {
     const ids = ribbonLayerIds(cat)
 
+    // Corridor membership changes are intentionally split into separate
+    // features. Keep each line's cleaned centreline underneath those pieces,
+    // so a missed claim or a feed shape that fans through a station throat can
+    // never turn a real route into a row of disconnected coloured fragments.
+    this.addLayerInOrder({
+      id: ids.continuityCasing,
+      type: "line",
+      source: `${cat}-corridors`,
+      filter: ["==", ["get", "role"], "continuity"],
+      layout: {"line-join": "round", "line-cap": "round"},
+      paint: {
+        "line-color": "rgba(255,255,255,0.96)",
+        "line-width": byZoom(STRIPE_WIDTH, (width) => width + RIBBON_EDGE),
+      },
+    })
+
+    this.addLayerInOrder({
+      id: ids.continuity,
+      type: "line",
+      source: `${cat}-corridors`,
+      filter: ["==", ["get", "role"], "continuity"],
+      layout: {"line-join": "round", "line-cap": "round"},
+      paint: {
+        "line-color": ["to-color", ["get", "stripe_0"]],
+        "line-width": byZoom(STRIPE_WIDTH),
+      },
+    })
+
     // One casing spanning the whole ribbon, so a bundle reads as a single
     // thicker line rather than as a row of separate ones.
     this.addLayerInOrder({
       id: ids.casing,
       type: "line",
       source: `${cat}-corridors`,
+      filter: ["==", ["get", "role"], "ribbon"],
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
         "line-color": "rgba(255,255,255,0.96)",
@@ -649,8 +682,14 @@ const TransitMap = {
         id: stripeLayerId(cat, index),
         type: "line",
         source: `${cat}-corridors`,
-        filter: [">", ["get", "stripes"], index],
-        layout: {"line-join": "round", "line-cap": "butt"},
+        filter: [
+          "all",
+          ["==", ["get", "role"], "ribbon"],
+          [">", ["get", "stripes"], index],
+        ],
+        // Adjacent membership runs share an endpoint. Rounded caps overlap at
+        // that point and close the tiny wedge a butt cap leaves on a bend.
+        layout: {"line-join": "round", "line-cap": "round"},
         paint: {
           "line-color": ["to-color", ["get", `stripe_${index}`]],
           "line-width": byZoom(STRIPE_WIDTH),
@@ -666,6 +705,7 @@ const TransitMap = {
       id: ids.labels,
       type: "symbol",
       source: `${cat}-corridors`,
+      filter: ["==", ["get", "role"], "ribbon"],
       minzoom: 10.5,
       layout: {
         "symbol-placement": "line",

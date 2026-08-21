@@ -5,6 +5,11 @@ test.beforeEach(async ({page}) => {
   await openStableMap(page)
 })
 
+test("hides the loading overlay when every visible layer is ready", async ({page}) => {
+  await expect(page.locator(".map-loading")).toBeHidden()
+  await expect(page.locator("#transit-map")).toHaveAttribute("data-transit-ready", "true")
+})
+
 test("opens every menu and preserves accessible state", async ({page}) => {
   await page.locator("#map-menu-trip").click()
   await expect(page.locator("#trip-menu")).toBeVisible()

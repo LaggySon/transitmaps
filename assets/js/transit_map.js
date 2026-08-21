@@ -554,6 +554,10 @@ const TransitMap = {
         )
       } else {
         this.showLoading("Transit data ready", "All visible layers loaded", 100)
+        // Data completion can happen after the map's final idle event. Hide
+        // the overlay directly instead of waiting for another idle that may
+        // never fire on a quiet production map.
+        this.hideLoading()
         if (this.liveTraffic) this.refreshTrains()
         if (this.map.loaded()) this.announceIdle()
       }

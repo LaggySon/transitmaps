@@ -53,12 +53,22 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  # Railway assigns every service environment its own public domain, including
+  # ephemeral PR environments. Keep PHX_HOST as the canonical URL when it is
+  # explicitly configured, but always trust the exact domain Railway assigned
+  # to this deployment so LiveView can connect there too.
+  railway_public_domain = System.get_env("RAILWAY_PUBLIC_DOMAIN")
+  host = System.get_env("PHX_HOST") || railway_public_domain || "example.com"
 
-  check_origins =
+  configured_origins =
     System.get_env("PHX_CHECK_ORIGINS", "//#{host}")
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
+
+  check_origins =
+    configured_origins
+    |> Kernel.++(if railway_public_domain, do: ["//#{railway_public_domain}"], else: [])
+    |> Enum.uniq()
 
   config :transitmaps, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 

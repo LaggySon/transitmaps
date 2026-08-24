@@ -5,6 +5,7 @@ defmodule Transitmaps.DisplayTest do
   alias Transitmaps.Display.Identity
   alias Transitmaps.Display.Network
   alias Transitmaps.Geometry
+  alias Transitmaps.Gtfs.RouteTypes
 
   @km_per_lat 110.574
 
@@ -77,24 +78,70 @@ defmodule Transitmaps.DisplayTest do
       assert line.agency == "Elizabeth line"
       assert length(line.geometry.coordinates) == 2
     end
+
+    test "merges a named Overground line across agency and colour aliases" do
+      official = for i <- 0..20, do: [-0.05, 51.47 + i * 0.002]
+      stale_alias = for i <- 0..20, do: [-0.049, 51.47 + i * 0.002]
+
+      assert [line] =
+               Identity.lines([
+                 route("windrush", "Windrush", [stale_alias],
+                   short_name: "Windrush",
+                   color: "#C9423A"
+                 ),
+                 route("tfl-windrush", "Transport for London", [official],
+                   short_name: "Windrush line",
+                   color: "#DC241F"
+                 )
+               ])
+
+      assert line.name == "Windrush"
+      assert line.agency == "Windrush"
+      assert line.color == "#DC241F"
+      assert line.geometry.coordinates == [official]
+    end
   end
 
   describe "Identity.brand_color/2" do
-    test "gives corridor-sharing operators distinct colours" do
+    test "uses canonical colours for every named Overground line" do
+      expected = %{
+        "Liberty" => "#61686B",
+        "Lioness" => "#FFA600",
+        "Mildmay" => "#006FE6",
+        "Suffragette" => "#18A95B",
+        "Weaver" => "#9B0058",
+        "Windrush" => "#DC241F"
+      }
+
+      for {name, color} <- expected do
+        assert Identity.brand_color(name, "rail") == color
+        assert Identity.brand_color("#{name} line", "rail") == color
+        assert Identity.brand_color("London Overground / #{name}", "rail") == color
+      end
+    end
+
+    test "gives conventional National Rail operators one system colour" do
       great_western = Identity.brand_color("Great Western Railway", "rail")
       southern = Identity.brand_color("Southern", "rail")
 
       assert great_western =~ ~r/^#[0-9A-F]{6}$/
-      assert southern =~ ~r/^#[0-9A-F]{6}$/
-      refute great_western == southern
+      assert great_western == RouteTypes.default_color("rail")
+      assert southern == great_western
     end
 
-    test "matches the most specific operator name first" do
-      refute Identity.brand_color("Great Northern", "rail") ==
-               Identity.brand_color("Northern", "rail")
+    test "keeps similarly named National Rail operators as separate identities" do
+      corridor = for i <- 0..10, do: [-1.0 + i * 0.01, 51.4]
 
-      refute Identity.brand_color("South Western Railway", "rail") ==
-               Identity.brand_color("Southern", "rail")
+      lines =
+        Identity.lines([
+          route("great-northern", "Great Northern", [corridor], []),
+          route("northern", "Northern", [corridor], []),
+          route("south-western", "South Western Railway", [corridor], []),
+          route("southern", "Southern", [corridor], [])
+        ])
+
+      assert lines |> Enum.map(& &1.name) |> Enum.sort() ==
+               ["Great Northern", "Northern", "South Western Railway", "Southern"]
     end
 
     test "only applies to rail-family categories" do

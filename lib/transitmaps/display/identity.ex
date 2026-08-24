@@ -2,12 +2,11 @@ defmodule Transitmaps.Display.Identity do
   @moduledoc """
   Decides which drawn lines exist and what each looks like.
 
-  Routes are grouped by `{category, agency, display colour}` — one drawn
-  line per group. That granularity gives exactly the map Apple draws for
-  Britain: every TfL-style line is its own drawn line (each has its own
-  colour under one agency), while a national-rail operator's dozens of
-  timetabled routes — all sharing the operator's brand colour — collapse
-  into one line for the operator's whole network.
+  Routes are grouped by category, canonical operator/line identity, and
+  display colour — one drawn line per group. Known rail brands are recognized
+  in either the agency or route name, so aliases such as "Elizabeth line" and
+  "Transport for London / Elizabeth line" receive one topology pass instead
+  of drawing intersecting copies. Unrelated operators remain separate.
 
   Display colour prefers the operator's brand colour (national-rail feeds
   usually ship one colour for everything), then the feed colour, then the
@@ -21,9 +20,35 @@ defmodule Transitmaps.Display.Identity do
   @doc "One drawn-line map per route group, in stable display order."
   def lines(routes) do
     routes
-    |> Enum.group_by(fn route -> {route.category, route.agency_name, color(route)} end)
-    |> Enum.map(fn {{category, agency, color}, group} -> line(category, agency, color, group) end)
+    |> Enum.group_by(fn route -> {route.category, identity(route), color(route)} end)
+    |> Enum.map(fn {{category, identity, color}, group} ->
+      line(category, group_agency(identity, group), color, group)
+    end)
     |> Enum.sort_by(&{&1.category, &1.agency, &1.name})
+  end
+
+  defp identity(route) do
+    case brand_match(route.short_name, route.category) ||
+           brand_match(route.agency_name, route.category) do
+      {pattern, _color} -> {:brand, pattern}
+      nil -> {:agency, route.agency_name}
+    end
+  end
+
+  defp group_agency({:agency, agency}, _group), do: agency
+
+  defp group_agency({:brand, pattern}, group) do
+    group
+    |> Enum.map(& &1.agency_name)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.min_by(
+      fn agency ->
+        normalized = String.downcase(agency)
+        {not String.contains?(normalized, pattern), String.length(agency), agency}
+      end,
+      fn -> Enum.find_value(group, & &1.short_name) || pattern end
+    )
   end
 
   defp line(category, agency, color, group) do
@@ -94,14 +119,23 @@ defmodule Transitmaps.Display.Identity do
 
   def brand_color(agency_name, category)
       when is_binary(agency_name) and category in @brand_categories do
-    normalized = String.downcase(agency_name)
-
-    Enum.find_value(@brand_colors, fn {pattern, color} ->
-      if String.contains?(normalized, pattern), do: color
-    end)
+    case brand_match(agency_name, category) do
+      {_pattern, color} -> color
+      nil -> nil
+    end
   end
 
   def brand_color(_agency_name, _category), do: nil
+
+  defp brand_match(name, category)
+
+  defp brand_match(name, category)
+       when is_binary(name) and category in @brand_categories do
+    normalized = String.downcase(name)
+    Enum.find(@brand_colors, fn {pattern, _color} -> String.contains?(normalized, pattern) end)
+  end
+
+  defp brand_match(_name, _category), do: nil
 
   defp color(route) do
     brand_color(route.agency_name, route.category) ||

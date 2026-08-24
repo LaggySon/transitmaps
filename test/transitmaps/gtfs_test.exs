@@ -272,6 +272,23 @@ defmodule Transitmaps.GtfsTest do
       assert [_out, _back] = Geometry.split_at_reversals(out ++ back)
     end
 
+    test "splits a platform-scale spike hidden inside the heading window" do
+      line = [
+        [-1.0, 51.4],
+        [-0.998, 51.4],
+        [-0.997, 51.4],
+        [-0.9968, 51.4],
+        [-0.997, 51.4],
+        [-0.995, 51.4],
+        [-0.993, 51.4]
+      ]
+
+      assert [out, spike, onward] = Geometry.split_at_reversals(line)
+      assert List.last(out) == [-0.9968, 51.4]
+      assert spike == [[-0.9968, 51.4], [-0.997, 51.4]]
+      assert hd(onward) == [-0.997, 51.4]
+    end
+
     test "passes short lines through" do
       assert Geometry.split_at_reversals([[-1.0, 51.4], [-0.99, 51.4]]) ==
                [[[-1.0, 51.4], [-0.99, 51.4]]]
@@ -331,8 +348,8 @@ defmodule Transitmaps.GtfsTest do
       trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
 
       branch =
-        (for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4004])) ++
-          (for(i <- 1..10, do: [-0.9, 51.4 + i * 0.005]))
+        for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4004]) ++
+          for(i <- 1..10, do: [-0.9, 51.4 + i * 0.005])
 
       assert [^trunk, unique_branch] = Geometry.extract_network_lines([trunk, branch], 0.15)
       [join_lon, join_lat] = hd(unique_branch)
@@ -369,6 +386,14 @@ defmodule Transitmaps.GtfsTest do
       second = for i <- 0..20, do: [-1.0 + i * 0.01, 51.406]
 
       assert Geometry.extract_network_lines([first, second], 0.15) == [first, second]
+    end
+
+    test "does not snap a crossing route onto covered track" do
+      east_west = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      north_south = for i <- 0..20, do: [-0.9, 51.35 + i * 0.005]
+
+      assert Geometry.extract_network_lines([east_west, north_south], 0.15) ==
+               [east_west, north_south]
     end
   end
 
@@ -481,6 +506,51 @@ defmodule Transitmaps.GtfsTest do
       hairpin = [[-1.0, 51.4], [-0.99, 51.4], [-0.9999, 51.4001]]
 
       assert Geometry.round_corners(hairpin, 0.15) == hairpin
+    end
+  end
+
+  describe "Geometry.extend_junctions/3" do
+    test "gives a branch an overlapping trunk approach that can be rounded" do
+      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      junction = [-0.9, 51.4]
+      branch = [[-0.9, 51.45], [-0.9, 51.42], junction]
+
+      assert [^trunk, extended] = Geometry.extend_junctions([trunk, branch], 0.45, 0.05)
+
+      assert length(extended) > length(branch)
+      assert hd(extended) == hd(branch)
+      assert Enum.at(List.last(extended), 1) == 51.4
+      refute List.last(extended) == junction
+
+      rounded = Geometry.round_corners(extended, 0.45)
+      refute junction in rounded
+    end
+
+    test "does not extend unrelated endpoints" do
+      first = [[-1.0, 51.4], [-0.9, 51.4]]
+      second = [[-0.8, 51.4], [-0.7, 51.4]]
+
+      assert Geometry.extend_junctions([first, second], 0.45, 0.05) == [first, second]
+    end
+
+    test "repairs a hard legacy snap along the longer side of its trunk" do
+      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      junction = [-0.95, 51.4]
+      branch = [[-0.95, 51.45], [-0.95, 51.42], junction]
+
+      assert [^trunk, extended] = Geometry.extend_junctions([trunk, branch], 0.45, 0.05)
+      [end_lon, end_lat] = List.last(extended)
+
+      assert end_lon > -0.95
+      assert end_lat == 51.4
+    end
+
+    test "does not create a reversal while extending a malformed junction" do
+      folded_trunk = [[-0.91, 51.4], [-0.9, 51.4], [-0.91, 51.4001]]
+      branch = [[-0.92, 51.4], [-0.9, 51.4]]
+
+      assert Geometry.extend_junctions([folded_trunk, branch], 0.45, 0.05) ==
+               [folded_trunk, branch]
     end
   end
 

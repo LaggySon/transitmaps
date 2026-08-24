@@ -67,10 +67,15 @@ defmodule Transitmaps.Geometry do
     points = List.to_tuple(projected)
     distances = projected |> cumulative_distances() |> List.to_tuple()
 
-    1..(tuple_size(points) - 2)
-    |> Enum.filter(&reversal_at?(points, distances, &1))
-    |> suppress_nearby(distances)
-    |> then(&split_line_at(line, &1))
+    indexes =
+      1..(tuple_size(points) - 2)
+      |> Enum.filter(&reversal_at?(points, distances, &1))
+      |> suppress_nearby(distances)
+
+    case indexes do
+      [] -> [line]
+      _found -> line |> split_line_at(indexes) |> Enum.flat_map(&split_at_reversals/1)
+    end
   end
 
   def split_at_reversals(line), do: [line]
@@ -85,8 +90,28 @@ defmodule Transitmaps.Geometry do
   @reversal_cosine -0.9
 
   defp reversal_at?(points, distances, i) do
-    {ux, uy} = heading(points, distances, i, -1)
-    {vx, vy} = heading(points, distances, i, +1)
+    local_reversal?(points, i) or windowed_reversal?(points, distances, i)
+  end
+
+  # A very short A-B-A spike can sit wholly inside the heading window, making
+  # its wider anchors appear to carry straight on. Check the adjacent vectors
+  # as well so platform-scale reversals cannot survive as pointed hooks.
+  defp local_reversal?(points, i) do
+    {ax, ay} = elem(points, i - 1)
+    {bx, by} = elem(points, i)
+    {cx, cy} = elem(points, i + 1)
+
+    reversal_vectors?({bx - ax, by - ay}, {cx - bx, cy - by})
+  end
+
+  defp windowed_reversal?(points, distances, i) do
+    incoming = heading(points, distances, i, -1)
+    outgoing = heading(points, distances, i, +1)
+
+    reversal_vectors?(incoming, outgoing)
+  end
+
+  defp reversal_vectors?({ux, uy}, {vx, vy}) do
     norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
 
     norm > 0.0 and (ux * vx + uy * vy) / norm < @reversal_cosine
@@ -114,8 +139,9 @@ defmodule Transitmaps.Geometry do
     indexes
     |> Enum.reduce([], fn index, accepted ->
       case accepted do
-        [previous | _] when elem(distances, index) - elem(distances, previous) <
-                              @heading_window_km ->
+        [previous | _]
+        when elem(distances, index) - elem(distances, previous) <
+               @heading_window_km ->
           accepted
 
         _ ->
@@ -395,9 +421,10 @@ defmodule Transitmaps.Geometry do
   sections farther than `tolerance_km` from track already kept.
 
   A fixed-size coverage grid makes the pass linear in the number of shape
-  samples. Section endpoints snap to retained track in the nearest occupied
-  cell, making a real branch meet its trunk cleanly instead of leaving a
-  platform-sized gap or drawing a short duplicate approach beside it.
+  samples. Coverage requires both proximity and an aligned local heading, so
+  crossing tracks cannot be mistaken for a shared corridor. Section endpoints
+  snap to retained track, making a real branch meet its trunk cleanly instead
+  of leaving a platform-sized gap or drawing a short duplicate approach.
   """
   def extract_network_lines(lines, _tolerance_km) when length(lines) < 2, do: lines
 
@@ -416,8 +443,8 @@ defmodule Transitmaps.Geometry do
             [line]
           else
             annotated =
-              Enum.map(samples, fn {point, projected} ->
-                {point, nearest_covered_point(coverage, projected, tolerance_km)}
+              Enum.map(samples, fn {point, projected, heading} ->
+                {point, nearest_covered_point(coverage, projected, heading, tolerance_km)}
               end)
 
             if Enum.all?(annotated, fn {_point, covered_point} -> is_nil(covered_point) end) do
@@ -469,47 +496,276 @@ defmodule Transitmaps.Geometry do
   end
 
   defp add_coverage(coverage, samples, cell_km) do
-    Enum.reduce(samples, coverage, fn {point, projected}, index ->
-      Map.put_new(index, cell(projected, cell_km), {projected, point})
+    Enum.reduce(samples, coverage, fn {point, projected, heading}, index ->
+      key = cell(projected, cell_km)
+      bucket = heading_bucket(heading)
+      candidate = {projected, point, heading}
+
+      Map.update(index, key, %{bucket => candidate}, &Map.put_new(&1, bucket, candidate))
     end)
   end
 
-  defp nearest_covered_point(coverage, {x, y} = point, cell_km) do
-    {cx, cy} = cell(point, cell_km)
+  # Nearby crossing tracks are not shared track. Requiring their undirected
+  # headings to agree within about 40 degrees prevents a service branch from
+  # being truncated and snapped onto the wrong line at an overpass or station
+  # throat.
+  @coverage_direction_cosine 0.75
 
-    (for dx <- -1..1,
-         dy <- -1..1,
-         candidate <- List.wrap(Map.get(coverage, {cx + dx, cy + dy})),
-         do: candidate)
+  defp nearest_covered_point(coverage, {x, y} = point, heading, cell_km) do
+    {cx, cy} = cell(point, cell_km)
+    max_distance_squared = cell_km * cell_km
+
+    for(
+      dx <- -1..1,
+      dy <- -1..1,
+      candidate <- coverage |> Map.get({cx + dx, cy + dy}, %{}) |> Map.values(),
+      do: candidate
+    )
+    |> Enum.filter(fn {{candidate_x, candidate_y}, _coordinate, candidate_heading} ->
+      squared_distance =
+        (candidate_x - x) * (candidate_x - x) + (candidate_y - y) * (candidate_y - y)
+
+      squared_distance <= max_distance_squared and
+        headings_aligned?(heading, candidate_heading)
+    end)
     |> Enum.min_by(
-      fn {{candidate_x, candidate_y}, _coordinate} ->
+      fn {{candidate_x, candidate_y}, _coordinate, _candidate_heading} ->
         (candidate_x - x) * (candidate_x - x) + (candidate_y - y) * (candidate_y - y)
       end,
       fn -> nil end
     )
     |> case do
       nil -> nil
-      {_projected, coordinate} -> coordinate
+      {_projected, coordinate, _candidate_heading} -> coordinate
     end
   end
 
+  defp headings_aligned?({ux, uy}, {vx, vy}) do
+    norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+    norm > 0.0 and abs((ux * vx + uy * vy) / norm) >= @coverage_direction_cosine
+  end
+
+  # Direction is undirected for shared-track detection, so eastbound and
+  # westbound samples land in the same 15-degree bucket.
+  defp heading_bucket({dx, dy}) do
+    angle = :math.atan2(dy, dx)
+    angle = if angle < 0, do: angle + :math.pi(), else: angle
+    angle = if angle >= :math.pi(), do: angle - :math.pi(), else: angle
+    min(11, floor(angle / (:math.pi() / 12)))
+  end
+
+  @doc """
+  Extends branch endpoints a short distance along the trunk they meet.
+
+  Network extraction deliberately keeps a branch only from the point where
+  it leaves already-covered track. That endpoint is topologically correct,
+  but without an approach vector a later corner pass can only draw a hard Y
+  or right-angle join. When an endpoint lies on the interior of another
+  strand, this function carries it along the best-aligned side of that trunk
+  for up to `radius_km`. The overlap is invisible because both strands belong
+  to the same rendered line, while the now-interior junction can be rounded.
+  """
+  def extend_junctions(lines, _radius_km, _epsilon_km) when length(lines) < 2, do: lines
+
+  def extend_junctions([[reference | _] | _] = lines, radius_km, epsilon_km) do
+    scale = km_scale(reference)
+    indexed = Enum.with_index(lines)
+    junction_index = build_junction_index(indexed, epsilon_km, scale)
+
+    Enum.map(indexed, fn {line, owner_index} ->
+      start_anchor = line |> clip_extension(radius_km, scale) |> List.last()
+      end_anchor = line |> Enum.reverse() |> clip_extension(radius_km, scale) |> List.last()
+
+      start_extension =
+        junction_extension(
+          junction_index,
+          owner_index,
+          hd(line),
+          start_anchor,
+          :start,
+          radius_km,
+          epsilon_km,
+          scale
+        )
+
+      end_extension =
+        junction_extension(
+          junction_index,
+          owner_index,
+          List.last(line),
+          end_anchor,
+          :end,
+          radius_km,
+          epsilon_km,
+          scale
+        )
+
+      prefix = if start_extension, do: start_extension |> tl() |> Enum.reverse(), else: []
+      suffix = if end_extension, do: tl(end_extension), else: []
+
+      Enum.dedup(prefix ++ line ++ suffix)
+    end)
+  end
+
+  defp build_junction_index(indexed, cell_km, scale) do
+    Enum.reduce(indexed, %{}, fn {line, owner_index}, index ->
+      line
+      |> Enum.with_index()
+      |> Enum.drop(1)
+      |> Enum.drop(-1)
+      |> Enum.reduce(index, fn {point, point_index}, current ->
+        key = point |> project_km(scale) |> cell(cell_km)
+        candidate = {owner_index, line, point_index, point}
+        Map.update(current, key, [candidate], &[candidate | &1])
+      end)
+    end)
+  end
+
+  defp junction_extension(
+         junction_index,
+         owner_index,
+         junction,
+         adjacent,
+         side,
+         radius_km,
+         epsilon_km,
+         scale
+       ) do
+    {cx, cy} = junction |> project_km(scale) |> cell(epsilon_km)
+
+    for(
+      dx <- -1..1,
+      dy <- -1..1,
+      candidate <- Map.get(junction_index, {cx + dx, cy + dy}, []),
+      do: candidate
+    )
+    |> Enum.sort_by(fn {candidate_owner, _line, point_index, _point} ->
+      {candidate_owner, point_index}
+    end)
+    |> Enum.flat_map(fn {candidate_owner, other, point_index, point} ->
+      if candidate_owner != owner_index and
+           km_distance(junction, point, scale) <= epsilon_km do
+        before = other |> Enum.take(point_index + 1) |> Enum.reverse()
+        following = Enum.drop(other, point_index)
+
+        [
+          extension_candidate([junction | tl(before)], radius_km, scale),
+          extension_candidate([junction | tl(following)], radius_km, scale)
+        ]
+      else
+        []
+      end
+    end)
+    |> Enum.filter(fn {extension, _available_points} -> length(extension) >= 2 end)
+    |> choose_junction_extension(side, adjacent, scale)
+  end
+
+  @junction_straight_turn :math.pi() / 3
+  @junction_max_turn 2 * :math.pi() / 3
+
+  defp extension_candidate(path, radius_km, scale) do
+    {clip_extension(path, radius_km, scale), length(path)}
+  end
+
+  defp choose_junction_extension([], _side, _adjacent, _scale), do: nil
+
+  defp choose_junction_extension(candidates, side, adjacent, scale) do
+    scored =
+      Enum.map(candidates, fn {[junction | _] = extension, available_points} ->
+        extension_anchor = List.last(extension)
+
+        turn =
+          case side do
+            :start -> turn_angle(extension_anchor, junction, adjacent, scale)
+            :end -> turn_angle(adjacent, junction, extension_anchor, scale)
+          end
+
+        {extension, available_points, turn}
+      end)
+
+    viable =
+      Enum.filter(scored, fn {_extension, _available_points, turn} ->
+        turn <= @junction_max_turn
+      end)
+
+    straight =
+      Enum.filter(viable, fn {_extension, _available_points, turn} ->
+        turn <= @junction_straight_turn
+      end)
+
+    chosen =
+      cond do
+        straight != [] ->
+          Enum.min_by(straight, fn {_extension, _available_points, turn} -> turn end)
+
+        viable != [] ->
+          # A hard join in an already-cleaned preview snapshot may be a legacy
+          # false snap. Following the longer side of the trunk usually restores
+          # the lost through-route; fresh raw imports use the direction-aware
+          # extractor above and normally take the straight-path branch instead.
+          Enum.max_by(viable, fn {_extension, available_points, turn} ->
+            {available_points, -turn}
+          end)
+
+        true ->
+          nil
+      end
+
+    case chosen do
+      {extension, _available_points, _turn} -> extension
+      nil -> nil
+    end
+  end
+
+  defp clip_extension([junction | rest], radius_km, scale) do
+    {reversed, _distance, _previous} =
+      Enum.reduce_while(rest, {[junction], 0.0, junction}, fn point, {kept, distance, previous} ->
+        step = km_distance(previous, point, scale)
+
+        cond do
+          step == 0.0 ->
+            {:cont, {kept, distance, point}}
+
+          distance + step <= radius_km ->
+            {:cont, {[point | kept], distance + step, point}}
+
+          true ->
+            amount = (radius_km - distance) / step
+            clipped = interpolate(previous, point, amount)
+            {:halt, {[clipped | kept], radius_km, clipped}}
+        end
+      end)
+
+    Enum.reverse(reversed)
+  end
+
+  defp turn_angle(previous, corner, next, scale) do
+    {ux, uy} = km_vector(previous, corner, scale)
+    {vx, vy} = km_vector(corner, next, scale)
+    norm = :math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+
+    if norm == 0.0, do: :math.pi(), else: :math.acos(clamp((ux * vx + uy * vy) / norm))
+  end
+
   # Corners gentler than this are already smooth; sharper than the reversal
-  # threshold is a hairpin for `split_at_reversals/1`, not a corner.
+  # threshold is a hairpin for `split_at_reversals/1`, not a corner. Keep a
+  # narrow safety band for malformed near-reversals that the splitter cannot
+  # resolve, but round every ordinary bend below it.
   @corner_min_turn 0.12
-  @corner_reversal_cosine -0.75
+  @corner_reversal_cosine -0.985
 
   # Arc sampling: no vertex in the output turns more than this, so a rendered
   # route follows a clean curve instead of pinching through one sharp vertex.
-  @corner_step 0.3
+  @corner_step 0.15
 
   @doc """
   Rounds interior corners into short arcs.
 
   A corner held in a single vertex forces the renderer through one sharp
   join. Each corner turning more than about 7
-  degrees is replaced by a quadratic arc blending across up to `radius_km`
-  (capped well under half of each adjacent segment so neighbouring corners
-  never overlap), sampled finely enough to render as a clean arc.
+  degrees is replaced by a quadratic arc with `radius_km`-scaled tangent
+  approaches (capped well under half of each adjacent segment so neighbouring
+  corners never overlap), sampled finely enough to render as a clean arc.
   Near-reversals are left alone for `split_at_reversals/1`.
   """
   def round_corners(line, radius_km)
@@ -544,7 +800,12 @@ defmodule Transitmaps.Geometry do
       if turn < @corner_min_turn or cosine < @corner_reversal_cosine do
         [corner]
       else
-        cut = Enum.min([radius_km, incoming * 0.45, outgoing * 0.45])
+        # A fixed cut makes sharp bends look much tighter than gentle ones.
+        # Scaling by tan(turn / 2) is the tangent length of a circular fillet,
+        # giving a 120-degree turn the broad approach it needs without moving
+        # a shallow bend unnecessarily.
+        tangent = radius_km * :math.tan(turn / 2)
+        cut = Enum.min([tangent, incoming * 0.45, outgoing * 0.45])
         entry = interpolate(corner, previous, cut / incoming)
         exit = interpolate(corner, next, cut / outgoing)
         steps = max(2, ceil(turn / @corner_step))
@@ -614,26 +875,38 @@ defmodule Transitmaps.Geometry do
     |> Kernel.++([List.last(projected)])
   end
 
-  # Densifies a line while retaining its geographic coordinates. Original
-  # vertices stay in the result, so extracting unique sections does not
-  # coarsen curves from the source shape.
+  # Densifies a line while retaining its geographic coordinates and local
+  # heading. Original vertices stay in the result, so extracting unique
+  # sections does not coarsen curves from the source shape.
   defp sample_line(line, scale, step_km) do
-    line
-    |> Enum.chunk_every(2, 1, :discard)
-    |> Enum.flat_map(fn [[lon1, lat1], [lon2, lat2]] ->
-      {x1, y1} = project_km([lon1, lat1], scale)
-      {x2, y2} = project_km([lon2, lat2], scale)
-      dx = x2 - x1
-      dy = y2 - y1
-      steps = max(1, ceil(:math.sqrt(dx * dx + dy * dy) / step_km))
+    samples =
+      line
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.flat_map(fn [[lon1, lat1], [lon2, lat2]] ->
+        {x1, y1} = project_km([lon1, lat1], scale)
+        {x2, y2} = project_km([lon2, lat2], scale)
+        dx = x2 - x1
+        dy = y2 - y1
+        steps = max(1, ceil(:math.sqrt(dx * dx + dy * dy) / step_km))
 
-      for i <- 0..(steps - 1) do
-        amount = i / steps
-        coordinate = [lon1 + (lon2 - lon1) * amount, lat1 + (lat2 - lat1) * amount]
-        {coordinate, {x1 + dx * amount, y1 + dy * amount}}
-      end
+        for i <- 0..(steps - 1) do
+          amount = i / steps
+          coordinate = [lon1 + (lon2 - lon1) * amount, lat1 + (lat2 - lat1) * amount]
+          {coordinate, {x1 + dx * amount, y1 + dy * amount}}
+        end
+      end)
+      |> Kernel.++([{List.last(line), project_km(List.last(line), scale)}])
+
+    points = List.to_tuple(samples)
+    last_index = tuple_size(points) - 1
+
+    0..last_index
+    |> Enum.map(fn index ->
+      {coordinate, projected} = elem(points, index)
+      {_previous_coordinate, {previous_x, previous_y}} = elem(points, max(0, index - 1))
+      {_next_coordinate, {next_x, next_y}} = elem(points, min(last_index, index + 1))
+      {coordinate, projected, {next_x - previous_x, next_y - previous_y}}
     end)
-    |> Kernel.++([{List.last(line), project_km(List.last(line), scale)}])
   end
 
   defp cell({x, y}, cell_km), do: {floor(x / cell_km), floor(y / cell_km)}

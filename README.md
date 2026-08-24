@@ -104,8 +104,9 @@ temporary TfL or OSM failure leaves the last successful import in place without
 blocking the new release.
 
 Railway PR environments use an isolated database. Their PR-specific pre-deploy
-step imports Great Britain rail and TfL when that database is new, then reuses
-those feeds on later pushes to the same PR. Phoenix also accepts Railway's
+step hydrates a new database from the live map's public GeoJSON, then reuses
+that snapshot on later pushes to the same PR. Set `RAILWAY_PREVIEW_SEED_URL` to
+override the production snapshot source. Phoenix also accepts Railway's
 generated PR hostname for LiveView connections, so preview links are fully
 interactive before the branch reaches `main`.
 

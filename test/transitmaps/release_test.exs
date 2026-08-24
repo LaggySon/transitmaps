@@ -2,15 +2,15 @@ defmodule Transitmaps.ReleaseTest do
   use ExUnit.Case, async: true
 
   alias Transitmaps.Release
+  alias Transitmaps.Gtfs.Feed
 
-  test "a new preview imports both production map feeds" do
-    assert Release.missing_preview_feeds([]) == ["gb-rail", "tfl"]
+  test "a new or partially populated preview imports the production snapshot" do
+    assert Release.preview_bootstrap_needed?([])
+    assert Release.preview_bootstrap_needed?([%Feed{name: "gb-rail"}])
   end
 
-  test "later preview deploys import only missing feeds" do
-    assert Release.missing_preview_feeds(["gb-rail"]) == ["tfl"]
-    assert Release.missing_preview_feeds(["tfl"]) == ["gb-rail"]
-    assert Release.missing_preview_feeds(["tfl", "gb-rail"]) == []
+  test "later preview deploys reuse their imported snapshot" do
+    refute Release.preview_bootstrap_needed?([%Feed{name: "preview-snapshot"}])
   end
 
   test "Railway applies the bootstrap only to ephemeral PR environments" do

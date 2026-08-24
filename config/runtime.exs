@@ -53,12 +53,24 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  railway_host = System.get_env("RAILWAY_PUBLIC_DOMAIN")
+  host = System.get_env("PHX_HOST") || railway_host || "example.com"
+
+  configured_origins =
+    case System.get_env("PHX_CHECK_ORIGINS") do
+      nil ->
+        ["//#{host}"]
+
+      configured ->
+        configured
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+    end
 
   check_origins =
-    System.get_env("PHX_CHECK_ORIGINS", "//#{host}")
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
+    configured_origins
+    |> then(fn origins -> if railway_host, do: ["//#{railway_host}" | origins], else: origins end)
+    |> Enum.uniq()
 
   config :transitmaps, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 

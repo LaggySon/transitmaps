@@ -4,6 +4,7 @@ defmodule Transitmaps.Release do
   installed.
   """
   @app :transitmaps
+  @preview_feeds ~w(gb-rail tfl)
 
   def migrate do
     load_app()
@@ -34,6 +35,32 @@ defmodule Transitmaps.Release do
     import_tfl()
   end
 
+  @doc """
+  Populates an isolated Railway PR database before its web service starts.
+
+  PR environments keep their database for subsequent pushes, so feeds that
+  already imported successfully are left untouched. A brand-new environment
+  imports the same Great Britain and TfL data used in production instead of
+  serving an empty map until the delayed background refresh runs.
+  """
+  def bootstrap_preview do
+    with_import_repo(fn ->
+      existing_feeds =
+        Transitmaps.Gtfs.Feed
+        |> Transitmaps.Repo.all()
+        |> Enum.map(& &1.name)
+
+      existing_feeds
+      |> missing_preview_feeds()
+      |> Enum.each(&import_preview_feed/1)
+    end)
+  end
+
+  @doc false
+  def missing_preview_feeds(existing_feeds) do
+    Enum.reject(@preview_feeds, &(&1 in existing_feeds))
+  end
+
   @doc ~S|Imports one GTFS feed: eval "Transitmaps.Release.import_gtfs(\"amtrak\", \"https://...zip\")"|
   def import_gtfs(name, source) do
     with_import_repo(fn -> Transitmaps.Gtfs.Importer.import_feed(name, source) end)
@@ -42,6 +69,14 @@ defmodule Transitmaps.Release do
   @doc ~S|Imports TfL lines from the TfL API and OSM: eval "Transitmaps.Release.import_tfl()"|
   def import_tfl do
     with_import_repo(fn -> Transitmaps.Gtfs.TflImporter.import(cache: false) end)
+  end
+
+  defp import_preview_feed("gb-rail") do
+    {:ok, _feed} = Transitmaps.Gtfs.Importer.import_feed("gb-rail", @gb_rail_url)
+  end
+
+  defp import_preview_feed("tfl") do
+    {:ok, _feed} = Transitmaps.Gtfs.TflImporter.import(cache: false)
   end
 
   # `with_repo/3` starts every application the adapter requires, starts a

@@ -2,7 +2,6 @@ defmodule Transitmaps.DisplayTest do
   use ExUnit.Case, async: true
 
   alias Transitmaps.Display
-  alias Transitmaps.Display.Bundles
   alias Transitmaps.Display.Identity
   alias Transitmaps.Display.Network
 
@@ -131,96 +130,14 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
-  describe "Bundles.arrange/1" do
-    test "corridor-sharing lines separate side by side" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, second] = Bundles.arrange([line([corridor]), line([corridor])])
-
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.012, 0.004
-    end
-
-    test "lines running opposite directions still bundle to opposite sides" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, second] = Bundles.arrange([line([corridor]), line([Enum.reverse(corridor)])])
-
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.012, 0.004
-    end
-
-    test "remaining lines collapse into the space a departing line leaves" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 0..75, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, _short, third] = Bundles.arrange([line([full]), line([half]), line([full])])
-
-      # Three abreast on the shared half: outer lines sit a full spacing
-      # apart on each side of the middle one.
-      assert_in_delta lateral_km(first, third, -0.9), 0.024, 0.006
-
-      # After the middle line leaves, the outer pair collapses to a single
-      # spacing, centred on the corridor.
-      assert_in_delta lateral_km(first, third, -0.5), 0.012, 0.004
-    end
-
-    test "bundle offsets taper smoothly, never jump" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 0..75, do: [-1.0 + i * 0.004, 51.4]
-
-      [first | _rest] = Bundles.arrange([line([full]), line([half]), line([full])])
-      [strand] = first.geometry.coordinates
-      kx = 111.320 * :math.cos(51.4 * :math.pi() / 180)
-
-      # Sideways drift per km travelled: a taper is a gentle ramp, a gap
-      # left unfilled or a hard slot change would show as a steep step.
-      slopes =
-        strand
-        |> Enum.chunk_every(2, 1, :discard)
-        |> Enum.map(fn [[lon1, lat1], [lon2, lat2]] ->
-          dx = (lon2 - lon1) * kx
-          dy = (lat2 - lat1) * @km_per_lat
-          abs(dy) / max(abs(dx), 0.001)
-        end)
-
-      assert Enum.max(slopes) < 0.06
-    end
-
-    test "an isolated line keeps its centreline" do
-      away = for i <- 0..100, do: [-1.0 + i * 0.004, 53.0]
-
-      [only] = Bundles.arrange([line([away])])
-      [strand] = only.geometry.coordinates
-
-      assert hd(strand) == [-1.0, 53.0]
-      assert List.last(strand) == [-0.6, 53.0]
-      assert Enum.all?(strand, fn [_lon, lat] -> abs(lat - 53.0) * @km_per_lat < 0.001 end)
-    end
-
-    test "crossing lines keep their own centrelines" do
-      west_east = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-      south_north = for i <- 0..100, do: [-0.8, 51.2 + i * 0.004]
-
-      [horizontal, vertical] = Bundles.arrange([line([west_east]), line([south_north])])
-
-      [h_strand] = horizontal.geometry.coordinates
-      [v_strand] = vertical.geometry.coordinates
-
-      assert Enum.all?(h_strand, fn [_lon, lat] -> abs(lat - 51.4) * @km_per_lat < 0.002 end)
-      assert Enum.all?(v_strand, fn [lon, _lat] -> abs(lon + 0.8) * 69.0 < 0.002 end)
-    end
-  end
-
   describe "Display.drawn_lines/1" do
-    test "runs identity, cleanup, and bundling end to end" do
+    test "runs identity and cleanup without moving shared track off its centreline" do
       corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-      variant = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4003]
 
       lines =
         Display.drawn_lines([
           route("gw1", "Great Western Railway", [corridor], short_name: "GW1"),
-          route("gw2", "Great Western Railway", [variant], short_name: "GW2"),
+          route("gw2", "Great Western Railway", [corridor], short_name: "GW2"),
           route("xc1", "CrossCountry", [Enum.reverse(corridor)], short_name: "XC1")
         ])
 
@@ -229,13 +146,13 @@ defmodule Transitmaps.DisplayTest do
 
       [first, second] = lines
       gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.012, 0.005
+      assert gap < 0.003
     end
   end
 
   # -- helpers ----------------------------------------------------------------
 
-  defp route(id, agency, strands, opts \\ []) do
+  defp route(id, agency, strands, opts) do
     %{
       route_id: id,
       agency_name: agency,
@@ -246,10 +163,6 @@ defmodule Transitmaps.DisplayTest do
       text_color: Keyword.get(opts, :text_color),
       geometry: %{"type" => "MultiLineString", "coordinates" => strands}
     }
-  end
-
-  defp line(strands) do
-    %{geometry: %{type: "MultiLineString", coordinates: strands}}
   end
 
   # Lateral distance in km between two lines' strands, sampled at the

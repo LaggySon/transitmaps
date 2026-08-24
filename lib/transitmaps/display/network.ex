@@ -31,8 +31,8 @@ defmodule Transitmaps.Display.Network do
   # Fragments whose endpoints meet within this are one broken line.
   @stitch_km 0.05
 
-  # Corners round into arcs blending across up to this much track, so
-  # parallel bundle lines stay evenly spaced through bends.
+  # Corners round into arcs blending across up to this much track, so the
+  # renderer never has to turn one route through a hard angular vertex.
   @corner_radius_km 0.15
 
   def clean(%{type: "MultiLineString", coordinates: strands}) do
@@ -56,9 +56,8 @@ defmodule Transitmaps.Display.Network do
   end
 
   # Orient every strand along its dominant axis (south-to-north or
-  # west-to-east) so cleaned geometry is stable however the source shapes
-  # were digitised. Bundling later re-orients strands per corridor; this
-  # keeps cache keys and diffs deterministic.
+  # west-to-east) so cleaned geometry, cache keys, and diffs stay stable
+  # however the source shapes were digitised.
   defp normalize_direction([[lon1, lat1] | _] = strand) do
     [lon2, lat2] = List.last(strand)
 

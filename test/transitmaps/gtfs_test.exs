@@ -450,7 +450,7 @@ defmodule Transitmaps.GtfsTest do
       refute [-0.99, 51.4] in rounded
     end
 
-    test "keeps every output turn gentle enough for parallel offsets" do
+    test "keeps every output turn gentle enough for smooth rendering" do
       corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
       {kx, ky} = Geometry.km_scale(hd(corner))
 

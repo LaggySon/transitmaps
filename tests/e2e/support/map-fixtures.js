@@ -8,8 +8,8 @@ const CATEGORY_COLORS = {
   ferry: "#32ADE6",
 }
 
-// Bundle offsets are baked into served geometry, so fixtures emulate the
-// server by shifting each category's line slightly north of the last.
+// Slight shifts represent separate physical tracks in the feed. Shared track
+// itself stays on one centreline; the renderer never manufactures offsets.
 const CATEGORY_SHIFT = {ferry: -3, coach: -2, bus: -1, rail: 0, intercity: 1, tram: 2, metro: 3}
 
 const ROUTE_COORDINATES = [
@@ -80,8 +80,8 @@ export const mockTransitApis = async (page) => {
   })
 }
 
-export const openStableMap = async (page) => {
-  await mockTransitApis(page)
+export const openStableMap = async (page, options = {}) => {
+  await (options.mockApis || mockTransitApis)(page)
   await page.goto("/?visual_test=1")
   await page.locator("body").evaluate((body) => body.classList.add("playwright-visuals"))
   await page.locator("#transit-map[data-map-ready='true']").waitFor()

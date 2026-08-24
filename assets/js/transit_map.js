@@ -1,4 +1,10 @@
 import maplibregl from "../vendor/maplibre-gl"
+import {
+  routeLayerIds,
+  routeLayerOrder,
+  transitLineLayers,
+  TRANSIT_MODE_ORDER,
+} from "./transit_lines"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
 const tileProxyUrl = (path) => `${location.origin}/tiles${path}`
@@ -20,7 +26,7 @@ const REGIONS = {
   },
 }
 
-const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
+const MODE_ORDER = TRANSIT_MODE_ORDER
 const MODE_LABEL = {
   ferry: "Ferry",
   coach: "Coach",
@@ -30,8 +36,6 @@ const MODE_LABEL = {
   tram: "Tram",
   metro: "Metro",
 }
-const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
-
 // Mode brand colours mirror Transitmaps.Gtfs.RouteTypes.default_color/1 so a
 // station's mode headings read the same as the toggles in the layers menu.
 const MODE_COLOR = {
@@ -65,19 +69,16 @@ const MIN_TRAIN_LINE = 0.004
 const TRAIN_LAYERS = ["live-trains-glow", "live-trains-dot"]
 
 const layerIds = (cat) => ({
-  casing: `${cat}-casing`,
-  line: `${cat}-line`,
+  ...routeLayerIds(cat),
   lineLabels: `${cat}-line-labels`,
   stops: `${cat}-stops`,
   labels: `${cat}-station-labels`,
 })
 
-// All casings render below all coloured lines, so in a mixed-mode bundle
-// (a tube line running beside national rail) one mode's white casing can
-// never cut into a neighbouring mode's line.
+// Shadows and casings sit below every coloured route. A crossing can cover a
+// route, but another mode's white separator can never erase its colour.
 const desiredLayerOrder = () =>
-  MODE_ORDER.map((cat) => layerIds(cat).casing).concat(
-    MODE_ORDER.map((cat) => layerIds(cat).line),
+  routeLayerOrder(MODE_ORDER).concat(
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -438,6 +439,7 @@ const TransitMap = {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
 
+    this.setVisibility(ids.shadow, visible ? "visible" : "none")
     this.setVisibility(ids.casing, visible ? "visible" : "none")
     this.setVisibility(ids.line, visible ? "visible" : "none")
     this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
@@ -455,42 +457,7 @@ const TransitMap = {
 
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
-    const width = LINE_WIDTH[cat] || 2.0
-    const zoomedWidth = (base) => [
-      "interpolate", ["linear"], ["zoom"],
-      4, base * 0.48,
-      7, base * 0.68,
-      10, base,
-      14, base * 1.72,
-      17, base * 1.9,
-    ]
-    // Bundle placement is baked into the served geometry: lines sharing a
-    // corridor arrive already offset side by side (and collapse into the
-    // space a departing line leaves), so the client draws plain lines and
-    // no renderer offset math can distort the bundle.
-    this.addLayerInOrder({
-      id: ids.casing,
-      type: "line",
-      source: `${cat}-routes`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": "rgba(255,255,255,0.96)",
-        "line-width": zoomedWidth(width + 2.15),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
-      },
-    })
-
-    this.addLayerInOrder({
-      id: ids.line,
-      type: "line",
-      source: `${cat}-routes`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": ["get", "color"],
-        "line-width": zoomedWidth(width),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
-      },
-    })
+    transitLineLayers(cat).forEach((layer) => this.addLayerInOrder(layer))
 
     this.addLayerInOrder({
       id: ids.lineLabels,

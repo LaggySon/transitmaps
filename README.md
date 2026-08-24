@@ -144,14 +144,11 @@ small enough to render the whole country at once.
 - `Transitmaps.Display` — the drawn-line pipeline, one stage per module:
   `Identity` (one line per national-rail operator or per TfL-style line,
   with brand colours), `Network` (each line's shapes merged into one
-  clean high-fidelity network), and `Bundles` (corridor-sharing lines
-  packed side by side around a shared axis, with offsets computed locally
-  along each corridor and baked into the geometry — so when a line leaves
-  mid-bundle the rest collapse smoothly into its space, and the client
-  just draws plain lines)
-- `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
-  rail-family categories (rail/intercity/metro/tram) are bundled
-  together, so serving one loads the family
+  clean high-fidelity network). Lines remain on geographic centrelines so
+  shared track stays continuous at every zoom; `assets/js/transit_lines.js`
+  gives those paths their Apple-inspired shadow, white casing, solid colour,
+  round caps, and round joins without coordinate offsets
+- `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category
 - `Transitmaps.Journey` — schedule-free trip planner: a breadth-first
   search over the line graph (two stations are connected when one line
   serves both) that returns the fewest-transfer itinerary between two

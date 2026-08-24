@@ -1,5 +1,7 @@
 import {defineConfig, devices} from "@playwright/test"
 
+const chromiumExecutable = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
@@ -17,10 +19,22 @@ export default defineConfig({
     },
   },
   use: {
-    baseURL: "http://127.0.0.1:4000",
+    baseURL: "http://localhost:4000",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     viewport: {width: 1280, height: 800},
+    launchOptions: chromiumExecutable
+      ? {
+          executablePath: chromiumExecutable,
+          args: [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+          ],
+        }
+      : {},
   },
   projects: [
     {
@@ -30,8 +44,13 @@ export default defineConfig({
   ],
   webServer: {
     command: "mix ecto.create --quiet && mix ecto.migrate --quiet && mix phx.server",
-    env: {...process.env, MIX_ENV: "test", PORT: "4000"},
-    url: "http://127.0.0.1:4000/health",
+    env: {
+      ...process.env,
+      MIX_ENV: "test",
+      PHX_SERVER: "true",
+      PORT: "4000",
+    },
+    url: "http://localhost:4000/health",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

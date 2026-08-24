@@ -35,7 +35,7 @@ defmodule TransitmapsWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <div id="app-shell" class="min-h-dvh bg-[#f2f1ed] text-[#1d1d1f] antialiased">
+    <div id="app-shell" class="min-h-dvh bg-[#edf0ea] text-[#14231e] antialiased">
       {render_slot(@inner_block)}
     </div>
     <.flash_group flash={@flash} />

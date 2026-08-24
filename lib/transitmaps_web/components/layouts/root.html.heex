@@ -4,16 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <meta name="theme-color" content="#f2f1ed" />
+    <meta name="theme-color" content="#edf0ea" />
     <meta name="color-scheme" content="light" />
-    <.live_title default="Transit Maps" suffix=" · Explore public transport">
+    <.live_title default="Wayline" suffix=" · Network atlas">
       {assigns[:page_title]}
     </.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
   </head>
-  <body class="m-0 overflow-hidden bg-[#f2f1ed]">
+  <body class="m-0 overflow-hidden bg-[#edf0ea]">
     {@inner_content}
   </body>
 </html>

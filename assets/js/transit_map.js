@@ -120,7 +120,7 @@ const TransitMap = {
 
     this.map.on("error", (event) => console.error("MapLibre error:", event.error))
     this.map.on("style.load", () => {
-      this.applyAppleBasemap()
+      this.applyAtlasBasemap()
       this.syncLayers()
     })
     this.map.on("load", () => this.markMapReady())
@@ -281,41 +281,41 @@ const TransitMap = {
     if (this.map) this.map.remove()
   },
 
-  applyAppleBasemap() {
+  applyAtlasBasemap() {
     const fills = {
-      background: "#f3f2ee",
-      park: "#dcebd4",
-      water: "#b9ddf3",
-      landcover_ice_shelf: "#edf5f7",
-      landcover_glacier: "#e8f3f5",
-      landuse_residential: "#ebeae6",
-      landcover_wood: "#d7e7d0",
-      building: "#dddcd7",
-      aeroway_area: "#e6e4df",
-      road_area_pier: "#e4e2dc",
+      background: "#eef1eb",
+      park: "#dce8d8",
+      water: "#bfdbe0",
+      landcover_ice_shelf: "#edf3f0",
+      landcover_glacier: "#e8f1ef",
+      landuse_residential: "#e8ebe5",
+      landcover_wood: "#d6e3d1",
+      building: "#d9ddd6",
+      aeroway_area: "#e3e6e0",
+      road_area_pier: "#e1e4dd",
     }
 
     const lines = {
-      waterway: "#a8d2ec",
-      aeroway_taxiway: "#d3d1cb",
-      aeroway_runway_casing: "#d3d1cb",
-      aeroway_runway: "#f7f6f3",
-      road_pier: "#d0cec8",
-      highway_path: "#ffffff",
-      highway_minor: "#ffffff",
-      highway_major_casing: "#d5d2ca",
-      highway_major_inner: "#fffdf9",
-      highway_major_subtle: "#fff4ce",
-      highway_motorway_casing: "#d7c986",
-      highway_motorway_inner: "#ffe89a",
-      highway_motorway_subtle: "#fff0b8",
-      highway_motorway_bridge_casing: "#d7c986",
-      highway_motorway_bridge_inner: "#ffe89a",
-      tunnel_motorway_casing: "#ddd4ad",
-      tunnel_motorway_inner: "#fff1bd",
-      boundary_3: "#b9b8b3",
-      boundary_2: "#aaa9a4",
-      boundary_disputed: "#aaa9a4",
+      waterway: "#a7ced4",
+      aeroway_taxiway: "#cfd4cc",
+      aeroway_runway_casing: "#cfd4cc",
+      aeroway_runway: "#f5f6f2",
+      road_pier: "#ccd1ca",
+      highway_path: "#f8faf6",
+      highway_minor: "#f8faf6",
+      highway_major_casing: "#d3d8d0",
+      highway_major_inner: "#fbfcf8",
+      highway_major_subtle: "#f5f1df",
+      highway_motorway_casing: "#d8d0ad",
+      highway_motorway_inner: "#f6e8aa",
+      highway_motorway_subtle: "#f6edc7",
+      highway_motorway_bridge_casing: "#d8d0ad",
+      highway_motorway_bridge_inner: "#f6e8aa",
+      tunnel_motorway_casing: "#ddd8bc",
+      tunnel_motorway_inner: "#f7edc7",
+      boundary_3: "#b8beb6",
+      boundary_2: "#abb2aa",
+      boundary_disputed: "#abb2aa",
     }
 
     this.map.getStyle().layers.forEach((layer) => {
@@ -412,7 +412,8 @@ const TransitMap = {
 
       if (!routeResponse.ok || !stopResponse.ok) throw new Error(`Could not load ${cat} data`)
 
-      const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
+      const [rawRoutes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
+      const routes = this.smoothRouteCollection(rawRoutes)
       this.categoryData.set(cat, {routes, stops})
 
       if (!this.map.getSource(`${cat}-routes`)) {
@@ -427,6 +428,61 @@ const TransitMap = {
       console.error(`Unable to load ${cat} transit data:`, error)
       throw error
     }
+  },
+
+  // Geographic feeds are often built from sparse stop-to-stop segments. Two
+  // rounds of Chaikin corner cutting turn those angular polylines into calm,
+  // continuous corridors while preserving every route's endpoints. We do it
+  // before MapLibre sees the source, so hit testing, labels and train motion
+  // all follow the same softened geometry.
+  smoothRouteCollection(collection) {
+    if (!collection || !Array.isArray(collection.features)) return collection
+
+    return {
+      ...collection,
+      features: collection.features.map((feature) => ({
+        ...feature,
+        geometry: this.smoothGeometry(feature.geometry),
+      })),
+    }
+  },
+
+  smoothGeometry(geometry) {
+    if (!geometry) return geometry
+    if (geometry.type === "LineString") {
+      return {...geometry, coordinates: this.smoothLine(geometry.coordinates)}
+    }
+    if (geometry.type === "MultiLineString") {
+      return {...geometry, coordinates: geometry.coordinates.map((line) => this.smoothLine(line))}
+    }
+    return geometry
+  },
+
+  smoothLine(coordinates) {
+    if (!Array.isArray(coordinates) || coordinates.length < 3) return coordinates
+
+    let points = coordinates
+    const passes = coordinates.length > 600 ? 1 : 2
+
+    for (let pass = 0; pass < passes; pass++) {
+      const softened = [points[0]]
+      for (let index = 0; index < points.length - 1; index++) {
+        const start = points[index]
+        const finish = points[index + 1]
+        softened.push([
+          start[0] * 0.75 + finish[0] * 0.25,
+          start[1] * 0.75 + finish[1] * 0.25,
+        ])
+        softened.push([
+          start[0] * 0.25 + finish[0] * 0.75,
+          start[1] * 0.25 + finish[1] * 0.75,
+        ])
+      }
+      softened.push(points[points.length - 1])
+      points = softened
+    }
+
+    return points
   },
 
   hideCategory(cat) {
@@ -474,9 +530,10 @@ const TransitMap = {
       source: `${cat}-routes`,
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
-        "line-color": "rgba(255,255,255,0.96)",
-        "line-width": zoomedWidth(width + 2.15),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
+        "line-color": "rgba(251,253,249,0.98)",
+        "line-width": zoomedWidth(width + 2.5),
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.86, 8, 0.98],
+        "line-blur": 0.12,
       },
     })
 
@@ -489,6 +546,7 @@ const TransitMap = {
         "line-color": ["get", "color"],
         "line-width": zoomedWidth(width),
         "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
+        "line-blur": 0.05,
       },
     })
 

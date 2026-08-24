@@ -2,8 +2,8 @@ defmodule Transitmaps.Gtfs do
   @moduledoc """
   Query context for imported GTFS data, serving map-ready GeoJSON.
 
-  Route display work — which lines exist, their geometry, and how
-  corridor-sharing lines bundle — lives in `Transitmaps.Display`; this
+  Route display work — which lines exist and how their continuous geographic
+  centreline is cleaned — lives in `Transitmaps.Display`; this
   module queries the database and shapes the results into GeoJSON.
   """
 

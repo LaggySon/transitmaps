@@ -234,8 +234,8 @@ defmodule Transitmaps.Geometry do
 
   Splitting (long jumps, reversals, loops) can leave a route's geometry as
   a chain of fragments sharing endpoints. Each fragment renders with its
-  own caps and its own offset phase, so the chain reads as broken dashes
-  instead of one line. Fragments whose endpoints coincide within
+  own caps, so the chain reads as broken dashes instead of one line.
+  Fragments whose endpoints coincide within
   `epsilon_km` and whose headings carry straight on are merged back into a
   single strand; joins that double back (genuine reversals) are left split.
   """
@@ -476,6 +476,7 @@ defmodule Transitmaps.Geometry do
 
   defp nearest_covered_point(coverage, {x, y} = point, cell_km) do
     {cx, cy} = cell(point, cell_km)
+
     (for dx <- -1..1,
          dy <- -1..1,
          candidate <- List.wrap(Map.get(coverage, {cx + dx, cy + dy})),
@@ -497,22 +498,19 @@ defmodule Transitmaps.Geometry do
   @corner_min_turn 0.12
   @corner_reversal_cosine -0.75
 
-  # Arc sampling: no vertex in the output turns more than this, so a
-  # parallel-offset rendering of the line stays concentric through the
-  # corner instead of pinching a bundle together at one sharp vertex.
+  # Arc sampling: no vertex in the output turns more than this, so a rendered
+  # route follows a clean curve instead of pinching through one sharp vertex.
   @corner_step 0.3
 
   @doc """
   Rounds interior corners into short arcs.
 
-  A corner held in a single vertex forces renderer line-offsets to squeeze
-  every parallel line of a bundle through one sharp join, pinching the
-  bundle's spacing at the apex. Each corner turning more than about 7
+  A corner held in a single vertex forces the renderer through one sharp
+  join. Each corner turning more than about 7
   degrees is replaced by a quadratic arc blending across up to `radius_km`
   (capped well under half of each adjacent segment so neighbouring corners
-  never overlap), sampled finely enough that offset lines render as clean
-  concentric arcs. Near-reversals are left alone for
-  `split_at_reversals/1`.
+  never overlap), sampled finely enough to render as a clean arc.
+  Near-reversals are left alone for `split_at_reversals/1`.
   """
   def round_corners(line, radius_km)
 

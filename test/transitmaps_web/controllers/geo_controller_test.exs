@@ -1,6 +1,9 @@
 defmodule TransitmapsWeb.GeoControllerTest do
   use TransitmapsWeb.ConnCase, async: true
 
+  alias Transitmaps.Gtfs.{Feed, Stop}
+  alias Transitmaps.Repo
+
   test "serves routes GeoJSON with validators and cache headers", %{conn: conn} do
     conn = get(conn, ~p"/api/routes.geojson", cats: "rail")
 
@@ -27,5 +30,26 @@ defmodule TransitmapsWeb.GeoControllerTest do
 
     body = conn.resp_body |> :zlib.gunzip() |> Jason.decode!()
     assert %{"type" => "FeatureCollection"} = body
+  end
+
+  test "colors station markers from the dominant requested service", %{conn: conn} do
+    feed = Repo.insert!(%Feed{name: "station-colour", url: "test://station-colour"})
+
+    Repo.insert!(%Stop{
+      feed_id: feed.id,
+      stop_id: "heathrow",
+      name: "Heathrow",
+      lat: 51.4719,
+      lon: -0.4541,
+      categories: ["rail", "metro"],
+      lines: [
+        %{name: "Piccadilly", agency: "TfL", category: "metro", color: "#2D65B0"},
+        %{name: "Elizabeth", agency: "TfL", category: "rail", color: "#6950A1"},
+        %{name: "Elizabeth", agency: "TfL Rail", category: "rail", color: "#6950A1"}
+      ]
+    })
+
+    response = conn |> get(~p"/api/stops.geojson", cats: "rail") |> json_response(200)
+    assert [%{"properties" => %{"color" => "#6950A1"}}] = response["features"]
   end
 end

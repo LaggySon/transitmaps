@@ -75,8 +75,8 @@ const layerIds = (cat) => ({
   labels: `${cat}-station-labels`,
 })
 
-// Shadows and casings sit below every coloured route. A crossing can cover a
-// route, but another mode's white separator can never erase its colour.
+// Casings sit below every coloured route. A crossing can cover a route, but
+// another mode's white separator can never erase its colour.
 const desiredLayerOrder = () =>
   routeLayerOrder(MODE_ORDER).concat(
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
@@ -284,15 +284,15 @@ const TransitMap = {
 
   applyAppleBasemap() {
     const fills = {
-      background: "#f3f2ee",
-      park: "#dcebd4",
-      water: "#b9ddf3",
+      background: "#f5f5ef",
+      park: "#e1efda",
+      water: "#bce3f6",
       landcover_ice_shelf: "#edf5f7",
       landcover_glacier: "#e8f3f5",
-      landuse_residential: "#ebeae6",
-      landcover_wood: "#d7e7d0",
-      building: "#dddcd7",
-      aeroway_area: "#e6e4df",
+      landuse_residential: "#efeee9",
+      landcover_wood: "#dbead4",
+      building: "#e2e1dc",
+      aeroway_area: "#e7edf2",
       road_area_pier: "#e4e2dc",
     }
 
@@ -304,16 +304,16 @@ const TransitMap = {
       road_pier: "#d0cec8",
       highway_path: "#ffffff",
       highway_minor: "#ffffff",
-      highway_major_casing: "#d5d2ca",
-      highway_major_inner: "#fffdf9",
-      highway_major_subtle: "#fff4ce",
-      highway_motorway_casing: "#d7c986",
-      highway_motorway_inner: "#ffe89a",
-      highway_motorway_subtle: "#fff0b8",
-      highway_motorway_bridge_casing: "#d7c986",
-      highway_motorway_bridge_inner: "#ffe89a",
-      tunnel_motorway_casing: "#ddd4ad",
-      tunnel_motorway_inner: "#fff1bd",
+      highway_major_casing: "#d4d3cd",
+      highway_major_inner: "#faf9f5",
+      highway_major_subtle: "#f5f3eb",
+      highway_motorway_casing: "#cfcec7",
+      highway_motorway_inner: "#f0efe9",
+      highway_motorway_subtle: "#f4f2eb",
+      highway_motorway_bridge_casing: "#cfcec7",
+      highway_motorway_bridge_inner: "#f0efe9",
+      tunnel_motorway_casing: "#d5d4cd",
+      tunnel_motorway_inner: "#f4f3ed",
       boundary_3: "#b9b8b3",
       boundary_2: "#aaa9a4",
       boundary_disputed: "#aaa9a4",
@@ -329,7 +329,7 @@ const TransitMap = {
       } else if (layer.type === "line" && lines[key]) {
         this.setPaint(layer.id, "line-color", lines[key])
       } else if (layer.type === "symbol") {
-        this.setPaint(layer.id, "text-color", layer.id.includes("water") ? "#4f86a6" : "#656569")
+        this.setPaint(layer.id, "text-color", layer.id.includes("water") ? "#4d86a6" : "#697078")
         this.setPaint(layer.id, "text-halo-color", "rgba(255,255,255,0.9)")
         this.setPaint(layer.id, "text-halo-width", 1.2)
       }
@@ -367,6 +367,7 @@ const TransitMap = {
       if (batch !== this.dataLoadBatch) return
 
       const failures = results.filter((result) => result.status === "rejected")
+      this.refreshStationLabelOwners()
       this.dataLoading = false
       this.el.dataset.mapIdle = "false"
       this.el.dataset.transitReady = failures.length === 0 ? "true" : "error"
@@ -439,7 +440,6 @@ const TransitMap = {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
 
-    this.setVisibility(ids.shadow, visible ? "visible" : "none")
     this.setVisibility(ids.casing, visible ? "visible" : "none")
     this.setVisibility(ids.line, visible ? "visible" : "none")
     this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
@@ -449,6 +449,73 @@ const TransitMap = {
 
   syncDetails() {
     this.loaded.forEach((cat) => this.setCategoryVisibility(cat))
+  },
+
+  // A multimodal interchange is returned by every category source it serves.
+  // Keep every coloured platform dot, but let only one nearby copy own the
+  // label. Apple Maps does this at Heathrow: the rail and Underground dots
+  // remain distinct while "Terminal 4" is written once.
+  refreshStationLabelOwners() {
+    const candidates = []
+
+    this.categoryData.forEach(({stops}, cat) => {
+      ;(stops.features || []).forEach((feature) => {
+        const properties = feature.properties || (feature.properties = {})
+        properties.label = false
+
+        if (this.enabled.has(cat) && properties.station) {
+          candidates.push({cat, feature, key: this.stationLabelKey(properties.name)})
+        }
+      })
+    })
+
+    candidates.sort(
+      (left, right) =>
+        modeRank(left.cat) - modeRank(right.cat) ||
+        left.key.localeCompare(right.key) ||
+        left.cat.localeCompare(right.cat)
+    )
+
+    const owners = []
+    candidates.forEach((candidate) => {
+      const duplicate = owners.some(
+        (owner) =>
+          owner.key === candidate.key &&
+          this.stationsNearby(owner.feature.geometry, candidate.feature.geometry)
+      )
+
+      if (!duplicate) {
+        candidate.feature.properties.label = true
+        owners.push(candidate)
+      }
+    })
+
+    this.categoryData.forEach(({stops}, cat) => {
+      const source = this.map.getSource(`${cat}-stops`)
+      if (source) source.setData(stops)
+    })
+  },
+
+  stationLabelKey(name) {
+    return String(name || "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase()
+      .replace(/\b(?:airport|railway|underground|metro|station|interchange|stop)\b/g, " ")
+      .replace(/\bterminals\b/g, "terminal")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+  },
+
+  stationsNearby(leftGeometry, rightGeometry) {
+    const left = leftGeometry?.coordinates
+    const right = rightGeometry?.coordinates
+    if (!Array.isArray(left) || !Array.isArray(right)) return false
+
+    const meanLatitude = (((left[1] + right[1]) / 2) * Math.PI) / 180
+    const eastWestKm = (left[0] - right[0]) * Math.cos(meanLatitude) * 111.32
+    const northSouthKm = (left[1] - right[1]) * 110.57
+    return Math.hypot(eastWestKm, northSouthKm) <= 0.22
   },
 
   setVisibility(id, visibility) {
@@ -466,19 +533,19 @@ const TransitMap = {
       minzoom: 10.5,
       layout: {
         "symbol-placement": "line",
-        "symbol-spacing": 420,
+        "symbol-spacing": 460,
         "text-field": ["get", "name"],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 10.5, 9.5, 16, 12.5],
-        "text-letter-spacing": -0.01,
+        "text-font": ["Noto Sans Bold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 10.5, 10, 13, 11.5, 16, 13],
+        "text-letter-spacing": 0,
         "text-padding": 4,
         "text-optional": true,
       },
       paint: {
         "text-color": ["get", "color"],
         "text-halo-color": "rgba(255,255,255,0.96)",
-        "text-halo-width": 1.8,
-        "text-halo-blur": 0.3,
+        "text-halo-width": 2,
+        "text-halo-blur": 0.2,
       },
     })
 
@@ -488,10 +555,10 @@ const TransitMap = {
       source: `${cat}-stops`,
       minzoom: 7.5,
       paint: {
-        "circle-color": "#ffffff",
-        "circle-stroke-color": "#4a4a4f",
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 7.5, 1.2, 11, 3.2, 15, 5.8, 17, 7],
-        "circle-stroke-width": ["case", ["get", "station"], 1.7, 1.05],
+        "circle-color": ["case", ["has", "color"], ["to-color", ["get", "color"]], "#5a6677"],
+        "circle-stroke-color": "#ffffff",
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 7.5, 1.2, 11, 2.7, 15, 4.8, 17, 5.8],
+        "circle-stroke-width": ["case", ["get", "station"], 1.35, 0.9],
         "circle-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
         "circle-stroke-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
       },
@@ -502,22 +569,27 @@ const TransitMap = {
       type: "symbol",
       source: `${cat}-stops`,
       minzoom: 8,
-      filter: ["==", ["get", "station"], true],
+      filter: [
+        "all",
+        ["==", ["get", "station"], true],
+        ["==", ["get", "label"], true],
+      ],
       layout: {
         "text-field": ["get", "name"],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 8, 9.5, 12, 11.5, 16, 13.5],
-        "text-anchor": "top",
-        "text-offset": [0, 0.78],
+        "text-font": ["Noto Sans Bold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 12, 12.25, 16, 14.25],
+        "text-variable-anchor": ["top", "bottom", "left", "right", "top-left", "top-right"],
+        "text-radial-offset": 0.72,
+        "text-justify": "auto",
         "text-max-width": 12,
         "text-padding": 3,
         "text-optional": true,
       },
       paint: {
-        "text-color": "#414145",
-        "text-halo-color": "rgba(255,255,255,0.96)",
-        "text-halo-width": 1.7,
-        "text-halo-blur": 0.35,
+        "text-color": "#34425a",
+        "text-halo-color": "rgba(255,255,255,0.98)",
+        "text-halo-width": 2.1,
+        "text-halo-blur": 0.25,
       },
     })
 

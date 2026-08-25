@@ -85,9 +85,10 @@ occasional imports; set `TFL_APP_KEY` to a registered API key for a higher
 rate limit.
 
 Re-importing under the same name replaces that feed's data. Downloads are
-cached in `priv/gtfs_cache/`. Railway refreshes Great Britain rail and TfL in
-the background after the web service is healthy; a failed upstream refresh
-leaves the previously imported map data in place.
+cached in `priv/gtfs_cache/`. The Railway deployment for `main` refreshes Great
+Britain rail and TfL in the background after the web service is healthy; a
+failed upstream refresh leaves the previously imported map data in place. PR
+environments do not run those slow upstream imports.
 
 In a deployed Railway release, run imports from the service shell without
 Mix. Restart the service afterward so its in-memory GeoJSON cache refreshes
@@ -98,10 +99,10 @@ bin/transitmaps eval "Transitmaps.Release.import_tfl()"
 bin/transitmaps eval "Transitmaps.Release.import_gb()"
 ```
 
-Railway also starts a TfL refresh in the background after every application
-release. Deployment migrations remain a required pre-deploy step, while a
-temporary TfL or OSM failure leaves the last successful import in place without
-blocking the new release.
+The `main` deployment also starts a TfL refresh in the background after each
+application release. Deployment migrations remain a required pre-deploy step,
+while a temporary TfL or OSM failure leaves the last successful import in place
+without blocking the new release.
 
 The `Railway deployment` GitHub Actions workflow watches the live `/health`
 endpoint for Railway's deployed commit SHA. Its `production` environment adds
@@ -122,6 +123,45 @@ LC_CTYPE=en_US.UTF-8
 MIX_ENV=prod
 PHX_HOST=transitmaps.laggi.sh
 SECRET_KEY_BASE=<output of mix phx.gen.secret>
+```
+
+### Railway PR environments
+
+Every PR deployment migrates its isolated database, then transactionally
+replaces its GTFS tables with a consistent snapshot of the data currently on
+`main`. The copy streams directly between PostgreSQL connections, so it does
+not depend on third-party GTFS services and does not hold the full data set in
+memory. A missing or failed snapshot blocks the preview deployment instead of
+publishing an empty map.
+
+One-time Railway setup:
+
+1. Enable public TCP networking on the production PostgreSQL service.
+2. Create a PostgreSQL login with `CONNECT` on the production database,
+   `USAGE` on its public schema, and `SELECT` on `feeds`, `routes`, and `stops`.
+3. Set `GTFS_MAIN_DATABASE_URL` on the web service to that login's production
+   public URL. Store the literal URL, not a `${{Postgres.*}}` reference, because
+   references resolve inside each isolated PR environment. Leave this variable
+   unsealed so Railway copies it into future PR environments.
+
+Keep this account strictly read-only: PR code can read variables copied into
+its environment. The account should expose only the same transit data that the
+public map API already serves.
+
+The checked-in `environments.pr` deploy override runs `bin/prepare_pr`, while
+normal environments continue to run only `bin/migrate`. The task also refuses
+to run for the `main` branch and verifies that source and destination are
+different PostgreSQL databases before truncating the preview tables. If the
+public URL needs TLS, append `?ssl=true`.
+
+For example, create the least-privileged source login in the production
+database (replace the generated password before use):
+
+```sql
+CREATE ROLE gtfs_preview_reader LOGIN PASSWORD 'generate-a-long-random-password';
+GRANT CONNECT ON DATABASE railway TO gtfs_preview_reader;
+GRANT USAGE ON SCHEMA public TO gtfs_preview_reader;
+GRANT SELECT ON TABLE public.feeds, public.routes, public.stops TO gtfs_preview_reader;
 ```
 
 Add `transitmaps.laggi.sh` as the service's custom domain, then create the DNS

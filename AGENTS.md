@@ -1,5 +1,46 @@
 This is a web application written using the Phoenix web framework.
 
+## Engineering values
+
+- Prefer ambitious outcomes built from simple systems. Understand the real constraint, then choose the smallest model that makes the correct behavior unsurprising.
+- Do not preserve complexity merely because it already exists, and do not introduce machinery solely because it appears architecturally impressive. Fight scope creep and apply YAGNI.
+- Treat performance as a product requirement. Pay particular attention to oversized GeoJSON responses, unnecessary database work, excessive LiveView payloads, expensive map layers, continuously repainting animations, and CSS effects that cause sustained GPU use.
+- Keep the application remote-ready. Do not bake localhost origins into browser bundles or assume the browser and Phoenix server run on the same machine. Prefer relative application URLs and the existing proxy/controller boundaries.
+- Treat the responsive web experience as multiple real surfaces. Check relevant behavior on desktop and mobile layouts, and account for both local development and deployed Railway environments.
+
+## Workspace safety
+
+- Never kill processes by name or pattern (`pkill -f`, `pgrep | kill`, or similar). This machine can host multiple agents and development servers. Stop only a PID captured when you started it, or a confirmed port owner after checking its working directory.
+- Do not mutate, clean, or start services against the live T3 Code state under `~/.t3/userdata`. If realistic data is needed, copy it into isolated worktree-local state; never symlink back to live state.
+- Treat `.pgdata/` as potentially live application data. Before copying or replacing PostgreSQL files, stop the specific server you own and use database-aware backup/restore tools. Never copy an active data directory piecemeal.
+- Do not stop a development server you did not start. If an occupied port blocks work, inspect the listener and its working directory before taking action.
+
+## Change coverage
+
+Before calling a user-visible change complete, consider each applicable boundary:
+
+- **Entry points:** Keep equivalent controls and state consistent wherever users can reach them, such as desktop panels, mobile sheets, map popups, and URL-driven state.
+- **Client/server contract:** Changes to GeoJSON properties, controller responses, or LiveView events must be reflected in every JavaScript and Elixir consumer.
+- **Reverse states:** If a feature adds a way to enable, open, select, or filter something, preserve a clear way to disable, close, clear, or reset it.
+- **Connection modes:** Verify assumptions for local development, production Railway deployments, and ephemeral Railway PR environments when deployment behavior changes.
+- **Documentation:** Update `README.md` for user- or operator-visible commands and deployment behavior. Keep implementation plans and temporary research out of the repository.
+
+## Verification and pull requests
+
+- Start with the smallest focused proof: test the files and behavior touched, then run the required final `mix precommit` suite.
+- Backend behavior changes require focused tests. Prefer observable outcomes over implementation details and follow the process-synchronization rules below.
+- User-visible map or layout changes should receive one integrated browser pass at relevant desktop and mobile sizes. Update committed visual baselines only when the visual change is intentional, and review the resulting diff.
+- Never create a pull request unless the developer explicitly asks for one.
+- Keep each pull request to one concern. Use a plain-language conventional commit title when it fits, explain the problem and solution in the body, and include before/after images for visual changes or a short recording for motion/timing changes.
+- Upload PR-only evidence to the pull request rather than committing ad-hoc screenshots or recordings to the repository.
+- When asked to babysit a PR, monitor checks and new comments on the latest commit, verify automated findings against the source, fix genuine problems, and explain why any false positive is dismissed. Stop when the latest commit is green.
+
+## Work artifacts
+
+- Do not commit implementation plans, scratch notes, downloaded inspection data, or temporary agent artifacts.
+- Put durable architecture and operational knowledge in maintained project documentation, not parallel checklists that become stale.
+- Comments should explain why a function or boundary exists and how it is used. Avoid narrating obvious lines of code, and update comments when behavior moves.
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues

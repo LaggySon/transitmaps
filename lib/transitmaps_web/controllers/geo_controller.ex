@@ -12,10 +12,6 @@ defmodule TransitmapsWeb.GeoController do
     send_cached_geojson(conn, :stops, params, &Gtfs.stop_feature_collection/1)
   end
 
-  def corridors(conn, params) do
-    send_cached_geojson(conn, :corridors, params, &Gtfs.corridor_feature_collection/1)
-  end
-
   defp send_cached_geojson(conn, kind, params, builder) do
     categories = requested_categories(params)
     key = {kind, Enum.sort(categories)}

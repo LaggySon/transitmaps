@@ -50,7 +50,7 @@ defmodule TransitmapsWeb.MapLive do
   @default_enabled ~w(metro tram rail intercity ferry)
   @default_details ~w(labels stops)
   @panels ~w(explore trip)
-  @details ~w(labels stops ribbons)
+  @details ~w(labels stops)
   @place_ids for {id, _label, _color} <- @place_groups, do: id
   @visual_counts %{
     "metro" => 62,
@@ -743,8 +743,7 @@ defmodule TransitmapsWeb.MapLive do
               :for={
                 {detail, label, icon} <- [
                   {"labels", "Station names", "hero-tag"},
-                  {"stops", "Stop markers", "hero-map-pin"},
-                  {"ribbons", "Striped corridors", "hero-bars-3"}
+                  {"stops", "Stop markers", "hero-map-pin"}
                 ]
               }
               id={"map-detail-#{detail}"}

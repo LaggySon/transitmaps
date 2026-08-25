@@ -2,9 +2,9 @@ defmodule Transitmaps.Gtfs do
   @moduledoc """
   Query context for imported GTFS data, serving map-ready GeoJSON.
 
-  Route display work — which lines exist, their geometry, and how
-  corridor-sharing lines bundle — lives in `Transitmaps.Display`; this
-  module queries the database and shapes the results into GeoJSON.
+  Route display work — which lines exist and what each is called — lives
+  in `Transitmaps.Display`; this module queries the database and shapes
+  the results into GeoJSON.
   """
 
   import Ecto.Query
@@ -44,16 +44,6 @@ defmodule Transitmaps.Gtfs do
     |> Repo.all()
     |> Display.drawn_lines()
     |> Enum.map(&line_feature/1)
-    |> feature_collection()
-  end
-
-  def corridor_feature_collection(categories) do
-    Route
-    |> where([r], r.category in ^categories)
-    |> where([r], not is_nil(r.geometry))
-    |> Repo.all()
-    |> Display.corridor_ribbons()
-    |> Enum.map(&corridor_feature/1)
     |> feature_collection()
   end
 
@@ -213,29 +203,6 @@ defmodule Transitmaps.Gtfs do
     stops
     |> Enum.max_by(&{drawn_line_count(&1), String.length(&1.name || "")})
     |> Map.get(:name)
-  end
-
-  # Stripe colours go out as `stripe_0`, `stripe_1`, … rather than one list:
-  # a GeoJSON source flattens list properties to strings on the way into the
-  # renderer, leaving no way to index them from a style expression.
-  defp corridor_feature(corridor) do
-    stripes =
-      corridor.colors
-      |> Enum.with_index()
-      |> Map.new(fn {color, index} -> {:"stripe_#{index}", color} end)
-
-    %{
-      type: "Feature",
-      geometry: %{type: "LineString", coordinates: corridor.coordinates},
-      properties:
-        Map.merge(stripes, %{
-          name: Enum.join(corridor.names, " · "),
-          category: corridor.category,
-          # How many colours the ribbon carries: it sets the ribbon's thickness
-          # and where each stripe sits across it.
-          stripes: length(corridor.colors)
-        })
-    }
   end
 
   defp line_feature(line) do

@@ -141,14 +141,11 @@ small enough to render the whole country at once.
 - `Transitmaps.Geometry` — polyline primitives: Douglas-Peucker
   simplification, jump/reversal splitting, loop splicing, re-trace
   dedupe, fragment stitching, and corner rounding
-- `Transitmaps.Display` — the drawn-line pipeline, one stage per module:
-  `Identity` (one line per national-rail operator or per TfL-style line,
-  with brand colours), `Network` (each line's shapes merged into one
-  clean high-fidelity network), and `Bundles` (corridor-sharing lines
-  packed side by side around a shared axis, with offsets computed locally
-  along each corridor and baked into the geometry — so when a line leaves
-  mid-bundle the rest collapse smoothly into its space, and the client
-  just draws plain lines)
+- `Transitmaps.Display` — which drawn lines exist, via `Identity` (one
+  line per national-rail operator or per TfL-style line, with brand
+  colours). Geometry is served exactly as imported: every line on its own
+  centreline, lines sharing track drawn on top of one another. The rules
+  for how track should actually be drawn are being rewritten from scratch
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
   rail-family categories (rail/intercity/metro/tram) are bundled
   together, so serving one loads the family

@@ -6,7 +6,7 @@
   "environments": {
     "pr": {
       "deploy": {
-        "startCommand": "env TFL_GEOMETRY_SOURCE=tfl sh /app/_build/prod/rel/transitmaps/bin/server"
+        "startCommand": "env PHX_HOST=$RAILWAY_PUBLIC_DOMAIN PHX_CHECK_ORIGINS=//$RAILWAY_PUBLIC_DOMAIN TFL_GEOMETRY_SOURCE=tfl sh /app/_build/prod/rel/transitmaps/bin/server"
       }
     }
   },

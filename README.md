@@ -108,8 +108,10 @@ temporary TfL or OSM failure leaves the last successful import in place without
 blocking the new release.
 
 Railway PR environments automatically select TfL line-string geometry and run
-that smaller import immediately after startup. Production continues to use the
-detailed OSM geometry.
+that smaller import immediately after startup. The generated Railway domain is
+also used as the Phoenix host and allowed LiveView origin, so every PR preview
+can establish its own WebSocket connection without a per-PR variable override.
+Production continues to use the detailed OSM geometry.
 
 The `Railway deployment` GitHub Actions workflow watches the live `/health`
 endpoint for Railway's deployed commit SHA. Its `production` environment adds

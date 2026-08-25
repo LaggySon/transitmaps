@@ -16,8 +16,8 @@ defmodule Transitmaps.Display do
        every line on its true centreline, overlapping where track is
        shared.
     3. The browser — *how* the line reads on the map: a dedicated layer
-       stack supplies a subtle shadow, one shared-looking white casing and
-       the solid route colour. Geometry stays on the geographic centreline.
+       stack supplies one shared-looking white casing and the solid route
+       colour. Geometry stays on the geographic centreline.
 
   Keeping display geometry on its centreline is deliberate. A ground-metre
   offset can only look right at one zoom, and changing corridor membership

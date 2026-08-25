@@ -4,6 +4,7 @@ defmodule Transitmaps.Release do
   installed.
   """
   @app :transitmaps
+  @preview_feed "preview-snapshot"
 
   def migrate do
     load_app()
@@ -33,6 +34,25 @@ defmodule Transitmaps.Release do
     import_gtfs("gb-rail", @gb_rail_url)
     import_tfl()
   end
+
+  @doc """
+  Populates an isolated Railway PR database before its web service starts.
+
+  PR environments keep their database for subsequent pushes, so a snapshot
+  that already imported successfully is left untouched. A brand-new
+  environment hydrates from production's public GeoJSON instead of serving an
+  empty map or gating deployment on third-party transit APIs.
+  """
+  def bootstrap_preview do
+    with_import_repo(fn ->
+      if preview_bootstrap_needed?(Transitmaps.Repo.all(Transitmaps.Gtfs.Feed)) do
+        Transitmaps.Gtfs.PreviewImporter.import()
+      end
+    end)
+  end
+
+  @doc false
+  def preview_bootstrap_needed?(feeds), do: Enum.all?(feeds, &(&1.name != @preview_feed))
 
   @doc ~S|Imports one GTFS feed: eval "Transitmaps.Release.import_gtfs(\"amtrak\", \"https://...zip\")"|
   def import_gtfs(name, source) do

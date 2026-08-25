@@ -32,6 +32,7 @@ const stopFeature = (name, coordinates, color, category) => ({
     name,
     station: true,
     categories: [category],
+    color,
     lines: [{name: `${category[0].toUpperCase()}${category.slice(1)} Line`, agency: "Visual Transit", color}],
   },
 })
@@ -81,12 +82,24 @@ export const mockTransitApis = async (page) => {
 }
 
 export const openStableMap = async (page, options = {}) => {
+  const styleErrors = []
+  page.on("console", (message) => {
+    const detail = message.text()
+    if (message.type() === "error" && detail.includes("MapLibre error: Error: layers.")) {
+      styleErrors.push(detail)
+    }
+  })
+
   await (options.mockApis || mockTransitApis)(page)
   await page.goto("/?visual_test=1")
   await page.locator("body").evaluate((body) => body.classList.add("playwright-visuals"))
   await page.locator("#transit-map[data-map-ready='true']").waitFor()
   await page.locator("#transit-map[data-transit-ready='true']").waitFor()
   await page.locator("#transit-map[data-map-idle='true']").waitFor()
+
+  if (styleErrors.length > 0) {
+    throw new Error(`MapLibre rejected transit layers:\n${styleErrors.join("\n")}`)
+  }
 }
 
 export const setMapZoom = async (page, zoom, center = [-0.1276, 51.5072]) => {

@@ -43,7 +43,7 @@ defmodule Transitmaps.Application do
   end
 
   defp refresh_gb_rail_on_railway do
-    if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+    if railway_refresh?() do
       # Serve the persisted data and let the GeoJSON cache warm before a
       # large download/import consumes CPU and invalidates that cache.
       Process.sleep(@gb_refresh_delay)
@@ -68,7 +68,7 @@ defmodule Transitmaps.Application do
   end
 
   defp refresh_tfl_on_railway do
-    if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+    if railway_refresh?() do
       # Stagger this behind the national feed so the two imports never fight
       # each other (or the first visitor) immediately after a deployment.
       Process.sleep(@tfl_refresh_delay)
@@ -90,6 +90,14 @@ defmodule Transitmaps.Application do
           )
       end
     end
+  end
+
+  # A Railway PR deployment imports its isolated database before startup.
+  # Its config sets this flag so the ordinary delayed production refresh does
+  # not download and import both feeds a second time ten minutes later.
+  defp railway_refresh? do
+    System.get_env("RAILWAY_ENVIRONMENT_NAME") &&
+      is_nil(System.get_env("RAILWAY_SKIP_STARTUP_REFRESH"))
   end
 
   # Tell Phoenix to update the endpoint configuration

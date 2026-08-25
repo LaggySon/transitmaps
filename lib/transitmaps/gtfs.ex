@@ -51,7 +51,7 @@ defmodule Transitmaps.Gtfs do
     |> Repo.all()
     |> merge_colocated_stops()
     |> Enum.filter(fn stop -> Enum.any?(stop.categories, &(&1 in categories)) end)
-    |> Enum.map(&stop_feature/1)
+    |> Enum.map(&stop_feature(&1, categories))
     |> feature_collection()
   end
 
@@ -105,18 +105,34 @@ defmodule Transitmaps.Gtfs do
     }
   end
 
-  defp stop_feature(%Stop{} = stop) do
+  defp stop_feature(%Stop{} = stop, categories) do
+    lines = Enum.map(stop.lines, &present_line/1)
+
     %{
       type: "Feature",
       geometry: %{type: "Point", coordinates: [stop.lon, stop.lat]},
       properties: %{
         name: stop.name,
         categories: stop.categories,
-        lines: Enum.map(stop.lines, &present_line/1),
+        lines: lines,
+        color: primary_stop_color(lines, categories),
         # Stations serving rail-family modes get the larger "station" marker.
         station: Enum.any?(stop.categories, &(&1 in ~w(rail metro intercity tram)))
       }
     }
+  end
+
+  # Prefer the colour occurring most often among the requested services. This
+  # makes a station dot match the line beneath it while remaining deterministic
+  # at interchanges with several operators.
+  defp primary_stop_color(lines, categories) do
+    lines
+    |> Enum.filter(&(&1.category in categories))
+    |> Enum.map(& &1.color)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.frequencies()
+    |> Enum.max_by(fn {color, count} -> {count, color} end, fn -> {nil, 0} end)
+    |> elem(0)
   end
 
   # Stored line entries may be atom- or string-keyed (structs vs jsonb);

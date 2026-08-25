@@ -103,6 +103,13 @@ release. Deployment migrations remain a required pre-deploy step, while a
 temporary TfL or OSM failure leaves the last successful import in place without
 blocking the new release.
 
+Railway PR environments use an isolated database. Their PR-specific pre-deploy
+step hydrates a new database from the live map's public GeoJSON, then reuses
+that snapshot on later pushes to the same PR. Set `RAILWAY_PREVIEW_SEED_URL` to
+override the production snapshot source. Phoenix also accepts Railway's
+generated PR hostname for LiveView connections, so preview links are fully
+interactive before the branch reaches `main`.
+
 The `Railway deployment` GitHub Actions workflow watches the live `/health`
 endpoint for Railway's deployed commit SHA. Its `production` environment adds
 Vercel-style deployment history and live-site links to GitHub without starting

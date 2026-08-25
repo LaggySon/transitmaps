@@ -1,18 +1,17 @@
-// A transit line is drawn as one uninterrupted geographic path. The visual
-// separation comes from this layer stack, never from moving route coordinates
-// or cutting a route into offset pieces. That keeps joins closed and curves
-// faithful at every zoom, including dense station throats.
+// A transit line is drawn as one uninterrupted geographic path. Crisp white
+// casings separate neighbouring services without moving route coordinates or
+// cutting paths into offset pieces, so joins stay closed at every zoom.
 
 export const TRANSIT_MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
 
 const BASE_WIDTH = {
-  metro: 3.15,
-  tram: 2.75,
-  intercity: 2.7,
-  rail: 2.35,
-  bus: 1.6,
-  coach: 1.6,
-  ferry: 1.9,
+  metro: 2.3,
+  tram: 2.15,
+  intercity: 2.1,
+  rail: 2.05,
+  bus: 1.45,
+  coach: 1.45,
+  ferry: 1.75,
 }
 
 const byZoom = (stops) => [
@@ -22,41 +21,54 @@ const byZoom = (stops) => [
   ...stops.flatMap(([zoom, value]) => [zoom, value]),
 ]
 
-const scaleStops = (base) =>
-  byZoom([
-    [4, base * 0.42],
-    [7, base * 0.64],
-    [10, base * 0.96],
-    [13, base * 1.34],
-    [16, base * 1.72],
-    [19, base * 2.05],
-  ])
+const scaleStops = (base) => [
+  [4, base * 0.42],
+  [7, base * 0.64],
+  [10, base * 0.96],
+  [13, base * 1.34],
+  [16, base * 1.72],
+  [19, base * 2.05],
+]
 
-const edgeWidth = byZoom([
-  [4, 1.15],
-  [8, 1.5],
-  [12, 1.9],
-  [16, 2.25],
-  [19, 2.55],
-])
+const edgeStops = [
+  [4, 0.8],
+  [8, 1.0],
+  [12, 1.35],
+  [16, 1.65],
+  [19, 1.9],
+]
 
-const shadowWidth = byZoom([
-  [4, 1.7],
-  [8, 2.15],
-  [12, 2.7],
-  [16, 3.1],
-  [19, 3.45],
-])
+// MapLibre permits only one zoom-driven interpolate in a style expression.
+// Merge two ramps at their union of stops instead of adding interpolates —
+// the latter is rejected and silently leaves a layer at its 1 px fallback.
+const rampAt = (stops, zoom) => {
+  if (zoom <= stops[0][0]) return stops[0][1]
+
+  for (let index = 1; index < stops.length; index++) {
+    const [previousZoom, previousValue] = stops[index - 1]
+    const [nextZoom, nextValue] = stops[index]
+
+    if (zoom <= nextZoom) {
+      const progress = (zoom - previousZoom) / (nextZoom - previousZoom)
+      return previousValue + (nextValue - previousValue) * progress
+    }
+  }
+
+  return stops[stops.length - 1][1]
+}
+
+const addRamps = (left, right) => {
+  const zooms = [...new Set([...left, ...right].map(([zoom]) => zoom))].sort((a, b) => a - b)
+  return zooms.map((zoom) => [zoom, rampAt(left, zoom) + rampAt(right, zoom)])
+}
 
 export const routeLayerIds = (category) => ({
-  shadow: `${category}-line-shadow`,
   casing: `${category}-casing`,
   line: `${category}-line`,
 })
 
 export const routeLayerOrder = (categories = TRANSIT_MODE_ORDER) =>
-  categories.map((category) => routeLayerIds(category).shadow).concat(
-    categories.map((category) => routeLayerIds(category).casing),
+  categories.map((category) => routeLayerIds(category).casing).concat(
     categories.map((category) => routeLayerIds(category).line)
   )
 
@@ -71,30 +83,19 @@ const continuousLineLayout = {
 
 export const transitLineLayers = (category, source = `${category}-routes`) => {
   const ids = routeLayerIds(category)
-  const routeWidth = scaleStops(BASE_WIDTH[category] || 2)
+  const routeStops = scaleStops(BASE_WIDTH[category] || 2)
+  const routeWidth = byZoom(routeStops)
 
   return [
-    {
-      id: ids.shadow,
-      type: "line",
-      source,
-      layout: continuousLineLayout,
-      paint: {
-        "line-color": "rgba(28, 36, 43, 0.24)",
-        "line-width": ["+", routeWidth, shadowWidth],
-        "line-blur": byZoom([[4, 0.25], [10, 0.45], [16, 0.7]]),
-        "line-opacity": byZoom([[4, 0.34], [9, 0.44], [14, 0.5]]),
-      },
-    },
     {
       id: ids.casing,
       type: "line",
       source,
       layout: continuousLineLayout,
       paint: {
-        "line-color": "rgba(255, 255, 255, 0.97)",
-        "line-width": ["+", routeWidth, edgeWidth],
-        "line-opacity": byZoom([[4, 0.88], [8, 0.96], [12, 1]]),
+        "line-color": "rgba(255, 255, 255, 0.98)",
+        "line-width": byZoom(addRamps(routeStops, edgeStops)),
+        "line-opacity": byZoom([[4, 0.9], [8, 0.97], [12, 1]]),
       },
     },
     {

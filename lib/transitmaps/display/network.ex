@@ -31,9 +31,16 @@ defmodule Transitmaps.Display.Network do
   # Fragments whose endpoints meet within this are one broken line.
   @stitch_km 0.05
 
-  # Corners round into arcs blending across up to this much track, so the
-  # renderer never has to turn one route through a hard angular vertex.
-  @corner_radius_km 0.15
+  # Apple-style lines start bending well before a junction. This radius is
+  # broad enough to read at city zooms while each corner still caps its
+  # approach below half of the available adjacent track.
+  @corner_radius_km 0.45
+
+  # Dense GTFS and preview-snapshot samples can distribute one harsh bend over
+  # dozens of metre-scale vertices, leaving no approach length for a fillet.
+  # Collapse only display-invisible deviations before rounding; endpoints and
+  # therefore station/junction positions are always retained.
+  @curve_tolerance_degrees 0.00035
 
   def clean(%{type: "MultiLineString", coordinates: strands}) do
     %{type: "MultiLineString", coordinates: clean_strands(strands)}
@@ -51,7 +58,14 @@ defmodule Transitmaps.Display.Network do
     |> Geometry.extract_network_lines(@near_duplicate_km)
     |> Geometry.drop_short_shadows(@stub_max_km, @stub_shadow_km)
     |> Geometry.stitch_lines(@stitch_km)
+    |> Geometry.extend_junctions(@corner_radius_km, @stitch_km)
+    |> Enum.map(&Geometry.simplify(&1, @curve_tolerance_degrees))
+    # Endpoint extension and simplification use aggregate headings and can
+    # expose a malformed legacy hairpin that was not present in the raw
+    # strand. Enforce the same reversal invariant on the final geometry.
+    |> Enum.flat_map(&Geometry.split_at_reversals/1)
     |> Enum.map(&Geometry.round_corners(&1, @corner_radius_km))
+    |> Enum.flat_map(&Geometry.split_at_reversals/1)
     |> Enum.map(&normalize_direction/1)
   end
 

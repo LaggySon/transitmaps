@@ -152,14 +152,11 @@ small enough to render the whole country at once.
 - `Transitmaps.Journey` — schedule-free trip planner: a breadth-first
   search over the line graph (two stations are connected when one line
   serves both) that returns the fewest-transfer itinerary between two
-  named stations. Surfaced as the sidebar's "Trip" panel
+  named stations
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
   GeoJSON responses with ETags, warmed at boot, invalidated on import and
   aged out hourly for imports run in a separate VM
 - `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
-  MapLibre hook; layers lazy-load per category on first toggle. An optional
-  "Live trains" setting animates markers along the drawn rail-family track
-  geometry — simulated client-side from the served line shapes (the importer
-  is schedule-free), so it needs no realtime feed and respects
-  `prefers-reduced-motion`
+  MapLibre hook. The map uses a fixed default layer set and leaves the canvas
+  unobstructed apart from zoom and location controls

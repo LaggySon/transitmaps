@@ -4,11 +4,11 @@
 // and need no import: the work here is deciding which of its ~80 raw classes
 // are worth showing, and drawing a pin for each group.
 //
-// Labels and colours for the groups live server-side in `MapLive` (the sidebar
-// renders them too); this module owns what a group means on the map — which
+// Labels and colours for the groups live server-side in `MapLive`; this module
+// owns what a group means on the map — which
 // OSM classes belong to it, and what its pin looks like.
 
-// Raw `poi` classes, grouped into the categories the sidebar offers. Anything
+// Raw `poi` classes, grouped into the categories shown on the map. Anything
 // unlisted stays hidden, which is most of the layer: bollards, gates, waste
 // baskets, bicycle parking and telephones outnumber real destinations roughly
 // two to one and would bury the transit lines in clutter. Transit classes

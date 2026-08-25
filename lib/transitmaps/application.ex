@@ -43,7 +43,7 @@ defmodule Transitmaps.Application do
   end
 
   defp refresh_gb_rail_on_railway do
-    if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+    if refresh_gtfs_on_startup?() do
       # Serve the persisted data and let the GeoJSON cache warm before a
       # large download/import consumes CPU and invalidates that cache.
       Process.sleep(@gb_refresh_delay)
@@ -68,7 +68,7 @@ defmodule Transitmaps.Application do
   end
 
   defp refresh_tfl_on_railway do
-    if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+    if refresh_gtfs_on_startup?() do
       # Stagger this behind the national feed so the two imports never fight
       # each other (or the first visitor) immediately after a deployment.
       Process.sleep(@tfl_refresh_delay)
@@ -89,6 +89,16 @@ defmodule Transitmaps.Application do
               Exception.format(kind, reason, __STACKTRACE__)
           )
       end
+    end
+  end
+
+  @doc false
+  def refresh_gtfs_on_startup?(environment \\ System.get_env()) do
+    case Map.get(environment, "GTFS_AUTO_REFRESH") do
+      value when value in ["true", "1"] -> true
+      value when value in ["false", "0"] -> false
+      nil -> Map.get(environment, "RAILWAY_GIT_BRANCH") == "main"
+      _value -> false
     end
   end
 

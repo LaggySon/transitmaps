@@ -13,6 +13,22 @@ defmodule Transitmaps.Release do
     end
   end
 
+  @doc """
+  Migrates a Railway PR database and fills it with a snapshot of main's GTFS
+  data. This is intentionally a separate release task so production deploys
+  can never invoke the clone through their normal migration command.
+  """
+  def prepare_pr_database do
+    load_app()
+    ensure_preview_branch!()
+
+    source_url = fetch_env!("GTFS_MAIN_DATABASE_URL")
+    destination_url = fetch_env!("DATABASE_URL")
+
+    migrate()
+    Transitmaps.PreviewData.clone!(source_url, destination_url)
+  end
+
   def rollback(repo, version) do
     load_app()
     {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
@@ -62,5 +78,23 @@ defmodule Transitmaps.Release do
     # Many platforms require SSL when connecting to the database
     Application.ensure_all_started(:ssl)
     Application.ensure_loaded(@app)
+  end
+
+  defp fetch_env!(name) do
+    System.get_env(name) ||
+      raise "#{name} is required to prepare a Railway PR database"
+  end
+
+  defp ensure_preview_branch! do
+    case System.get_env("RAILWAY_GIT_BRANCH") do
+      nil ->
+        raise "RAILWAY_GIT_BRANCH is required to prepare a Railway PR database"
+
+      "main" ->
+        raise "refusing to prepare a PR database for the main branch"
+
+      _preview_branch ->
+        :ok
+    end
   end
 end

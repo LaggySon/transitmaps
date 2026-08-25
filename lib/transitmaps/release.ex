@@ -39,7 +39,7 @@ defmodule Transitmaps.Release do
     with_import_repo(fn -> Transitmaps.Gtfs.Importer.import_feed(name, source) end)
   end
 
-  @doc ~S|Imports TfL lines from the TfL API and OSM: eval "Transitmaps.Release.import_tfl()"|
+  @doc ~S|Imports TfL lines using the configured geometry: eval "Transitmaps.Release.import_tfl()"|
   def import_tfl do
     with_import_repo(fn -> Transitmaps.Gtfs.TflImporter.import(cache: false) end)
   end

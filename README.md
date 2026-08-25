@@ -53,6 +53,9 @@ mix gtfs.import gb-rail https://storage.travelwhiz.app/generated-gtfs/gb-nationa
 # TfL Tube, DLR, London Overground, Elizabeth line, and trams:
 mix tfl.import
 
+# Preview TfL's simplified station-to-station Unified API line strings:
+mix tfl.import --geometry tfl
+
 # Amtrak, including the complete Boston-Washington Northeast Corridor:
 mix gtfs.import amtrak https://content.amtrak.com/content/gtfs/GTFS.zip
 
@@ -82,7 +85,8 @@ are not rendered as straight stop-to-stop lines.
 
 The TfL importer uses the public Unified API. Anonymous access works for
 occasional imports; set `TFL_APP_KEY` to a registered API key for a higher
-rate limit.
+rate limit. OSM supplies the detailed track geometry by default; the optional
+`--geometry tfl` mode uses TfL's own simplified line strings instead.
 
 Re-importing under the same name replaces that feed's data. Downloads are
 cached in `priv/gtfs_cache/`. Railway refreshes Great Britain rail and TfL in
@@ -102,6 +106,10 @@ Railway also starts a TfL refresh in the background after every application
 release. Deployment migrations remain a required pre-deploy step, while a
 temporary TfL or OSM failure leaves the last successful import in place without
 blocking the new release.
+
+Railway PR environments automatically select TfL line-string geometry and run
+that smaller import immediately after startup. Production continues to use the
+detailed OSM geometry.
 
 The `Railway deployment` GitHub Actions workflow watches the live `/health`
 endpoint for Railway's deployed commit SHA. Its `production` environment adds

@@ -49,6 +49,7 @@ defmodule Transitmaps.Gtfs.TflImporter do
   }
 
   def import(opts \\ []) do
+    geometry_source = Keyword.get_lazy(opts, :geometry_source, &configured_geometry_source!/0)
     lines = get!("/Line/Mode/#{@modes}/Route")
 
     details =
@@ -59,8 +60,8 @@ defmodule Transitmaps.Gtfs.TflImporter do
       )
       |> Enum.map(fn {:ok, detail} -> detail end)
 
-    osm_relations = osm_relations!(Keyword.get(opts, :cache, true))
-    routes = Enum.map(details, &route_row(&1, osm_relations))
+    geometry_data = geometry_data!(geometry_source, opts)
+    routes = Enum.map(details, &route_row(&1, geometry_source, geometry_data))
     stations = station_rows(details)
 
     Importer.persist_rows("tfl", @api, routes, stations)
@@ -71,12 +72,17 @@ defmodule Transitmaps.Gtfs.TflImporter do
     %{line: line, detail: detail}
   end
 
-  defp route_row(%{line: line, detail: detail}, osm_relations) do
+  defp route_row(%{line: line, detail: detail}, geometry_source, geometry_data) do
     mode = detail["mode"] || line["modeName"]
-    coordinates = line_coordinates(line, mode, osm_relations, detail["stations"] || [])
+
+    coordinates =
+      case geometry_source do
+        :osm -> line_coordinates(line, mode, geometry_data, detail["stations"] || [])
+        :tfl -> tfl_line_coordinates(detail["lineStrings"] || [])
+      end
 
     if coordinates == [] do
-      raise "No geographic OSM geometry found for TfL line #{line["name"]}"
+      raise "No #{geometry_source} geometry found for TfL line #{line["name"]}"
     end
 
     %{
@@ -94,6 +100,49 @@ defmodule Transitmaps.Gtfs.TflImporter do
       }
     }
   end
+
+  @doc false
+  def configured_geometry_source! do
+    case System.get_env("TFL_GEOMETRY_SOURCE") do
+      nil -> :osm
+      "osm" -> :osm
+      "tfl" -> :tfl
+      source -> raise ArgumentError, "unknown TfL geometry source: #{inspect(source)}"
+    end
+  end
+
+  defp geometry_data!(:osm, opts),
+    do: osm_relations!(Keyword.get(opts, :cache, true))
+
+  defp geometry_data!(:tfl, _opts), do: nil
+
+  defp geometry_data!(source, _opts) do
+    raise ArgumentError, "unknown TfL geometry source: #{inspect(source)}"
+  end
+
+  @doc false
+  def tfl_line_coordinates(line_strings) do
+    line_strings
+    |> Enum.flat_map(fn encoded ->
+      case Jason.decode(encoded) do
+        {:ok, lines} when is_list(lines) -> lines
+        _ -> []
+      end
+    end)
+    |> Enum.filter(&valid_line?/1)
+    |> Enum.uniq_by(&canonical_line/1)
+  end
+
+  defp valid_line?(line) when is_list(line) and length(line) > 1 do
+    Enum.all?(line, fn
+      [lon, lat] when is_number(lon) and is_number(lat) -> true
+      _ -> false
+    end)
+  end
+
+  defp valid_line?(_line), do: false
+
+  defp canonical_line(line), do: min(line, Enum.reverse(line))
 
   defp osm_relations!(false) do
     download_osm_relations!()
@@ -327,9 +376,14 @@ defmodule Transitmaps.Gtfs.TflImporter do
     cond do
       # The network gate already isolates the tram and DLR systems, whose
       # relations are not consistently named after the TfL line.
-      mode == "tram" or line["id"] == "dlr" -> true
-      line["id"] == "elizabeth" -> String.contains?(label, "elizabeth")
-      true -> String.contains?(label, "#{name} line") or String.downcase(tags["ref"] || "") == name
+      mode == "tram" or line["id"] == "dlr" ->
+        true
+
+      line["id"] == "elizabeth" ->
+        String.contains?(label, "elizabeth")
+
+      true ->
+        String.contains?(label, "#{name} line") or String.downcase(tags["ref"] || "") == name
     end
   end
 

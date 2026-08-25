@@ -9,6 +9,7 @@ defmodule Transitmaps.Application do
   @gb_rail_url "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"
   @gb_refresh_delay :timer.minutes(10)
   @tfl_refresh_delay :timer.minutes(15)
+  @tfl_preview_refresh_delay :timer.seconds(1)
 
   @impl true
   def start(_type, _args) do
@@ -69,13 +70,16 @@ defmodule Transitmaps.Application do
 
   defp refresh_tfl_on_railway do
     if System.get_env("RAILWAY_ENVIRONMENT_NAME") do
+      geometry_source = Transitmaps.Gtfs.TflImporter.configured_geometry_source!()
+
       # Stagger this behind the national feed so the two imports never fight
-      # each other (or the first visitor) immediately after a deployment.
-      Process.sleep(@tfl_refresh_delay)
-      Logger.info("Refreshing TfL data after Railway startup")
+      # each other in production. PR previews use TfL's inexpensive line
+      # strings and import immediately so the preview is useful when ready.
+      Process.sleep(tfl_refresh_delay(geometry_source))
+      Logger.info("Refreshing TfL data after Railway startup using #{geometry_source} geometry")
 
       try do
-        Transitmaps.Gtfs.TflImporter.import(cache: false)
+        Transitmaps.Gtfs.TflImporter.import(cache: false, geometry_source: geometry_source)
       rescue
         error ->
           Logger.error(
@@ -91,6 +95,9 @@ defmodule Transitmaps.Application do
       end
     end
   end
+
+  defp tfl_refresh_delay(:tfl), do: @tfl_preview_refresh_delay
+  defp tfl_refresh_delay(:osm), do: @tfl_refresh_delay
 
   # Tell Phoenix to update the endpoint configuration
   # whenever the application is updated.

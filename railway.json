@@ -3,6 +3,13 @@
   "build": {
     "builder": "RAILPACK"
   },
+  "environments": {
+    "pr": {
+      "deploy": {
+        "startCommand": "env TFL_GEOMETRY_SOURCE=tfl sh /app/_build/prod/rel/transitmaps/bin/server"
+      }
+    }
+  },
   "deploy": {
     "preDeployCommand": "sh /app/_build/prod/rel/transitmaps/bin/migrate",
     "healthcheckPath": "/health",

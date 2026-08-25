@@ -39,7 +39,8 @@ const MODE_LABEL = {
   tram: "Tram",
   metro: "Metro",
 }
-const LINE_WIDTH = {metro: 3.2, tram: 2.6, intercity: 2.8, rail: 2.35, bus: 1.55, coach: 1.55, ferry: 1.8}
+// Every mode draws at one flat width, at every zoom. A starting point, not a rule.
+const LINE_WIDTH = 2
 
 // Mode brand colours mirror Transitmaps.Gtfs.RouteTypes.default_color/1 so a
 // station's mode headings read the same as the toggles in the layers menu.
@@ -96,87 +97,16 @@ const byZoomAndInterchange = (stops, busy) => [
   ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
 ]
 
-// Ribbon rendering: a run of track arrives as one line carrying the colours of
-// every service on it, and is drawn as a single thicker line divided into a
-// band per colour. One white casing spans the whole ribbon, and each band is
-// drawn narrower than its share of the width, so the casing shows through
-// between the bands and keeps them apart.
-//
-// Widths are in screen pixels, so a ribbon holds its proportions at any zoom
-// rather than collapsing the way baked ground-metre offsets do.
-// Enough bands for the busiest trunk route. The East Coast Main Line runs ten
-// operators over one pair of tracks, and a band past this cap is simply never
-// drawn — the operator vanishes from the ribbon with nothing to show for it.
-const MAX_STRIPES = 12
-
-// Spacing between band centres. It falls to nothing by the country zooms: a
-// ribbon held open there would be a wide white casing carrying hairline
-// colours across thousands of short segments, which reads as a dashed line
-// rather than a railway. Closed up, the bands sit on one centreline and a
-// corridor draws as the single line it looks like from that far out.
-const STRIPE_PITCH = [
-  [6, 0],
-  [9, 0.8],
-  [11, 2.4],
-  [13, 4.2],
-  [16, 6],
-  [19, 7.5],
-]
-
-// Band thickness is set apart from the pitch, so bands stay drawable at the
-// zooms where the pitch has closed to nothing.
-const STRIPE_WIDTH = [
-  [6, 1.3],
-  [11, 2],
-  [14, 3.2],
-  [19, 4.6],
-]
-const RIBBON_EDGE = 1.4
-
-const ribbonLayerIds = (cat) => ({
-  casing: `${cat}-ribbon-casing`,
-  labels: `${cat}-ribbon-labels`,
-})
-
-// Zoom has to be the input of a top-level interpolate, so anything varying by
-// feature is applied to each zoom stop's output rather than wrapping it.
-const byZoom = (stops, transform = (value) => value) => [
-  "interpolate",
-  ["linear"],
-  ["zoom"],
-  ...stops.flatMap(([zoom, value]) => [zoom, transform(value)]),
-]
-
-// Band i sits i places across a ribbon `stripes` wide, measured from its
-// centre: with three bands the offsets are -1, 0 and +1 pitches.
-const stripeOffset = (index) =>
-  byZoom(STRIPE_PITCH, (pitch) => [
-    "*",
-    pitch,
-    ["-", index, ["/", ["-", ["get", "stripes"], 1], 2]],
-  ])
-
-const stripeLayerId = (cat, index) => `${cat}-ribbon-stripe-${index}`
-
 const layerIds = (cat) => ({
-  casing: `${cat}-casing`,
   line: `${cat}-line`,
   lineLabels: `${cat}-line-labels`,
   stops: `${cat}-stops`,
   labels: `${cat}-station-labels`,
 })
 
-// All casings render below all coloured lines, so in a mixed-mode bundle
-// (a tube line running beside national rail) one mode's white casing can
-// never cut into a neighbouring mode's line.
+// Lines first, then their names, then stops and station names on top.
 const desiredLayerOrder = () =>
-  MODE_ORDER.map((cat) => ribbonLayerIds(cat).casing).concat(
-    MODE_ORDER.map((cat) => layerIds(cat).casing),
-    MODE_ORDER.flatMap((cat) =>
-      Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
-    ),
-    MODE_ORDER.map((cat) => layerIds(cat).line),
-    MODE_ORDER.map((cat) => ribbonLayerIds(cat).labels),
+  MODE_ORDER.map((cat) => layerIds(cat).line).concat(
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -576,27 +506,21 @@ const TransitMap = {
 
   async loadCategory(cat) {
     try {
-      const [routeResponse, stopResponse, corridorResponse] = await Promise.all([
+      const [routeResponse, stopResponse] = await Promise.all([
         fetch(`/api/routes.geojson?cats=${encodeURIComponent(cat)}`),
         fetch(`/api/stops.geojson?cats=${encodeURIComponent(cat)}`),
-        fetch(`/api/corridors.geojson?cats=${encodeURIComponent(cat)}`),
       ])
 
-      if (!routeResponse.ok || !stopResponse.ok || !corridorResponse.ok) {
+      if (!routeResponse.ok || !stopResponse.ok) {
         throw new Error(`Could not load ${cat} data`)
       }
 
-      const [routes, stops, corridors] = await Promise.all([
-        routeResponse.json(),
-        stopResponse.json(),
-        corridorResponse.json(),
-      ])
+      const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
       this.categoryData.set(cat, {routes, stops})
 
       if (!this.map.getSource(`${cat}-routes`)) {
         this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
         this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
-        this.map.addSource(`${cat}-corridors`, {type: "geojson", data: corridors})
         this.addCategoryLayers(cat)
       }
 
@@ -611,98 +535,14 @@ const TransitMap = {
   hideCategory(cat) {
     if (!this.loaded.has(cat)) return
     Object.values(layerIds(cat)).forEach((id) => this.setVisibility(id, "none"))
-    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, "none"))
-  },
-
-  stripeLayerIds(cat) {
-    const ids = ribbonLayerIds(cat)
-    return [ids.casing, ids.labels].concat(
-      Array.from({length: MAX_STRIPES}, (_, index) => stripeLayerId(cat, index))
-    )
-  },
-
-  addStripeLayers(cat) {
-    const ids = ribbonLayerIds(cat)
-
-    // One casing spanning the whole ribbon, so a bundle reads as a single
-    // thicker line rather than as a row of separate ones.
-    this.addLayerInOrder({
-      id: ids.casing,
-      type: "line",
-      source: `${cat}-corridors`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": "rgba(255,255,255,0.96)",
-        // Wide enough to hold every band plus a rim. As the pitch closes at
-        // country zooms this falls back to one band's worth, so the casing
-        // never outgrows the colour it is meant to be edging.
-        "line-width": [
-          "+",
-          byZoom(STRIPE_PITCH, (pitch) => ["*", pitch, ["-", ["get", "stripes"], 1]]),
-          byZoom(STRIPE_WIDTH, (width) => width + RIBBON_EDGE),
-        ],
-      },
-    })
-
-    for (let index = 0; index < MAX_STRIPES; index++) {
-      this.addLayerInOrder({
-        id: stripeLayerId(cat, index),
-        type: "line",
-        source: `${cat}-corridors`,
-        filter: [">", ["get", "stripes"], index],
-        layout: {"line-join": "round", "line-cap": "butt"},
-        paint: {
-          "line-color": ["to-color", ["get", `stripe_${index}`]],
-          "line-width": byZoom(STRIPE_WIDTH),
-          "line-offset": stripeOffset(index),
-        },
-      })
-    }
-
-    // Names must come off the ribbon's own geometry. The bundled layer's
-    // coordinates carry a baked ground offset, which is tens of pixels away
-    // by zoom 18 — far enough to leave a label stranded off its line.
-    this.addLayerInOrder({
-      id: ids.labels,
-      type: "symbol",
-      source: `${cat}-corridors`,
-      minzoom: 10.5,
-      layout: {
-        "symbol-placement": "line",
-        "symbol-spacing": 420,
-        "text-field": ["get", "name"],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 10.5, 9.5, 16, 12.5],
-        "text-letter-spacing": -0.01,
-        "text-padding": 4,
-        "text-optional": true,
-      },
-      paint: {
-        "text-color": ["to-color", ["get", "color"]],
-        "text-halo-color": "rgba(255,255,255,0.96)",
-        "text-halo-width": 1.8,
-        "text-halo-blur": 0.3,
-      },
-    })
   },
 
   setCategoryVisibility(cat) {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
-    // The two renderings draw the same network, so only one may be on at a
-    // time or every shared corridor would be painted twice.
-    const ribbons = visible && this.details.has("ribbons")
-    const lines = visible && !this.details.has("ribbons")
 
-    const ribbon = ribbonLayerIds(cat)
-    const named = this.details.has("labels")
-
-    this.stripeLayerIds(cat).forEach((id) => this.setVisibility(id, ribbons ? "visible" : "none"))
-    this.setVisibility(ribbon.labels, ribbons && named ? "visible" : "none")
-
-    this.setVisibility(ids.casing, lines ? "visible" : "none")
-    this.setVisibility(ids.line, lines ? "visible" : "none")
-    this.setVisibility(ids.lineLabels, lines && named ? "visible" : "none")
+    this.setVisibility(ids.line, visible ? "visible" : "none")
+    this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
     this.setVisibility(ids.labels, visible && this.details.has("labels") ? "visible" : "none")
   },
@@ -717,31 +557,9 @@ const TransitMap = {
 
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
-    const width = LINE_WIDTH[cat] || 2.0
-    const zoomedWidth = (base) => [
-      "interpolate", ["linear"], ["zoom"],
-      4, base * 0.48,
-      7, base * 0.68,
-      10, base,
-      14, base * 1.72,
-      17, base * 1.9,
-    ]
-    // Bundle placement is baked into the served geometry: lines sharing a
-    // corridor arrive already offset side by side (and collapse into the
-    // space a departing line leaves), so the client draws plain lines and
-    // no renderer offset math can distort the bundle.
-    this.addLayerInOrder({
-      id: ids.casing,
-      type: "line",
-      source: `${cat}-routes`,
-      layout: {"line-join": "round", "line-cap": "round"},
-      paint: {
-        "line-color": "rgba(255,255,255,0.96)",
-        "line-width": zoomedWidth(width + 2.15),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.82, 8, 0.94],
-      },
-    })
 
+    // Every line on its own centreline, one flat colour, one flat width.
+    // Lines sharing track draw on top of one another; nothing separates them.
     this.addLayerInOrder({
       id: ids.line,
       type: "line",
@@ -749,8 +567,7 @@ const TransitMap = {
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
         "line-color": ["get", "color"],
-        "line-width": zoomedWidth(width),
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.88, 8, 1],
+        "line-width": LINE_WIDTH,
       },
     })
 
@@ -839,7 +656,6 @@ const TransitMap = {
       },
     })
 
-    this.addStripeLayers(cat)
     this.bindPopups(cat)
   },
 

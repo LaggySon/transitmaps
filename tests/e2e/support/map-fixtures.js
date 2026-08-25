@@ -8,10 +8,6 @@ const CATEGORY_COLORS = {
   ferry: "#32ADE6",
 }
 
-// Bundle offsets are baked into served geometry, so fixtures emulate the
-// server by shifting each category's line slightly north of the last.
-const CATEGORY_SHIFT = {ferry: -3, coach: -2, bus: -1, rail: 0, intercity: 1, tram: 2, metro: 3}
-
 const ROUTE_COORDINATES = [
   [-0.5104, 51.4713],
   [-0.3019, 51.5154],
@@ -19,11 +15,6 @@ const ROUTE_COORDINATES = [
   [0.0032, 51.5413],
   [0.129, 51.5681],
 ]
-
-const shiftedRoute = (category) => {
-  const shift = (CATEGORY_SHIFT[category] || 0) * 0.0006
-  return ROUTE_COORDINATES.map(([lon, lat]) => [lon, lat + shift])
-}
 
 const stopFeature = (name, coordinates, color, category) => ({
   type: "Feature",
@@ -48,7 +39,7 @@ export const mockTransitApis = async (page) => {
         features: [
           {
             type: "Feature",
-            geometry: {type: "MultiLineString", coordinates: [shiftedRoute(category)]},
+            geometry: {type: "MultiLineString", coordinates: [ROUTE_COORDINATES]},
             properties: {
               name: `${category[0].toUpperCase()}${category.slice(1)} Line`,
               long_name: `${category[0].toUpperCase()}${category.slice(1)} visual route`,
@@ -93,7 +84,7 @@ export const openStableMap = async (page) => {
 // deliberately skips the synthetic fixtures above and renders whatever the
 // database holds. That makes its screenshots move when a feed is re-imported:
 // they are approved drawings of live data, not fixed expectations.
-export const openLiveMap = async (page, {stripes = false} = {}) => {
+export const openLiveMap = async (page) => {
   await page.goto("/")
   await page.locator("body").evaluate((body) => body.classList.add("playwright-visuals"))
   await page.locator("#transit-map[data-map-ready='true']").waitFor({timeout: 180_000})
@@ -103,7 +94,6 @@ export const openLiveMap = async (page, {stripes = false} = {}) => {
   // Places are noise when the subject is track: switch them off so a shop
   // opening or closing never re-approves a junction drawing.
   await page.locator("#group-toggle-places").click({force: true})
-  if (stripes) await page.locator("#map-detail-ribbons").click({force: true})
   await page.locator("#map-options-button").click()
   await page.locator("#hide-map-sidebar").click()
 

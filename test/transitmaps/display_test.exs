@@ -2,11 +2,7 @@ defmodule Transitmaps.DisplayTest do
   use ExUnit.Case, async: true
 
   alias Transitmaps.Display
-  alias Transitmaps.Display.Bundles
   alias Transitmaps.Display.Identity
-  alias Transitmaps.Display.Network
-
-  @km_per_lat 110.574
 
   describe "Identity.lines/1" do
     test "collapses an operator's routes into one line named for the operator" do
@@ -87,184 +83,8 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
-  # The geometry contract: corridors draw as continuous strands (never
-  # chains of dashes), cleanup never opens a gap in a route's coverage,
-  # and re-traced track collapses to one strand.
-  describe "Network.clean/1" do
-    test "a fragmented corridor comes back as one unbroken strand" do
-      fragments = [
-        for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4]),
-        for(i <- 20..30, do: [-1.0 + i * 0.01, 51.4]),
-        for(i <- 10..20, do: [-1.0 + i * 0.01, 51.4])
-      ]
-
-      assert %{coordinates: [strand]} =
-               Network.clean(%{type: "MultiLineString", coordinates: fragments})
-
-      assert hd(strand) == [-1.0, 51.4]
-      assert List.last(strand) == [-0.7, 51.4]
-    end
-
-    test "an out-and-back tangle collapses to one strand without gaps" do
-      east = for i <- 0..50, do: [-1.0 + i * 0.002, 51.4]
-      back = for i <- 49..40//-1, do: [-1.0 + i * 0.002, 51.4]
-      onward = for i <- 41..90, do: [-1.0 + i * 0.002, 51.4]
-      shape = east ++ back ++ onward
-
-      assert %{coordinates: strands} =
-               Network.clean(%{type: "MultiLineString", coordinates: [shape]})
-
-      for point <- shape do
-        assert within_km?(point, strands, 0.3),
-               "corridor point #{inspect(point)} lost by cleanup"
-      end
-    end
-
-    test "sharp corners come back rounded" do
-      corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
-
-      assert %{coordinates: [strand]} =
-               Network.clean(%{type: "MultiLineString", coordinates: [corner]})
-
-      assert length(strand) > 3
-      refute [-0.99, 51.4] in strand
-    end
-  end
-
-  describe "Bundles.arrange/1" do
-    test "corridor-sharing lines separate side by side" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, second] = Bundles.arrange([line([corridor]), line([corridor])])
-
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.010, 0.004
-    end
-
-    test "lines running opposite directions still bundle to opposite sides" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, second] = Bundles.arrange([line([corridor]), line([Enum.reverse(corridor)])])
-
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.010, 0.004
-    end
-
-    test "remaining lines collapse into the space a departing line leaves" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 0..75, do: [-1.0 + i * 0.004, 51.4]
-
-      [first, _short, third] = Bundles.arrange([line([full]), line([half]), line([full])])
-
-      # Three abreast on the shared half: outer lines sit a full spacing
-      # apart on each side of the middle one.
-      assert_in_delta lateral_km(first, third, -0.9), 0.020, 0.006
-
-      # After the middle line leaves, the outer pair collapses to a single
-      # spacing, centred on the corridor.
-      assert_in_delta lateral_km(first, third, -0.5), 0.010, 0.004
-    end
-
-    test "bundle offsets taper smoothly, never jump" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 0..75, do: [-1.0 + i * 0.004, 51.4]
-
-      [first | _rest] = Bundles.arrange([line([full]), line([half]), line([full])])
-      [strand] = first.geometry.coordinates
-      kx = 111.320 * :math.cos(51.4 * :math.pi() / 180)
-
-      # Sideways drift per km travelled: a taper is a gentle ramp, a gap
-      # left unfilled or a hard slot change would show as a steep step.
-      slopes =
-        strand
-        |> Enum.chunk_every(2, 1, :discard)
-        |> Enum.map(fn [[lon1, lat1], [lon2, lat2]] ->
-          dx = (lon2 - lon1) * kx
-          dy = (lat2 - lat1) * @km_per_lat
-          abs(dy) / max(abs(dx), 0.001)
-        end)
-
-      assert Enum.max(slopes) < 0.06
-    end
-
-    test "an isolated line keeps its centreline" do
-      away = for i <- 0..100, do: [-1.0 + i * 0.004, 53.0]
-
-      [only] = Bundles.arrange([line([away])])
-      [strand] = only.geometry.coordinates
-
-      assert hd(strand) == [-1.0, 53.0]
-      assert List.last(strand) == [-0.6, 53.0]
-      assert Enum.all?(strand, fn [_lon, lat] -> abs(lat - 53.0) * @km_per_lat < 0.001 end)
-    end
-
-    test "crossing lines keep their own centrelines" do
-      west_east = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-      south_north = for i <- 0..100, do: [-0.8, 51.2 + i * 0.004]
-
-      [horizontal, vertical] = Bundles.arrange([line([west_east]), line([south_north])])
-
-      [h_strand] = horizontal.geometry.coordinates
-      [v_strand] = vertical.geometry.coordinates
-
-      assert Enum.all?(h_strand, fn [_lon, lat] -> abs(lat - 51.4) * @km_per_lat < 0.002 end)
-      assert Enum.all?(v_strand, fn [lon, _lat] -> abs(lon + 0.8) * 69.0 < 0.002 end)
-    end
-  end
-
-  describe "Bundles.corridors/1" do
-    test "every line is drawn, wherever the corridor falls on the lookup grid" do
-      # Three tracks a hundred metres apart, swept across a lookup cell. Their
-      # geometry relative to each other never changes, so neither should the
-      # map: reading membership from one cell of a grid used to hand back a
-      # ribbon of three, a ribbon of two, or a ribbon and a stray line beside
-      # it, purely by where the invisible grid fell — and at four of these ten
-      # positions a line was left off the map altogether.
-      for shift <- 0..9 do
-        base = shift * 0.05 / @km_per_lat
-        step = 0.1 / @km_per_lat
-
-        lines =
-          for offset <- [0.0, step, 2 * step] do
-            line([for(i <- 0..100, do: [-1.0 + i * 0.004, 51.4 + base + offset])])
-          end
-
-        drawn =
-          lines
-          |> Bundles.corridors()
-          |> Enum.flat_map(& &1.members)
-          |> Enum.uniq()
-          |> Enum.sort()
-
-        assert drawn == [0, 1, 2], "line missing from the map at #{shift * 50} m of shift"
-      end
-    end
-
-    test "a line too far from the corridor keeps its own ribbon" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-      away = for i <- 0..100, do: [-1.0 + i * 0.004, 51.41]
-
-      members = [line([corridor]), line([corridor]), line([away])] |> Bundles.corridors()
-
-      assert [0, 1] in Enum.map(members, & &1.members)
-      assert [2] in Enum.map(members, & &1.members)
-    end
-
-    test "a line joining partway through splits the corridor, and both parts are drawn" do
-      full = for i <- 0..150, do: [-1.0 + i * 0.004, 51.4]
-      half = for i <- 75..150, do: [-1.0 + i * 0.004, 51.4]
-
-      segments = Bundles.corridors([line([full]), line([half])])
-
-      # The lone stretch and the shared stretch are separate ribbons, and
-      # between them they still tile the whole of the first line.
-      assert [0] in Enum.map(segments, & &1.members)
-      assert [0, 1] in Enum.map(segments, & &1.members)
-    end
-  end
-
   describe "Display.drawn_lines/1" do
-    test "runs identity, cleanup, and bundling end to end" do
+    test "names the lines and hands their source geometry through untouched" do
       corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
       variant = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4003]
 
@@ -275,12 +95,14 @@ defmodule Transitmaps.DisplayTest do
           route("xc1", "CrossCountry", [Enum.reverse(corridor)], short_name: "XC1")
         ])
 
-      assert [%{name: "CrossCountry"}, %{name: "Great Western Railway"}] =
+      assert [%{name: "CrossCountry"} = cross_country, %{name: "Great Western Railway"} = gwr] =
                Enum.sort_by(lines, & &1.name)
 
-      [first, second] = lines
-      gap = lateral_km(first, second, -0.8)
-      assert_in_delta gap, 0.010, 0.005
+      # Not a vertex is moved. The two operators sharing this corridor come
+      # back on the very same coordinates, drawn one on top of the other, and
+      # the operator's two re-tracing shapes both survive as separate strands.
+      assert cross_country.geometry.coordinates == [Enum.reverse(corridor)]
+      assert gwr.geometry.coordinates == [corridor, variant]
     end
   end
 
@@ -297,36 +119,5 @@ defmodule Transitmaps.DisplayTest do
       text_color: Keyword.get(opts, :text_color),
       geometry: %{"type" => "MultiLineString", "coordinates" => strands}
     }
-  end
-
-  defp line(strands) do
-    %{geometry: %{type: "MultiLineString", coordinates: strands}}
-  end
-
-  # Lateral distance in km between two lines' strands, sampled at the
-  # vertex of each nearest to `longitude`.
-  defp lateral_km(first, second, longitude) do
-    abs(latitude_near(first, longitude) - latitude_near(second, longitude)) * @km_per_lat
-  end
-
-  defp latitude_near(%{geometry: %{coordinates: strands}}, longitude) do
-    strands
-    |> Enum.concat()
-    |> Enum.min_by(fn [lon, _lat] -> abs(lon - longitude) end)
-    |> Enum.at(1)
-  end
-
-  # Distance from a point to the nearest vertex of any strand; inputs use
-  # dense vertices so vertex distance approximates line distance.
-  defp within_km?([lon, lat], strands, tolerance_km) do
-    kx = 111.320 * :math.cos(lat * :math.pi() / 180)
-
-    Enum.any?(strands, fn strand ->
-      Enum.any?(strand, fn [lon2, lat2] ->
-        dx = (lon2 - lon) * kx
-        dy = (lat2 - lat) * @km_per_lat
-        :math.sqrt(dx * dx + dy * dy) <= tolerance_km
-      end)
-    end)
   end
 end

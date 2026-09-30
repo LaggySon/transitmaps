@@ -104,6 +104,22 @@ defmodule Transitmaps.DisplayTest do
       assert cross_country.geometry.coordinates == [Enum.reverse(corridor)]
       assert gwr.geometry.coordinates == [corridor, variant]
     end
+
+    test "serves track that several services re-trace only once" do
+      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
+      branch = for i <- 1..10, do: [-0.8 + i * 0.01, 51.4 + i * 0.01]
+
+      [line] =
+        Display.drawn_lines([
+          route("sw1", "South Western Railway", [trunk]),
+          # The return working runs the same track the other way.
+          route("sw2", "South Western Railway", [Enum.reverse(trunk)]),
+          # A stopping service covers half the trunk, then takes a branch.
+          route("sw3", "South Western Railway", [Enum.slice(trunk, 10..20) ++ branch])
+        ])
+
+      assert line.geometry.coordinates == [trunk, [List.last(trunk) | branch]]
+    end
   end
 
   # -- helpers ----------------------------------------------------------------

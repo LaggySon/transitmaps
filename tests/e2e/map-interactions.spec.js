@@ -5,29 +5,30 @@ test.beforeEach(async ({page}) => {
   await openStableMap(page)
 })
 
-test("opens every menu and preserves accessible state", async ({page}) => {
-  await page.locator("#map-menu-trip").click()
-  await expect(page.locator("#trip-menu")).toBeVisible()
-  await expect(page.locator("#map-menu-trip")).toHaveAttribute("aria-current", "page")
+test("opens and closes the filter menu", async ({page}) => {
+  const button = page.locator("#map-menu-button")
+  await expect(button).toHaveAttribute("aria-expanded", "false")
 
-  await page.locator("#map-options-button").click()
-  await expect(page.locator("#map-options-menu")).toBeVisible()
-  await expect(page.locator("#map-options-button")).toHaveAttribute("aria-expanded", "true")
+  await button.click()
+  await expect(page.locator("#map-menu")).toBeVisible()
+  await expect(button).toHaveAttribute("aria-expanded", "true")
 
-  await page.locator("#hide-map-sidebar").click()
-  await expect(page.locator("#map-sidebar")).toHaveCount(0)
-  await page.locator("#show-map-sidebar").click()
-  await expect(page.locator("#map-sidebar")).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(page.locator("#map-menu")).toHaveCount(0)
+
+  // Clicking the map itself also dismisses it.
+  await button.click()
+  await page.locator("#transit-map canvas").click({position: {x: 700, y: 500}})
+  await expect(page.locator("#map-menu")).toHaveCount(0)
 })
 
 test("toggles map details and transit layers", async ({page}) => {
-  await page.locator("#map-options-button").click()
+  await page.locator("#map-menu-button").click()
   const labels = page.locator("#map-detail-labels")
   await expect(labels).toHaveAttribute("aria-checked", "true")
   await labels.click()
   await expect(labels).toHaveAttribute("aria-checked", "false")
 
-  // Transit layers now live in the same popover as the details toggles.
   const metro = page.locator("#layer-toggle-metro")
   await expect(metro).toHaveAttribute("aria-checked", "true")
   await metro.click({force: true})
@@ -35,7 +36,7 @@ test("toggles map details and transit layers", async ({page}) => {
 })
 
 test("toggles place categories without disturbing the map", async ({page}) => {
-  await page.locator("#map-options-button").click()
+  await page.locator("#map-menu-button").click()
 
   const shopping = page.locator("#place-toggle-shopping")
   await expect(shopping).toHaveAttribute("aria-checked", "true")
@@ -56,14 +57,6 @@ test("toggles place categories without disturbing the map", async ({page}) => {
   // Switching places about must still let the map settle rather than leaving
   // it spinning on an unrenderable layer.
   await expect(page.locator("#transit-map[data-map-idle='true']")).toBeVisible()
-})
-
-test("searches visible station data and opens a result", async ({page}) => {
-  await page.locator("#map-search-form input[type='search']").fill("London Central")
-  await page.locator("#map-search-form input[type='search']").press("Enter")
-
-  await expect(page.locator("#map-search-message")).toContainText("Showing London Central")
-  await expect(page.locator(".station-popup__title")).toHaveText("London Central")
 })
 
 test("custom zoom buttons update the live map zoom", async ({page}) => {

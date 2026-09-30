@@ -113,7 +113,6 @@ const TransitMap = {
     this.places = new Set(this.parseData("places", []))
     this.placeCatalog = this.parseData("placeCatalog", [])
     this.region = this.el.dataset.region || "great-britain"
-    this.root = this.el.closest("#transit-explorer")
     const initialView = REGIONS[this.region] || REGIONS["great-britain"]
 
     try {
@@ -164,7 +163,6 @@ const TransitMap = {
       this.syncPlaces()
     })
     this.handleEvent("map-region", ({region}) => this.showRegion(region))
-    this.handleEvent("map-search", ({query}) => this.searchStop(query))
 
     this.zoomInHandler = () => this.map.easeTo({zoom: this.map.getZoom() + 1, duration: 300})
     this.zoomOutHandler = () => this.map.easeTo({zoom: this.map.getZoom() - 1, duration: 300})
@@ -291,12 +289,13 @@ const TransitMap = {
     })
   },
 
+  // Room for the floating menu button and map controls, which sit over the map.
   mapPadding() {
     if (window.matchMedia("(min-width: 640px)").matches) {
-      return {top: 56, right: 56, bottom: 56, left: 352}
+      return {top: 84, right: 72, bottom: 40, left: 40}
     }
 
-    return {top: 64, right: 28, bottom: Math.round(window.innerHeight * 0.44), left: 28}
+    return {top: 76, right: 28, bottom: 28, left: 28}
   },
 
   destroyed() {
@@ -723,39 +722,6 @@ const TransitMap = {
       meta +
       `</div>${body}</div>`
     )
-  },
-
-  async searchStop(query) {
-    await Promise.allSettled([...this.enabled].map((cat) => this.showCategory(cat)))
-    const needle = String(query || "").trim().toLocaleLowerCase()
-    const candidates = []
-
-    this.categoryData.forEach(({stops}, cat) => {
-      if (!this.enabled.has(cat)) return
-      ;(stops.features || []).forEach((feature) => {
-        const name = String(feature.properties?.name || "")
-        const normalized = name.toLocaleLowerCase()
-        if (!normalized.includes(needle)) return
-        const score = normalized === needle ? 0 : normalized.startsWith(needle) ? 1 : 2
-        candidates.push({feature, name, score})
-      })
-    })
-
-    const match = candidates.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))[0]
-    if (!match) {
-      this.pushEvent("search-result", {found: false})
-      return
-    }
-
-    const coordinates = match.feature.geometry?.coordinates
-    if (!Array.isArray(coordinates)) {
-      this.pushEvent("search-result", {found: false})
-      return
-    }
-
-    this.map.flyTo({center: coordinates, zoom: Math.max(this.map.getZoom(), 12.5), duration: 850, essential: true})
-    this.map.once("moveend", () => this.openPopup(coordinates, this.stationPopupHtml(match.feature.properties || {})))
-    this.pushEvent("search-result", {found: true, name: match.name})
   },
 
   locateUser() {

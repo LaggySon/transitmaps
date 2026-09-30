@@ -90,18 +90,11 @@ export const openLiveMap = async (page) => {
   await page.locator("#transit-map[data-map-ready='true']").waitFor({timeout: 180_000})
   await page.locator("#transit-map[data-transit-ready='true']").waitFor({timeout: 300_000})
 
-  await page.locator("#map-options-button").click()
+  await page.locator("#map-menu-button").click()
   // Places are noise when the subject is track: switch them off so a shop
   // opening or closing never re-approves a junction drawing.
   await page.locator("#group-toggle-places").click({force: true})
-  await page.locator("#map-options-button").click()
-  await page.locator("#hide-map-sidebar").click()
-
-  // No wait for `data-map-idle` here. Collapsing the sidebar re-renders the
-  // map element, and LiveView patches its attributes back to what the server
-  // rendered — wiping the hook's idle flag. Nothing moves the map afterwards,
-  // so no further idle event would arrive to set it again. `setMapZoom` waits
-  // on the idle *event* instead, which is unaffected.
+  await page.locator("#map-menu-button").click()
 }
 
 export const setMapZoom = async (page, zoom, center = [-0.1276, 51.5072]) => {

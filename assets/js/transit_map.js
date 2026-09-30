@@ -1,10 +1,13 @@
 import maplibregl from "../vendor/maplibre-gl"
 import {
-  routeLayerIds,
-  routeLayerOrder,
-  transitLineLayers,
-  TRANSIT_MODE_ORDER,
-} from "./transit_lines"
+  PLACES_LAYER_ID,
+  groupForClass,
+  placeFilter,
+  placeLayer,
+  placePinId,
+  placeSubtitle,
+  renderPlacePin,
+} from "./map_places"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
 const tileProxyUrl = (path) => `${location.origin}/tiles${path}`
@@ -26,7 +29,7 @@ const REGIONS = {
   },
 }
 
-const MODE_ORDER = TRANSIT_MODE_ORDER
+const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
 const MODE_LABEL = {
   ferry: "Ferry",
   coach: "Coach",
@@ -36,6 +39,9 @@ const MODE_LABEL = {
   tram: "Tram",
   metro: "Metro",
 }
+// Every mode draws at one flat width, at every zoom. A starting point, not a rule.
+const LINE_WIDTH = 2
+
 // Mode brand colours mirror Transitmaps.Gtfs.RouteTypes.default_color/1 so a
 // station's mode headings read the same as the toggles in the layers menu.
 const MODE_COLOR = {
@@ -68,17 +74,39 @@ const TRAIN_SPEED = 0.008
 const MIN_TRAIN_LINE = 0.004
 const TRAIN_LAYERS = ["live-trains-glow", "live-trains-dot"]
 
+// Grows a marker dimension with the number of services meeting at a stop.
+// Responses cached before interchange counts were served carry no count, so
+// those stops fall back to the single-service size.
+const interchangeScale = (busy) => [
+  "interpolate",
+  ["linear"],
+  ["coalesce", ["get", "interchange"], 1],
+  1,
+  1,
+  6,
+  busy,
+]
+
+// MapLibre only accepts a `zoom` expression as the input of a top-level
+// interpolate, so the interchange factor cannot wrap one — it multiplies each
+// zoom stop's output instead.
+const byZoomAndInterchange = (stops, busy) => [
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
+]
+
 const layerIds = (cat) => ({
-  ...routeLayerIds(cat),
+  line: `${cat}-line`,
   lineLabels: `${cat}-line-labels`,
   stops: `${cat}-stops`,
   labels: `${cat}-station-labels`,
 })
 
-// Shadows and casings sit below every coloured route. A crossing can cover a
-// route, but another mode's white separator can never erase its colour.
+// Lines first, then their names, then stops and station names on top.
 const desiredLayerOrder = () =>
-  routeLayerOrder(MODE_ORDER).concat(
+  MODE_ORDER.map((cat) => layerIds(cat).line).concat(
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -93,6 +121,8 @@ const TransitMap = {
     this.dataLoading = false
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
+    this.places = new Set(this.parseData("places", []))
+    this.placeCatalog = this.parseData("placeCatalog", [])
     this.liveTraffic = this.el.dataset.liveTraffic === "true"
     this.trains = []
     this.trainFrame = null
@@ -108,7 +138,12 @@ const TransitMap = {
         center: initialView.center,
         zoom: initialView.zoom,
         minZoom: 4,
-        maxZoom: 17,
+        // Zoom 14 is as deep as the vector tiles go, so everything past it is
+        // overzoom. Allowing three extra levels costs no new data and is what
+        // makes a crowded high street readable: the same block covers eight
+        // times the pixels at 19, so pins that lost the fight for space at 14
+        // all find room and every name ends up on screen.
+        maxZoom: 19,
         maxPitch: 0,
         renderWorldCopies: false,
         fadeDuration: 0,
@@ -122,6 +157,9 @@ const TransitMap = {
     this.map.on("error", (event) => console.error("MapLibre error:", event.error))
     this.map.on("style.load", () => {
       this.applyAppleBasemap()
+      // Places are added before any transit layer exists, which leaves every
+      // pin below the lines and stations the map is actually about.
+      this.addPlaceLayers()
       this.syncLayers()
     })
     this.map.on("load", () => this.markMapReady())
@@ -135,6 +173,10 @@ const TransitMap = {
     this.handleEvent("details-changed", ({enabled}) => {
       this.details = new Set(enabled)
       this.syncDetails()
+    })
+    this.handleEvent("places-changed", ({enabled}) => {
+      this.places = new Set(enabled)
+      this.syncPlaces()
     })
     this.handleEvent("live-traffic-changed", ({enabled}) => this.setLiveTraffic(enabled))
     this.handleEvent("map-region", ({region}) => this.showRegion(region))
@@ -346,6 +388,64 @@ const TransitMap = {
     }
   },
 
+  addPlaceLayers() {
+    const pixelRatio = window.devicePixelRatio || 1
+
+    this.placeCatalog.forEach(({id, color}) => {
+      if (!this.map.hasImage(placePinId(id))) {
+        this.map.addImage(placePinId(id), renderPlacePin(color, id, pixelRatio), {pixelRatio})
+      }
+    })
+
+    this.map.addLayer(placeLayer())
+    this.bindPlacePopup()
+    this.syncPlaces()
+  },
+
+  // Categories are switched by narrowing the shared layer's filter rather than
+  // by hiding layers, so the pins on screen always come from one ranked
+  // contest between everything the user asked for.
+  syncPlaces() {
+    const groups = this.placeCatalog.map(({id}) => id).filter((id) => this.places.has(id))
+
+    // An empty class list is not a valid `match`, so no categories means the
+    // layer is simply switched off.
+    if (groups.length > 0) this.map.setFilter(PLACES_LAYER_ID, placeFilter(groups))
+    this.setVisibility(PLACES_LAYER_ID, groups.length > 0 ? "visible" : "none")
+  },
+
+  bindPlacePopup() {
+    this.map.on("click", PLACES_LAYER_ID, (event) => {
+      // Transit comes first: a pin sitting under a station marker never steals
+      // the click from it.
+      if (this.transitFeaturesAt(event.point).length > 0) return
+
+      const props = event.features[0].properties
+      const group = this.placeCatalog.find(({id}) => id === groupForClass(props.class))
+      const subtitle = placeSubtitle(props)
+      const meta = [subtitle, group?.label].filter(Boolean).join(" · ")
+
+      this.openPopup(
+        event.lngLat,
+        `<div class="place-popup"><div class="place-popup__name">${this.escapeHtml(props.name)}</div>` +
+          `<div class="place-popup__meta"><span class="place-popup__dot" style="background:${this.safeColor(group?.color)}"></span>` +
+          `${this.escapeHtml(meta)}</div></div>`
+      )
+    })
+
+    const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
+    this.map.on("mouseenter", PLACES_LAYER_ID, setPointer(true))
+    this.map.on("mouseleave", PLACES_LAYER_ID, setPointer(false))
+  },
+
+  transitFeaturesAt(point) {
+    const stopLayers = MODE_ORDER.map((mode) => layerIds(mode).stops).filter((id) =>
+      this.map.getLayer(id)
+    )
+
+    return stopLayers.length > 0 ? this.map.queryRenderedFeatures(point, {layers: stopLayers}) : []
+  },
+
   syncLayers() {
     this.el.dataset.transitReady = "false"
     this.el.dataset.mapIdle = "false"
@@ -411,7 +511,9 @@ const TransitMap = {
         fetch(`/api/stops.geojson?cats=${encodeURIComponent(cat)}`),
       ])
 
-      if (!routeResponse.ok || !stopResponse.ok) throw new Error(`Could not load ${cat} data`)
+      if (!routeResponse.ok || !stopResponse.ok) {
+        throw new Error(`Could not load ${cat} data`)
+      }
 
       const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
       this.categoryData.set(cat, {routes, stops})
@@ -439,8 +541,6 @@ const TransitMap = {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
 
-    this.setVisibility(ids.shadow, visible ? "visible" : "none")
-    this.setVisibility(ids.casing, visible ? "visible" : "none")
     this.setVisibility(ids.line, visible ? "visible" : "none")
     this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
@@ -457,7 +557,19 @@ const TransitMap = {
 
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
-    transitLineLayers(cat).forEach((layer) => this.addLayerInOrder(layer))
+
+    // Every line on its own centreline, one flat colour, one flat width.
+    // Lines sharing track draw on top of one another; nothing separates them.
+    this.addLayerInOrder({
+      id: ids.line,
+      type: "line",
+      source: `${cat}-routes`,
+      layout: {"line-join": "round", "line-cap": "round"},
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": LINE_WIDTH,
+      },
+    })
 
     this.addLayerInOrder({
       id: ids.lineLabels,
@@ -490,8 +602,19 @@ const TransitMap = {
       paint: {
         "circle-color": "#ffffff",
         "circle-stroke-color": "#4a4a4f",
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 7.5, 1.2, 11, 3.2, 15, 5.8, 17, 7],
-        "circle-stroke-width": ["case", ["get", "station"], 1.7, 1.05],
+        // Scaled by how many services meet at the stop, so a six-line
+        // interchange reads as a landmark and a single-line halt stays a dot.
+        "circle-radius": byZoomAndInterchange(
+          [
+            [7.5, 1.2],
+            [11, 3.2],
+            [15, 5.8],
+            [17, 7],
+            [19, 8.5],
+          ],
+          1.5
+        ),
+        "circle-stroke-width": ["*", ["case", ["get", "station"], 1.7, 1.05], interchangeScale(1.35)],
         "circle-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
         "circle-stroke-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
       },
@@ -506,12 +629,24 @@ const TransitMap = {
       layout: {
         "text-field": ["get", "name"],
         "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 8, 9.5, 12, 11.5, 16, 13.5],
+        "text-size": byZoomAndInterchange(
+          [
+            [8, 9.5],
+            [12, 11.5],
+            [16, 13.5],
+          ],
+          1.12
+        ),
         "text-anchor": "top",
-        "text-offset": [0, 0.78],
+        // Offset with the marker, so a big interchange's name clears its
+        // larger dot instead of sitting on top of it.
+        "text-offset": ["literal", [0, 0.78]],
         "text-max-width": 12,
         "text-padding": 3,
         "text-optional": true,
+        // Busiest interchange first: when names compete for room, the place
+        // people actually change at is the one that keeps its label.
+        "symbol-sort-key": ["-", 0, ["coalesce", ["get", "interchange"], 1]],
       },
       paint: {
         "text-color": "#414145",
@@ -539,8 +674,7 @@ const TransitMap = {
     })
 
     this.map.on("click", ids.line, (event) => {
-      const stopLayers = MODE_ORDER.map((mode) => layerIds(mode).stops).filter((id) => this.map.getLayer(id))
-      if (this.map.queryRenderedFeatures(event.point, {layers: stopLayers}).length > 0) return
+      if (this.transitFeaturesAt(event.point).length > 0) return
 
       const props = event.features[0].properties
       const title = props.long_name || props.name || "Transit route"

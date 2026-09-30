@@ -20,7 +20,7 @@ mix phx.server     # then visit http://localhost:4000
 ## Visual testing
 
 The Playwright suite uses deterministic transit fixtures and captures the map
-at every supported integer zoom level (4 through 17), plus desktop and mobile
+at every supported integer zoom level (4 through 19), plus desktop and mobile
 menu states:
 
 ```sh
@@ -141,14 +141,14 @@ small enough to render the whole country at once.
 - `Transitmaps.Geometry` — polyline primitives: Douglas-Peucker
   simplification, jump/reversal splitting, loop splicing, re-trace
   dedupe, fragment stitching, and corner rounding
-- `Transitmaps.Display` — the drawn-line pipeline, one stage per module:
-  `Identity` (one line per national-rail operator or per TfL-style line,
-  with brand colours), `Network` (each line's shapes merged into one
-  clean high-fidelity network). Lines remain on geographic centrelines so
-  shared track stays continuous at every zoom; `assets/js/transit_lines.js`
-  gives those paths their Apple-inspired shadow, white casing, solid colour,
-  round caps, and round joins without coordinate offsets
-- `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category
+- `Transitmaps.Display` — which drawn lines exist, via `Identity` (one
+  line per national-rail operator or per TfL-style line, with brand
+  colours). Geometry is served exactly as imported: every line on its own
+  centreline, lines sharing track drawn on top of one another. The rules
+  for how track should actually be drawn are being rewritten from scratch
+- `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
+  rail-family categories (rail/intercity/metro/tram) are bundled
+  together, so serving one loads the family
 - `Transitmaps.Journey` — schedule-free trip planner: a breadth-first
   search over the line graph (two stations are connected when one line
   serves both) that returns the fewest-transfer itinerary between two

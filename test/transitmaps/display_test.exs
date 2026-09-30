@@ -3,9 +3,6 @@ defmodule Transitmaps.DisplayTest do
 
   alias Transitmaps.Display
   alias Transitmaps.Display.Identity
-  alias Transitmaps.Display.Network
-
-  @km_per_lat 110.574
 
   describe "Identity.lines/1" do
     test "collapses an operator's routes into one line named for the operator" do
@@ -86,73 +83,32 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
-  # The geometry contract: corridors draw as continuous strands (never
-  # chains of dashes), cleanup never opens a gap in a route's coverage,
-  # and re-traced track collapses to one strand.
-  describe "Network.clean/1" do
-    test "a fragmented corridor comes back as one unbroken strand" do
-      fragments = [
-        for(i <- 0..10, do: [-1.0 + i * 0.01, 51.4]),
-        for(i <- 20..30, do: [-1.0 + i * 0.01, 51.4]),
-        for(i <- 10..20, do: [-1.0 + i * 0.01, 51.4])
-      ]
-
-      assert %{coordinates: [strand]} =
-               Network.clean(%{type: "MultiLineString", coordinates: fragments})
-
-      assert hd(strand) == [-1.0, 51.4]
-      assert List.last(strand) == [-0.7, 51.4]
-    end
-
-    test "an out-and-back tangle collapses to one strand without gaps" do
-      east = for i <- 0..50, do: [-1.0 + i * 0.002, 51.4]
-      back = for i <- 49..40//-1, do: [-1.0 + i * 0.002, 51.4]
-      onward = for i <- 41..90, do: [-1.0 + i * 0.002, 51.4]
-      shape = east ++ back ++ onward
-
-      assert %{coordinates: strands} =
-               Network.clean(%{type: "MultiLineString", coordinates: [shape]})
-
-      for point <- shape do
-        assert within_km?(point, strands, 0.3),
-               "corridor point #{inspect(point)} lost by cleanup"
-      end
-    end
-
-    test "sharp corners come back rounded" do
-      corner = [[-1.0, 51.4], [-0.99, 51.4], [-0.99, 51.41]]
-
-      assert %{coordinates: [strand]} =
-               Network.clean(%{type: "MultiLineString", coordinates: [corner]})
-
-      assert length(strand) > 3
-      refute [-0.99, 51.4] in strand
-    end
-  end
-
   describe "Display.drawn_lines/1" do
-    test "runs identity and cleanup without moving shared track off its centreline" do
+    test "names the lines and hands their source geometry through untouched" do
       corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
+      variant = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4003]
 
       lines =
         Display.drawn_lines([
           route("gw1", "Great Western Railway", [corridor], short_name: "GW1"),
-          route("gw2", "Great Western Railway", [corridor], short_name: "GW2"),
+          route("gw2", "Great Western Railway", [variant], short_name: "GW2"),
           route("xc1", "CrossCountry", [Enum.reverse(corridor)], short_name: "XC1")
         ])
 
-      assert [%{name: "CrossCountry"}, %{name: "Great Western Railway"}] =
+      assert [%{name: "CrossCountry"} = cross_country, %{name: "Great Western Railway"} = gwr] =
                Enum.sort_by(lines, & &1.name)
 
-      [first, second] = lines
-      gap = lateral_km(first, second, -0.8)
-      assert gap < 0.003
+      # Not a vertex is moved. The two operators sharing this corridor come
+      # back on the very same coordinates, drawn one on top of the other, and
+      # the operator's two re-tracing shapes both survive as separate strands.
+      assert cross_country.geometry.coordinates == [Enum.reverse(corridor)]
+      assert gwr.geometry.coordinates == [corridor, variant]
     end
   end
 
   # -- helpers ----------------------------------------------------------------
 
-  defp route(id, agency, strands, opts) do
+  defp route(id, agency, strands, opts \\ []) do
     %{
       route_id: id,
       agency_name: agency,
@@ -163,32 +119,5 @@ defmodule Transitmaps.DisplayTest do
       text_color: Keyword.get(opts, :text_color),
       geometry: %{"type" => "MultiLineString", "coordinates" => strands}
     }
-  end
-
-  # Lateral distance in km between two lines' strands, sampled at the
-  # vertex of each nearest to `longitude`.
-  defp lateral_km(first, second, longitude) do
-    abs(latitude_near(first, longitude) - latitude_near(second, longitude)) * @km_per_lat
-  end
-
-  defp latitude_near(%{geometry: %{coordinates: strands}}, longitude) do
-    strands
-    |> Enum.concat()
-    |> Enum.min_by(fn [lon, _lat] -> abs(lon - longitude) end)
-    |> Enum.at(1)
-  end
-
-  # Distance from a point to the nearest vertex of any strand; inputs use
-  # dense vertices so vertex distance approximates line distance.
-  defp within_km?([lon, lat], strands, tolerance_km) do
-    kx = 111.320 * :math.cos(lat * :math.pi() / 180)
-
-    Enum.any?(strands, fn strand ->
-      Enum.any?(strand, fn [lon2, lat2] ->
-        dx = (lon2 - lon) * kx
-        dy = (lat2 - lat) * @km_per_lat
-        :math.sqrt(dx * dx + dy * dy) <= tolerance_km
-      end)
-    end)
   end
 end

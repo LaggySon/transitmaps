@@ -18,8 +18,7 @@ defmodule Transitmaps.Application do
       Transitmaps.Gtfs.GeoJsonCache,
       {DNSCluster, query: Application.get_env(:transitmaps, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Transitmaps.PubSub},
-      # Start a worker by calling: Transitmaps.Worker.start_link(arg)
-      # {Transitmaps.Worker, arg},
+      Transitmaps.Catalog,
       # Start to serve requests, typically the last entry
       TransitmapsWeb.Endpoint,
       # Pre-build the default map responses so the first visit is cached too
@@ -35,6 +34,13 @@ defmodule Transitmaps.Application do
       ),
       Supervisor.child_spec({Task, &refresh_tfl_on_railway/0}, id: :railway_tfl_refresh)
     ]
+
+    # Agency downloads write to the database from a background process, which
+    # the test sandbox can't own; tests drive `Agencies.run_import/1` directly.
+    children =
+      if Application.get_env(:transitmaps, :agency_worker, true),
+        do: children ++ [Transitmaps.Agencies.Worker],
+        else: children
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

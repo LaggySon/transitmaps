@@ -28,7 +28,7 @@ const stopFeature = (name, coordinates, color, category) => ({
 })
 
 export const mockTransitApis = async (page) => {
-  await page.route("**/api/routes.geojson?cats=*", async (route) => {
+  await page.route("**/api/routes.geojson?*", async (route) => {
     const category = new URL(route.request().url()).searchParams.get("cats") || "rail"
     const color = CATEGORY_COLORS[category] || "#6E6E73"
 
@@ -54,7 +54,7 @@ export const mockTransitApis = async (page) => {
     })
   })
 
-  await page.route("**/api/stops.geojson?cats=*", async (route) => {
+  await page.route("**/api/stops.geojson?*", async (route) => {
     const category = new URL(route.request().url()).searchParams.get("cats") || "rail"
     const color = CATEGORY_COLORS[category] || "#6E6E73"
 

@@ -28,17 +28,10 @@ defmodule Transitmaps.Gtfs do
 
   def sanitize_categories(_), do: []
 
-  @doc "Categories that actually have routes in the database, with route counts."
-  def category_counts do
+  @doc "Feed `feed_id`'s drawn lines in `categories`, as GeoJSON."
+  def route_feature_collection(categories, feed_id) do
     Route
-    |> group_by([r], r.category)
-    |> select([r], {r.category, count(r.id)})
-    |> Repo.all()
-    |> Map.new()
-  end
-
-  def route_feature_collection(categories) do
-    Route
+    |> where([r], r.feed_id == ^feed_id)
     |> where([r], r.category in ^categories)
     |> where([r], not is_nil(r.geometry))
     |> Repo.all()
@@ -47,8 +40,16 @@ defmodule Transitmaps.Gtfs do
     |> feature_collection()
   end
 
-  def stop_feature_collection(categories) do
+  @doc """
+  Feed `feed_id`'s stations serving `categories`, as GeoJSON. Clustering
+  sees every stop in the feed, not just the requested categories, so a rail
+  station still lists the buses calling outside it. Stations of different
+  agencies are merged by the map, which is what knows which agencies are
+  on screen together.
+  """
+  def stop_feature_collection(categories, feed_id) do
     Stop
+    |> where([s], s.feed_id == ^feed_id)
     |> Repo.all()
     |> merge_colocated_stops()
     |> Enum.filter(fn stop -> Enum.any?(stop.categories, &(&1 in categories)) end)
@@ -239,7 +240,7 @@ defmodule Transitmaps.Gtfs do
 
   # Stored line entries may be atom- or string-keyed (structs vs jsonb);
   # normalize the shape and apply operator brand colours, matching what
-  # `route_feature_collection/1` serves for the lines themselves.
+  # `route_feature_collection/2` serves for the lines themselves.
   defp present_line(line) do
     agency = line_value(line, :agency)
     category = line_value(line, :category)
@@ -248,7 +249,10 @@ defmodule Transitmaps.Gtfs do
       name: line_value(line, :name),
       agency: agency,
       category: category,
-      color: Identity.brand_color(agency, category) || line_value(line, :color)
+      color: Identity.brand_color(agency, category) || line_value(line, :color),
+      # Which drawn line this is, so the map can recount an interchange
+      # after merging stations from several agencies.
+      key: line |> drawn_line_key() |> Tuple.to_list() |> Enum.map_join("|", &to_string/1)
     }
   end
 

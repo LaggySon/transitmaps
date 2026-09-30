@@ -33,7 +33,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCacheTest do
     assert decode(first) == %{"version" => 1}
 
     Agent.update(version, fn _ -> 2 end)
-    :ok = GeoJsonCache.invalidate()
+    :ok = GeoJsonCache.invalidate(&(&1 == key))
 
     assert_receive {:rebuilding, rebuild}
     assert GeoJsonCache.fetch(key, builder) == first

@@ -38,3 +38,10 @@ config :phoenix, :plug_init_mode, :runtime
 # Enable helpful, but potentially expensive runtime checks
 config :phoenix_live_view,
   enable_expensive_runtime_checks: true
+
+# The agency search reads a small fixture instead of the live feed catalog,
+# and downloads run synchronously in tests rather than in the worker.
+config :transitmaps, Transitmaps.Catalog,
+  source: Path.expand("../test/support/fixtures/catalog.csv", __DIR__)
+
+config :transitmaps, :agency_worker, false

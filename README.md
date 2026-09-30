@@ -7,8 +7,11 @@ with per-mode toggles (metro, tram, rail, intercity, ferry, bus, coach).
 [![Railway deployment](https://github.com/LaggySon/transitmaps/actions/workflows/railway-deployment.yml/badge.svg?branch=main)](https://github.com/LaggySon/transitmaps/actions/workflows/railway-deployment.yml)
 [Live production map](https://transitmaps.laggi.sh)
 
-Any GTFS feed in the world can be imported; the map shows whatever you've
-loaded. Seeded with Great Britain's national rail network.
+Visitors can add any transit agency with a public GTFS feed in the
+[Mobility Database](https://mobilitydatabase.org) catalog by searching for it
+in the map's menu; the server downloads it once and every visitor reads it
+from this app. The map draws whichever agencies overlap the view. Opens on
+Great Britain's national rail network.
 
 ## Running
 
@@ -42,7 +45,36 @@ Start it with:
 pg_ctl -D .pgdata -l .pgdata/pg.log start
 ```
 
-## Importing GTFS feeds
+## Agencies
+
+Every imported feed is an agency the map can draw. Its service area (the
+1st–99th percentile box of its stops) decides when the map loads it: the
+browser fetches each agency in or near the view per mode
+(`/api/routes.geojson?feed=ID&cats=rail`), and merges stations of different
+agencies within 250 m into one interchange marker.
+
+- The Mobility Database feed list (`feeds_v2.csv`) is downloaded at boot and
+  daily, cached in `priv/gtfs_cache/catalog.csv`; a failed download keeps the
+  previous copy. Feeds that are inactive, need an API key, or repeat another
+  listing's download are left out.
+- Pressing **Add** on a search result queues the agency. One background
+  worker downloads queued agencies one at a time from MobilityData's mirrors
+  (up to 200 MB each). Progress shows live in every open map, the visitor
+  who asked is flown to it when it lands, and a restart resumes an
+  interrupted download. At most 10 agencies can wait in the queue.
+- Downloaded agencies refresh weekly. Download state lives in the
+  `feed_imports` table.
+- Some hand-curated feeds are partial copies of a catalog agency (MBTA,
+  NYC Subway, Metro-North, NJ Transit Rail, SEPTA, MARC, Baltimore, Amtrak).
+  Adding the catalog agency deletes the hand-curated copy so nothing is
+  drawn twice; the list lives in `Transitmaps.Agencies`.
+- Visitors can hide an agency on their own map from the menu's in-view list;
+  nothing is deleted.
+
+Imported data accumulates in Postgres; watch the database size on Railway
+as more agencies are added.
+
+## Importing GTFS feeds by hand
 
 ```sh
 mix gtfs.import <name> <url-or-zip-path>
@@ -72,6 +104,9 @@ mix gtfs.import baltimore-metro https://feeds.mta.maryland.gov/gtfs/metro
 mix gtfs.import baltimore-light-rail https://feeds.mta.maryland.gov/gtfs/light-rail
 WMATA_API_KEY=your_key mix gtfs.import wmata-rapid https://api.wmata.com/gtfs/rail-gtfs-static.zip
 ```
+
+`--label "London Buses"` names a feed in the map's agency list; the feeds
+above have labels of their own.
 
 WMATA requires a free developer key; the importer sends `WMATA_API_KEY` as
 the official feed's `api_key` request header.
@@ -154,8 +189,13 @@ small enough to render the whole country at once.
   GeoJSON responses with ETags, warmed at boot. Entries go stale on import
   and hourly (for imports run in a separate VM); a stale response keeps
   being served while it rebuilds in the background, one rebuild at a time
-- `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`
+- `Transitmaps.Catalog` — the Mobility Database feed catalog and agency search
+- `Transitmaps.Agencies` + `Agencies.Worker` — the feed index the map draws
+  from, the on-demand download queue, progress broadcasts, weekly refresh,
+  and retiring hand-curated copies
+- `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`,
+  one agency per request (`?feed=`)
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
-  MapLibre hook. One floating menu filters what the map shows (region,
-  modes, station names and stop markers, places); layers lazy-load per
-  category on first toggle
+  MapLibre hook. One floating menu filters what the map shows (agencies,
+  modes, station names and stop markers, places). The view is kept in the
+  URL hash (`#map=zoom/lat/lon`) so it can be shared

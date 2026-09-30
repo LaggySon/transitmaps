@@ -195,6 +195,9 @@ const TransitMap = {
     this.hidden = new Set(this.parseData("hidden", []))
     this.reportedView = null
     this.renderedKey = null
+    // The full-screen loading card only covers the first load; after that,
+    // agencies coming into range as the map pans load without hiding it.
+    this.firstLoadShown = false
     this.dataLoadBatch = 0
     this.dataLoading = false
     this.enabled = new Set(this.parseData("enabled", []))
@@ -253,12 +256,11 @@ const TransitMap = {
       this.places = new Set(enabled)
       this.syncPlaces()
     })
-    // An agency finished downloading or refreshing: forget every agency's
-    // data so what is on screen reloads (the server has it cached anyway).
+    // An agency was added (or a hand-curated copy retired). What is drawn
+    // stays put; a new agency in range simply loads, and a retired one
+    // drops out of range. A weekly refresh shows on the next page load.
     this.handleEvent("feeds-changed", ({feeds}) => {
       this.feeds = feeds
-      this.feedData.clear()
-      this.renderedKey = null
       if (this.map.isStyleLoaded()) this.syncLayers()
     })
     this.handleEvent("agencies-hidden", ({hidden}) => {
@@ -343,7 +345,7 @@ const TransitMap = {
     this.dataLoading = categories.length > 0
     this.dataLoadProgress = {batch, categories: new Set(categories), complete: new Set()}
 
-    if (this.dataLoading) {
+    if (this.dataLoading && !this.firstLoadShown) {
       this.showLoading(
         "Loading transit data",
         `Preparing 0 of ${categories.length} layers`,
@@ -357,6 +359,7 @@ const TransitMap = {
     if (!progress || progress.batch !== batch || !progress.categories.has(key)) return
 
     progress.complete.add(key)
+    if (this.firstLoadShown) return
     const complete = progress.complete.size
     const total = progress.categories.size
     const category = key.split(":")[1]
@@ -575,11 +578,15 @@ const TransitMap = {
       if (batch !== this.dataLoadBatch) return
 
       const failures = results.filter((result) => result.status === "rejected")
+      const quiet = this.firstLoadShown
+      this.firstLoadShown = true
       this.dataLoading = false
       this.el.dataset.mapIdle = "false"
       this.el.dataset.transitReady = failures.length === 0 ? "true" : "error"
 
-      if (failures.length > 0) {
+      if (quiet) {
+        if (this.map.loaded()) this.announceIdle()
+      } else if (failures.length > 0) {
         const total = Math.max(1, this.dataLoadProgress.categories.size)
         this.showLoading(
           "Some transit data could not be loaded",

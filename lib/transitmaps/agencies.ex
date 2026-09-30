@@ -116,8 +116,13 @@ defmodule Transitmaps.Agencies do
     feed_import =
       case existing do
         nil ->
+          # Two visitors can add the same agency at once; the second one's
+          # request simply queues it again.
           Repo.insert!(
-            struct(FeedImport, Map.merge(attrs, %{catalog_id: entry.id, inserted_at: now}))
+            struct(FeedImport, Map.merge(attrs, %{catalog_id: entry.id, inserted_at: now})),
+            on_conflict: {:replace, [:label, :status, :error, :updated_at]},
+            conflict_target: :catalog_id,
+            returning: true
           )
 
         %FeedImport{} ->

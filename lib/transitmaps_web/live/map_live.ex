@@ -87,8 +87,7 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:journey_error, nil)
      |> assign(:enabled, MapSet.new(@default_enabled))
      |> assign(:details, MapSet.new(@default_details))
-     |> assign(:places, MapSet.new(@place_ids))
-     |> assign(:live_traffic, false)}
+     |> assign(:places, MapSet.new(@place_ids))}
   end
 
   @impl true
@@ -130,15 +129,6 @@ defmodule TransitmapsWeb.MapLive do
      socket
      |> assign(:details, details)
      |> push_event("details-changed", %{enabled: MapSet.to_list(details)})}
-  end
-
-  def handle_event("toggle-live-traffic", _params, socket) do
-    live_traffic = not socket.assigns.live_traffic
-
-    {:noreply,
-     socket
-     |> assign(:live_traffic, live_traffic)
-     |> push_event("live-traffic-changed", %{enabled: live_traffic})}
   end
 
   def handle_event("region", %{"region" => region}, socket)
@@ -311,7 +301,6 @@ defmodule TransitmapsWeb.MapLive do
           data-details={Jason.encode!(MapSet.to_list(@details))}
           data-places={Jason.encode!(MapSet.to_list(@places))}
           data-place-catalog={Jason.encode!(place_catalog())}
-          data-live-traffic={to_string(@live_traffic)}
           data-region={@region}
           aria-label="Interactive transit map"
           class="!absolute inset-0"
@@ -766,33 +755,6 @@ defmodule TransitmapsWeb.MapLive do
                 <span class={[
                   "block size-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200",
                   MapSet.member?(@details, detail) && "translate-x-3.5"
-                ]}>
-                </span>
-              </span>
-            </button>
-
-            <div class="my-1.5 h-px bg-black/[0.06]"></div>
-
-            <button
-              id="map-live-traffic"
-              type="button"
-              role="switch"
-              aria-checked={to_string(@live_traffic)}
-              phx-click="toggle-live-traffic"
-              class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035]"
-            >
-              <.icon name="hero-signal" class="size-4 shrink-0 text-[#8a8a8e]" />
-              <span class="flex-1 text-[12px] font-medium text-[#2c2c2e]">Live trains</span>
-              <span
-                class={[
-                  "apple-switch relative h-[20px] w-[34px] shrink-0 rounded-full p-0.5 transition-colors duration-200",
-                  if(@live_traffic, do: "bg-[#34c759]", else: "bg-[#d1d1d6]")
-                ]}
-                aria-hidden="true"
-              >
-                <span class={[
-                  "block size-[16px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200",
-                  @live_traffic && "translate-x-3.5"
                 ]}>
                 </span>
               </span>

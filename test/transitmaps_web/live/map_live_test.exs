@@ -36,7 +36,6 @@ defmodule TransitmapsWeb.MapLiveTest do
     view |> element("#map-options-button") |> render_click()
     assert has_element?(view, "#map-options-menu #layer-toggle-metro")
     assert has_element?(view, "#map-options-menu #places-menu")
-    assert has_element?(view, "#map-options-menu #map-live-traffic")
   end
 
   test "opens settings and toggles map details", %{conn: conn} do
@@ -84,22 +83,6 @@ defmodule TransitmapsWeb.MapLiveTest do
              view,
              ~s{#transit-map[data-places='["culture","essentials","food","outdoors","shopping"]']}
            )
-  end
-
-  test "toggles the optional live train traffic layer", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
-
-    assert has_element?(view, "#transit-map[data-live-traffic='false']")
-
-    view |> element("#map-options-button") |> render_click()
-    assert has_element?(view, "#map-live-traffic[aria-checked='false']")
-
-    view |> element("#map-live-traffic") |> render_click()
-    assert has_element?(view, "#map-live-traffic[aria-checked='true']")
-    assert has_element?(view, "#transit-map[data-live-traffic='true']")
-
-    view |> element("#map-live-traffic") |> render_click()
-    assert has_element?(view, "#map-live-traffic[aria-checked='false']")
   end
 
   test "collapses and restores the sidebar", %{conn: conn} do

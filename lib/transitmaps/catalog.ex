@@ -1,0 +1,163 @@
+defmodule Transitmaps.Catalog do
+  @moduledoc """
+  The world's public GTFS feeds — one per agency, more or less — from the
+  Mobility Database catalog, for the map's agency search.
+
+  The catalog is one CSV listing every known feed with its provider,
+  location and a mirrored download on MobilityData's own storage, so the
+  server can fetch any agency without hammering (or needing keys for) the
+  agency's own site. It is downloaded once a day, cached on disk, and held
+  in `:persistent_term` for reads, since every search walks it.
+  """
+
+  use GenServer
+  require Logger
+
+  alias Transitmaps.Catalog.Countries
+  alias Transitmaps.Gtfs.Csv
+
+  @default_source "https://files.mobilitydatabase.org/feeds_v2.csv"
+  @refresh_ms :timer.hours(24)
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+
+  @doc """
+  Agencies whose name or place contains every word of `query`, best
+  matches first: provider names starting with the query, then the rest.
+  """
+  def search(query, limit \\ 20) do
+    words = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
+
+    if words == [] do
+      []
+    else
+      feeds()
+      |> Enum.filter(fn feed -> Enum.all?(words, &String.contains?(feed.search_text, &1)) end)
+      |> Enum.sort_by(&{not String.starts_with?(String.downcase(&1.label), hd(words)), &1.label})
+      |> Enum.take(limit)
+    end
+  end
+
+  @doc "The catalog entry with `id`, or nil."
+  def get(id), do: Enum.find(feeds(), &(&1.id == id))
+
+  @doc "All usable catalog feeds; empty until the first load completes."
+  def feeds, do: :persistent_term.get(__MODULE__, [])
+
+  @doc false
+  def parse(path) do
+    path
+    |> Path.dirname()
+    |> Csv.stream(Path.basename(path))
+    |> Stream.filter(&usable?/1)
+    |> Enum.map(&feed/1)
+    # A few agencies are catalogued twice under one download.
+    |> Enum.uniq_by(&(&1.source_url || &1.id))
+  end
+
+  # Only static GTFS that is live today and can be downloaded without a key
+  # from MobilityData's mirror.
+  defp usable?(row) do
+    row["data_type"] == "gtfs" and row["status"] in ["active", ""] and
+      present?(row["urls.latest"]) and row["urls.authentication_type"] in [nil, "", "0"] and
+      String.match?(row["location.country_code"] || "", ~r/^[A-Z]{2}$/)
+  end
+
+  defp feed(row) do
+    provider = presence(row["provider"]) || row["id"]
+    label = if presence(row["name"]), do: "#{provider} · #{row["name"]}", else: provider
+
+    place =
+      [
+        presence(row["location.municipality"]),
+        presence(row["location.subdivision_name"]),
+        Countries.name(row["location.country_code"])
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.join(", ")
+
+    %{
+      id: row["id"],
+      label: label,
+      place: place,
+      url: row["urls.latest"],
+      source_url: presence(row["urls.direct_download"]),
+      search_text: String.downcase(label <> " " <> place)
+    }
+  end
+
+  defp present?(value), do: presence(value) != nil
+  defp presence(value) when value in [nil, ""], do: nil
+  defp presence(value), do: value
+
+  # -- loading -----------------------------------------------------------------
+
+  @impl true
+  def init(opts) do
+    config = Application.get_env(:transitmaps, __MODULE__, [])
+    source = Keyword.get(opts, :source, Keyword.get(config, :source, @default_source))
+
+    cache_path =
+      Keyword.get(config, :cache_path, Path.join(["priv", "gtfs_cache", "catalog.csv"]))
+
+    {:ok, %{source: source, cache_path: cache_path}, {:continue, :load}}
+  end
+
+  @impl true
+  def handle_continue(:load, state) do
+    load(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:refresh, state) do
+    load(state)
+    {:noreply, state}
+  end
+
+  # A local source (tests, offline development) is read directly. A remote
+  # one is served from the disk cache while it is fresh, re-downloaded once
+  # it is a day old, and falls back to the stale copy if the download fails.
+  defp load(%{source: source, cache_path: cache_path}) do
+    path =
+      cond do
+        not String.starts_with?(source, "http") -> source
+        fresh?(cache_path) -> cache_path
+        download(source, cache_path) == :ok -> cache_path
+        File.exists?(cache_path) -> cache_path
+        true -> nil
+      end
+
+    if path do
+      feeds = parse(path)
+      :persistent_term.put(__MODULE__, feeds)
+      Logger.info("Feed catalog loaded: #{length(feeds)} feeds")
+    end
+
+    if String.starts_with?(source, "http"), do: Process.send_after(self(), :refresh, @refresh_ms)
+  end
+
+  defp fresh?(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: mtime}} -> System.os_time(:second) - mtime < div(@refresh_ms, 1000)
+      {:error, _} -> false
+    end
+  end
+
+  defp download(source, cache_path) do
+    File.mkdir_p!(Path.dirname(cache_path))
+    partial = cache_path <> ".part"
+
+    case Req.get(source, into: File.stream!(partial), raw: true, retry: :transient) do
+      {:ok, %{status: 200}} ->
+        File.rename!(partial, cache_path)
+        :ok
+
+      other ->
+        File.rm(partial)
+        Logger.warning("Feed catalog download failed: #{inspect(other, limit: 5)}")
+        :error
+    end
+  end
+end

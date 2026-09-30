@@ -30,8 +30,42 @@ defmodule Transitmaps.Gtfs.Importer do
 
   @insert_batch 500
 
-  def import_feed(name, source) do
-    dir = fetch_and_extract!(name, source)
+  # What the agency list calls the hand-curated feeds. Any other feed is
+  # labelled by its name unless the caller passes a label.
+  @known_labels %{
+    "gb-rail" => "National Rail",
+    "tfl" => "Transport for London",
+    "amtrak" => "Amtrak",
+    "mbta-commuter" => "MBTA Commuter Rail",
+    "mbta-rapid" => "MBTA Subway",
+    "metro-north" => "Metro-North Railroad",
+    "nyc-subway" => "NYC Subway",
+    "nj-transit-rail" => "NJ Transit Rail",
+    "path" => "PATH",
+    "septa-regional-rail" => "SEPTA Regional Rail",
+    "septa-rapid" => "SEPTA Metro",
+    "marc" => "MARC Train",
+    "baltimore-metro" => "Baltimore Metro SubwayLink",
+    "baltimore-light-rail" => "Baltimore Light RailLink",
+    "wmata-rapid" => "WMATA Metrorail"
+  }
+
+  @doc """
+  Imports feed `name` from `source` (a zip URL or local path), replacing any
+  previous import under that name.
+
+  Options:
+
+    * `:feed` — extra feed attributes to store (`country_code`,
+      `subdivision`, `catalog_id`)
+    * `:max_bytes` — refuse a download larger than this
+    * `:keep_download` — keep the downloaded zip in the cache (default
+      `true`); on-demand region imports throw theirs away
+    * `:invalidate` — mark cached GeoJSON stale afterwards (default
+      `true`); a region import does it once when all its feeds are in
+  """
+  def import_feed(name, source, opts \\ []) do
+    dir = fetch_and_extract!(name, source, opts)
 
     try do
       routes = read_routes(dir, read_agencies(dir))
@@ -43,21 +77,20 @@ defmodule Transitmaps.Gtfs.Importer do
       route_rows =
         build_route_rows(name, routes, trip_index, shape_geometries, fallback_paths, stop_coords)
         |> normalize_feed_categories(name)
+        |> Enum.map(&amtrak_as_intercity/1)
 
-      persist_rows(name, source, route_rows, station_rows(stations, route_rows))
+      persist_rows(name, source, route_rows, station_rows(stations, route_rows), opts)
     after
       File.rm_rf!(dir)
     end
   end
 
-  defp normalize_feed_categories(routes, "amtrak") do
-    Enum.map(routes, fn route ->
-      if String.contains?(route.agency_name || "", "Amtrak") do
-        Map.put(route, :category, "intercity")
-      else
-        route
-      end
-    end)
+  # Amtrak files its long-distance trains as ordinary rail, in its own feed
+  # and in the regional feeds that carry some of its services.
+  defp amtrak_as_intercity(route) do
+    if String.contains?(route.agency_name || "", "Amtrak"),
+      do: Map.put(route, :category, "intercity"),
+      else: route
   end
 
   defp normalize_feed_categories(routes, name)
@@ -80,15 +113,21 @@ defmodule Transitmaps.Gtfs.Importer do
 
   # -- download / extract ----------------------------------------------------
 
-  defp fetch_and_extract!(name, source) do
+  defp fetch_and_extract!(name, source, opts) do
     zip_path = ensure_local_zip!(name, source)
     extract_dir = Path.join(System.tmp_dir!(), "gtfs_#{name}")
 
-    File.rm_rf!(extract_dir)
-    File.mkdir_p!(extract_dir)
+    try do
+      check_size!(zip_path, opts[:max_bytes])
 
-    {:ok, _files} =
-      :zip.extract(String.to_charlist(zip_path), cwd: String.to_charlist(extract_dir))
+      File.rm_rf!(extract_dir)
+      File.mkdir_p!(extract_dir)
+
+      {:ok, _files} =
+        :zip.extract(String.to_charlist(zip_path), cwd: String.to_charlist(extract_dir))
+    after
+      if opts[:keep_download] == false and zip_path != source, do: File.rm(zip_path)
+    end
 
     extract_nested_feed!(extract_dir, name)
 
@@ -116,6 +155,16 @@ defmodule Transitmaps.Gtfs.Importer do
         {:ok, _files} =
           :zip.extract(String.to_charlist(selected), cwd: String.to_charlist(dir))
       end
+    end
+  end
+
+  defp check_size!(_zip_path, nil), do: :ok
+
+  defp check_size!(zip_path, max_bytes) do
+    %{size: size} = File.stat!(zip_path)
+
+    if size > max_bytes do
+      raise "#{Path.basename(zip_path)} is #{div(size, 1_048_576)} MB, over the import limit"
     end
   end
 
@@ -437,7 +486,7 @@ defmodule Transitmaps.Gtfs.Importer do
   # -- persistence -------------------------------------------------------------
 
   @doc false
-  def persist_rows(name, source, route_rows, station_rows) do
+  def persist_rows(name, source, route_rows, station_rows, opts \\ []) do
     now = DateTime.utc_now(:second)
 
     routes_by_id = Map.new(route_rows, fn route -> {route.route_id, route} end)
@@ -445,7 +494,12 @@ defmodule Transitmaps.Gtfs.Importer do
     result =
       Repo.transaction(
         fn ->
-          feed = upsert_feed!(name, source, now)
+          attrs =
+            opts
+            |> Keyword.get(:feed, %{})
+            |> Map.merge(service_area(station_rows))
+
+          feed = upsert_feed!(name, source, now, attrs)
 
           Repo.delete_all(feed_scope(Transitmaps.Gtfs.Route, feed.id))
           Repo.delete_all(feed_scope(Transitmaps.Gtfs.Stop, feed.id))
@@ -469,7 +523,7 @@ defmodule Transitmaps.Gtfs.Importer do
         timeout: :infinity
       )
 
-    Transitmaps.Gtfs.GeoJsonCache.invalidate()
+    if Keyword.get(opts, :invalidate, true), do: Transitmaps.Gtfs.GeoJsonCache.invalidate()
     result
   end
 
@@ -478,16 +532,42 @@ defmodule Transitmaps.Gtfs.Importer do
     from(r in schema, where: r.feed_id == ^feed_id)
   end
 
-  defp upsert_feed!(name, source, now) do
+  # The box the map tests against what is on screen. Percentiles rather
+  # than extremes, so one stop geocoded to 0,0 can't stretch the feed over
+  # half the planet.
+  defp service_area([]), do: %{}
+
+  defp service_area(stations) do
+    lons = stations |> Enum.map(& &1.lon) |> Enum.sort() |> List.to_tuple()
+    lats = stations |> Enum.map(& &1.lat) |> Enum.sort() |> List.to_tuple()
+    low = div(tuple_size(lons), 100)
+    high = tuple_size(lons) - 1 - low
+
+    %{
+      min_lon: elem(lons, low),
+      min_lat: elem(lats, low),
+      max_lon: elem(lons, high),
+      max_lat: elem(lats, high)
+    }
+  end
+
+  defp upsert_feed!(name, source, now, attrs) do
+    attrs =
+      %{label: Map.get(@known_labels, name, name)}
+      |> Map.merge(Map.take(attrs, [:label, :catalog_id, :min_lon, :min_lat, :max_lon, :max_lat]))
+
     Repo.insert!(
-      %Transitmaps.Gtfs.Feed{
-        name: name,
-        url: source,
-        imported_at: now,
-        inserted_at: now,
-        updated_at: now
-      },
-      on_conflict: [set: [url: source, imported_at: now, updated_at: now]],
+      struct(
+        %Transitmaps.Gtfs.Feed{
+          name: name,
+          url: source,
+          imported_at: now,
+          inserted_at: now,
+          updated_at: now
+        },
+        attrs
+      ),
+      on_conflict: [set: [url: source, imported_at: now, updated_at: now] ++ Map.to_list(attrs)],
       conflict_target: :name,
       returning: true
     )

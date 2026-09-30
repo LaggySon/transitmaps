@@ -34,9 +34,13 @@ defmodule Transitmaps.Release do
     import_tfl()
   end
 
-  @doc ~S|Imports one GTFS feed: eval "Transitmaps.Release.import_gtfs(\"amtrak\", \"https://...zip\")"|
-  def import_gtfs(name, source) do
-    with_import_repo(fn -> Transitmaps.Gtfs.Importer.import_feed(name, source) end)
+  @doc ~S"""
+  Imports one GTFS feed, e.g.
+  `eval "Transitmaps.Release.import_gtfs(\"amtrak\", \"https://...zip\")"`.
+  Pass `%{label: "..."}` to name it in the map's agency list.
+  """
+  def import_gtfs(name, source, feed \\ %{}) do
+    with_import_repo(fn -> Transitmaps.Gtfs.Importer.import_feed(name, source, feed: feed) end)
   end
 
   @doc ~S|Imports TfL lines from the TfL API and OSM: eval "Transitmaps.Release.import_tfl()"|

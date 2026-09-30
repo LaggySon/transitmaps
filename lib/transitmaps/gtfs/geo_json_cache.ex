@@ -28,21 +28,30 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
 
+  # Where the map opens (see `DEFAULT_VIEW` in transit_map.js), as
+  # [west, south, east, north]: the agencies it loads first.
+  @opening_view {-8.8, 49.7, 2.1, 59.2}
+
   @doc """
   Pre-builds the responses the map requests on a default page load, so the
   first visitor after boot is served from cache too.
   """
   def warm do
     if enabled?() do
-      Enum.each(@warm_categories, fn category ->
-        fetch({:routes, [category]}, fn ->
-          Transitmaps.Gtfs.route_feature_collection([category])
+      {west, south, east, north} = @opening_view
+
+      for %{id: feed_id, bounds: [[min_lon, min_lat], [max_lon, max_lat]]} <-
+            Transitmaps.Agencies.list_feeds(),
+          min_lon <= east and max_lon >= west and min_lat <= north and max_lat >= south,
+          category <- @warm_categories do
+        fetch({:routes, feed_id, [category]}, fn ->
+          Transitmaps.Gtfs.route_feature_collection([category], feed_id)
         end)
 
-        fetch({:stops, [category]}, fn ->
-          Transitmaps.Gtfs.stop_feature_collection([category])
+        fetch({:stops, feed_id, [category]}, fn ->
+          Transitmaps.Gtfs.stop_feature_collection([category], feed_id)
         end)
-      end)
+      end
     end
 
     :ok
@@ -76,11 +85,12 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   defp fresh?(built_at), do: System.monotonic_time(:millisecond) - built_at < @ttl_ms
 
   @doc """
-  Marks every cached response stale after a feed import rewrites data.
-  Visitors keep the previous responses until their rebuilds land.
+  Marks cached responses stale after a feed import rewrites data — every
+  one, or those whose key satisfies `affected?`. Visitors keep the
+  previous responses until their rebuilds land.
   """
-  def invalidate do
-    if enabled?(), do: GenServer.call(__MODULE__, :invalidate)
+  def invalidate(affected? \\ fn _key -> true end) do
+    if enabled?(), do: GenServer.call(__MODULE__, {:invalidate, affected?})
     :ok
   end
 
@@ -107,8 +117,8 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     {:reply, :ok, state}
   end
 
-  def handle_call(:invalidate, _from, state) do
-    keys = :ets.select(@table, [{{:"$1", :_, :_, :_}, [], [:"$1"]}])
+  def handle_call({:invalidate, affected?}, _from, state) do
+    keys = @table |> :ets.select([{{:"$1", :_, :_, :_}, [], [:"$1"]}]) |> Enum.filter(affected?)
     Enum.each(keys, &:ets.update_element(@table, &1, {3, :stale}))
 
     # A rebuild already under way may have read the data this import
@@ -139,12 +149,12 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   defp rebuild_next(%{rebuilding: nil, queue: [key | queue]} = state) do
     case :ets.lookup(@table, key) do
       [{^key, _entry, _built_at, builder}] ->
-        {_pid, ref} =
+        {_pid, monitor} =
           spawn_monitor(fn ->
             GenServer.call(__MODULE__, {:put, key, build(builder), builder}, :infinity)
           end)
 
-        %{state | queue: queue, rebuilding: {key, ref}}
+        %{state | queue: queue, rebuilding: {key, monitor}}
 
       [] ->
         rebuild_next(%{state | queue: queue})

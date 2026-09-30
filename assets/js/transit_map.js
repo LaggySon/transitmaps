@@ -16,17 +16,100 @@ const BASEMAP_STYLE = tileProxyUrl("/styles/positron")
 const routeThroughProxy = (url) =>
   url.startsWith(TILE_UPSTREAM) ? {url: tileProxyUrl(url.slice(TILE_UPSTREAM.length))} : {url}
 
-const REGIONS = {
-  "great-britain": {
-    center: [-2.0, 53.8],
-    zoom: 5.5,
-    bounds: [[-8.8, 49.7], [2.1, 59.2]],
-  },
-  "northeast-corridor": {
-    center: [-74.1, 40.2],
-    zoom: 6.4,
-    bounds: [[-77.25, 38.75], [-70.75, 42.55]],
-  },
+// Where the map opens, unless the URL hash already names a view. The server
+// warms its cache for the agencies here (GeoJsonCache's @opening_view).
+const DEFAULT_VIEW = {center: [-2.0, 53.8], zoom: 5.5}
+
+// Agencies are loaded for a view padded by this fraction on every side, so
+// lines are already there when a pan brings them on screen.
+const LOAD_PADDING = 0.5
+
+// Stations of different agencies this close together are one interchange —
+// the same rule `Transitmaps.Gtfs.merge_colocated_stops/1` applies within an
+// agency. Bus stops only merge when practically on top of one another.
+const STATION_MERGE_KM = 0.25
+const STOP_MERGE_KM = 0.05
+
+const kmScale = (lat) => [111.32 * Math.cos((lat * Math.PI) / 180), 110.57]
+const lineKey = (line) => line.key || `${line.name}|${line.agency}`
+
+// One station out of several agencies' stops at the same place: the name of
+// whichever serves the most lines, every line and mode, sat at their middle.
+const combineStops = (features) => {
+  const lines = [...new Map(features.flatMap((f) => f.properties.lines || []).map((l) => [lineKey(l), l])).values()]
+  const best = features.reduce((a, b) => {
+    const score = (f) => [(f.properties.lines || []).length, String(f.properties.name || "").length]
+    const [la, na] = score(a)
+    const [lb, nb] = score(b)
+    return lb > la || (lb === la && nb > na) ? b : a
+  })
+  const mean = (i) => features.reduce((sum, f) => sum + f.geometry.coordinates[i], 0) / features.length
+
+  return {
+    type: "Feature",
+    geometry: {type: "Point", coordinates: [mean(0), mean(1)]},
+    properties: {
+      ...best.properties,
+      categories: [...new Set(features.flatMap((f) => f.properties.categories || []))],
+      lines,
+      station: features.some((f) => f.properties.station),
+      interchange: new Set(lines.map(lineKey)).size || best.properties.interchange,
+    },
+  }
+}
+
+// Chains stops into one station while each hop stays inside the merge
+// radius, using a grid one station radius across so every candidate
+// neighbour is in the same cell or one touching it.
+const mergeColocatedStops = (features) => {
+  const points = features.map((feature) => {
+    const [lon, lat] = feature.geometry.coordinates
+    const [kx, ky] = kmScale(lat)
+    return {x: lon * kx, y: lat * ky, station: Boolean(feature.properties.station)}
+  })
+  const cellOf = (point) => [Math.floor(point.x / STATION_MERGE_KM), Math.floor(point.y / STATION_MERGE_KM)]
+  const cells = new Map()
+  points.forEach((point, index) => {
+    const key = cellOf(point).join(",")
+    if (!cells.has(key)) cells.set(key, [])
+    cells.get(key).push(index)
+  })
+
+  const visited = new Uint8Array(points.length)
+  const merged = []
+
+  points.forEach((_point, start) => {
+    if (visited[start]) return
+    visited[start] = 1
+    const queue = [start]
+    const members = []
+
+    while (queue.length > 0) {
+      const index = queue.pop()
+      members.push(index)
+      const point = points[index]
+      const [cx, cy] = cellOf(point)
+
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          ;(cells.get(`${cx + dx},${cy + dy}`) || []).forEach((other) => {
+            if (visited[other]) return
+            const candidate = points[other]
+            const radius = point.station && candidate.station ? STATION_MERGE_KM : STOP_MERGE_KM
+            const distance = Math.hypot(candidate.x - point.x, candidate.y - point.y)
+            if (distance <= radius) {
+              visited[other] = 1
+              queue.push(other)
+            }
+          })
+        }
+      }
+    }
+
+    merged.push(members.length === 1 ? features[members[0]] : combineStops(members.map((i) => features[i])))
+  })
+
+  return merged
 }
 
 const MODE_ORDER = ["ferry", "coach", "bus", "rail", "intercity", "tram", "metro"]
@@ -103,24 +186,32 @@ const desiredLayerOrder = () =>
 
 const TransitMap = {
   mounted() {
+    // Categories whose sources and layers exist on the map.
     this.loaded = new Set()
+    // Per agency and mode, keyed "feedId:category".
     this.pending = new Map()
-    this.categoryData = new Map()
+    this.feedData = new Map()
+    this.feeds = this.parseData("feeds", [])
+    this.hidden = new Set(this.parseData("hidden", []))
+    this.reportedView = null
+    this.renderedKey = null
+    // The full-screen loading card only covers the first load; after that,
+    // agencies coming into range as the map pans load without hiding it.
+    this.firstLoadShown = false
     this.dataLoadBatch = 0
     this.dataLoading = false
     this.enabled = new Set(this.parseData("enabled", []))
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.places = new Set(this.parseData("places", []))
     this.placeCatalog = this.parseData("placeCatalog", [])
-    this.region = this.el.dataset.region || "great-britain"
-    const initialView = REGIONS[this.region] || REGIONS["great-britain"]
 
     try {
       this.map = new maplibregl.Map({
         container: this.el,
         style: BASEMAP_STYLE,
-        center: initialView.center,
-        zoom: initialView.zoom,
+        ...DEFAULT_VIEW,
+        // The view lives in the URL hash, so a place on the map can be shared.
+        hash: "map",
         minZoom: 4,
         // Zoom 14 is as deep as the vector tiles go, so everything past it is
         // overzoom. Allowing three extra levels costs no new data and is what
@@ -149,6 +240,9 @@ const TransitMap = {
     this.map.on("load", () => this.markMapReady())
     this.map.on("zoom", () => this.updateZoomReadout())
     this.map.on("idle", () => this.announceIdle())
+    this.map.on("moveend", () => {
+      if (this.map.isStyleLoaded()) this.syncLayers()
+    })
 
     this.handleEvent("categories-changed", ({enabled}) => {
       this.enabled = new Set(enabled)
@@ -162,7 +256,20 @@ const TransitMap = {
       this.places = new Set(enabled)
       this.syncPlaces()
     })
-    this.handleEvent("map-region", ({region}) => this.showRegion(region))
+    // An agency was added (or a hand-curated copy retired). What is drawn
+    // stays put; a new agency in range simply loads, and a retired one
+    // drops out of range. A weekly refresh shows on the next page load.
+    this.handleEvent("feeds-changed", ({feeds}) => {
+      this.feeds = feeds
+      if (this.map.isStyleLoaded()) this.syncLayers()
+    })
+    this.handleEvent("agencies-hidden", ({hidden}) => {
+      this.hidden = new Set(hidden)
+      this.render()
+    })
+    this.handleEvent("fly-to", ({bounds}) => {
+      this.map.fitBounds(bounds, {padding: this.mapPadding(), duration: 900, essential: true})
+    })
 
     this.zoomInHandler = () => this.map.easeTo({zoom: this.map.getZoom() + 1, duration: 300})
     this.zoomOutHandler = () => this.map.easeTo({zoom: this.map.getZoom() - 1, duration: 300})
@@ -238,7 +345,7 @@ const TransitMap = {
     this.dataLoading = categories.length > 0
     this.dataLoadProgress = {batch, categories: new Set(categories), complete: new Set()}
 
-    if (this.dataLoading) {
+    if (this.dataLoading && !this.firstLoadShown) {
       this.showLoading(
         "Loading transit data",
         `Preparing 0 of ${categories.length} layers`,
@@ -247,13 +354,15 @@ const TransitMap = {
     }
   },
 
-  advanceDataLoading(batch, category) {
+  advanceDataLoading(batch, key) {
     const progress = this.dataLoadProgress
-    if (!progress || progress.batch !== batch || !progress.categories.has(category)) return
+    if (!progress || progress.batch !== batch || !progress.categories.has(key)) return
 
-    progress.complete.add(category)
+    progress.complete.add(key)
+    if (this.firstLoadShown) return
     const complete = progress.complete.size
     const total = progress.categories.size
+    const category = key.split(":")[1]
     const label = MODE_LABEL[category] || category
     this.showLoading(
       "Loading transit data",
@@ -275,18 +384,6 @@ const TransitMap = {
     this.el.dataset.mapZoom = zoom.toFixed(1)
     const readout = document.querySelector("#map-zoom-readout")
     if (readout) readout.textContent = `z${zoom.toFixed(1)}`
-  },
-
-  showRegion(region) {
-    const view = REGIONS[region]
-    if (!view) return
-
-    this.region = region
-    this.map.fitBounds(view.bounds, {
-      padding: this.mapPadding(),
-      duration: 900,
-      essential: true,
-    })
   },
 
   // Room for the floating menu button and map controls, which sit over the map.
@@ -428,32 +525,68 @@ const TransitMap = {
     return stopLayers.length > 0 ? this.map.queryRenderedFeatures(point, {layers: stopLayers}) : []
   },
 
+  // Agencies whose service area overlaps the view, padded by `padding` of
+  // its size on every side.
+  feedsNear(padding) {
+    const bounds = this.map.getBounds()
+    const padX = (bounds.getEast() - bounds.getWest()) * padding
+    const padY = (bounds.getNorth() - bounds.getSouth()) * padding
+    const [west, south, east, north] = [
+      bounds.getWest() - padX,
+      bounds.getSouth() - padY,
+      bounds.getEast() + padX,
+      bounds.getNorth() + padY,
+    ]
+
+    return this.feeds
+      .filter(({bounds: [[w, s], [e, n]]}) => w <= east && e >= west && s <= north && n >= south)
+      .map((feed) => feed.id)
+      .sort((a, b) => a - b)
+  },
+
+  // The agencies drawn right now: near the view and not hidden by the visitor.
+  activeFeeds() {
+    return this.feedsNear(LOAD_PADDING).filter((id) => !this.hidden.has(id))
+  },
+
+  // Reports what is on screen to the menu, then loads whatever the drawn
+  // agencies are missing for the enabled modes and redraws as it lands.
   syncLayers() {
+    const inView = this.feedsNear(0)
+    const viewKey = inView.join(",")
+    if (viewKey !== this.reportedView) {
+      this.reportedView = viewKey
+      this.pushEvent("view", {feeds: inView})
+    }
+
+    const missing = this.activeFeeds().flatMap((id) =>
+      MODE_ORDER.filter((cat) => this.enabled.has(cat) && !this.feedData.has(`${id}:${cat}`)).map(
+        (cat) => `${id}:${cat}`
+      )
+    )
+
     this.el.dataset.transitReady = "false"
     this.el.dataset.mapIdle = "false"
     const batch = ++this.dataLoadBatch
-    const categoriesToLoad = MODE_ORDER.filter(
-      (cat) => this.enabled.has(cat) && !this.loaded.has(cat)
-    )
-    this.startDataLoading(batch, categoriesToLoad)
+    this.startDataLoading(batch, missing)
+    this.render()
 
-    const updates = MODE_ORDER.map((cat) => {
-      if (this.enabled.has(cat)) {
-        return this.showCategory(cat).then(() => this.advanceDataLoading(batch, cat))
-      }
-      this.hideCategory(cat)
-      return Promise.resolve()
-    })
+    const loads = missing.map((key) => this.loadFeed(key).then(() => this.advanceDataLoading(batch, key)))
 
-    Promise.allSettled(updates).then((results) => {
+    Promise.allSettled(loads).then((results) => {
+      this.render()
       if (batch !== this.dataLoadBatch) return
 
       const failures = results.filter((result) => result.status === "rejected")
+      const quiet = this.firstLoadShown
+      this.firstLoadShown = true
       this.dataLoading = false
       this.el.dataset.mapIdle = "false"
       this.el.dataset.transitReady = failures.length === 0 ? "true" : "error"
 
-      if (failures.length > 0) {
+      if (quiet) {
+        if (this.map.loaded()) this.announceIdle()
+      } else if (failures.length > 0) {
         const total = Math.max(1, this.dataLoadProgress.categories.size)
         this.showLoading(
           "Some transit data could not be loaded",
@@ -461,56 +594,106 @@ const TransitMap = {
           (this.dataLoadProgress.complete.size / total) * 100
         )
       } else {
-        this.showLoading("Transit data ready", "All visible layers loaded", 100)
+        if (missing.length > 0) this.showLoading("Transit data ready", "All visible layers loaded", 100)
         if (this.map.loaded()) this.announceIdle()
       }
     })
   },
 
-  async showCategory(cat) {
-    if (this.loaded.has(cat)) {
-      this.setCategoryVisibility(cat)
-      return
-    }
+  async loadFeed(key) {
+    if (this.pending.has(key)) return this.pending.get(key)
 
-    if (this.pending.has(cat)) return this.pending.get(cat)
+    const [feedId, cat] = key.split(":")
+    const query = `feed=${feedId}&cats=${encodeURIComponent(cat)}`
 
-    const request = this.loadCategory(cat)
-    this.pending.set(cat, request)
+    const request = (async () => {
+      const [routeResponse, stopResponse] = await Promise.all([
+        fetch(`/api/routes.geojson?${query}`),
+        fetch(`/api/stops.geojson?${query}`),
+      ])
+
+      if (!routeResponse.ok || !stopResponse.ok) throw new Error(`Could not load ${key}`)
+
+      const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
+      this.feedData.set(key, {routes, stops})
+    })()
+
+    this.pending.set(key, request)
 
     try {
       await request
+    } catch (error) {
+      console.error(`Unable to load transit data for ${key}:`, error)
+      throw error
     } finally {
-      this.pending.delete(cat)
+      this.pending.delete(key)
     }
   },
 
-  async loadCategory(cat) {
-    try {
-      const [routeResponse, stopResponse] = await Promise.all([
-        fetch(`/api/routes.geojson?cats=${encodeURIComponent(cat)}`),
-        fetch(`/api/stops.geojson?cats=${encodeURIComponent(cat)}`),
-      ])
+  // Draws every enabled mode from the active agencies' data: their lines
+  // side by side, and their stations merged across agencies so a shared
+  // interchange is one marker. Redrawing is skipped while nothing it depends
+  // on has changed, since a pan alone must not re-tessellate a country.
+  render() {
+    if (!this.map?.isStyleLoaded()) return
 
-      if (!routeResponse.ok || !stopResponse.ok) {
-        throw new Error(`Could not load ${cat} data`)
-      }
+    const active = this.activeFeeds()
+    const loadedKeys = active.flatMap((id) =>
+      MODE_ORDER.filter((cat) => this.enabled.has(cat) && this.feedData.has(`${id}:${cat}`)).map(
+        (cat) => `${id}:${cat}`
+      )
+    )
+    const renderKey = loadedKeys.join(",")
 
-      const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
-      this.categoryData.set(cat, {routes, stops})
+    if (renderKey !== this.renderedKey) {
+      this.renderedKey = renderKey
+      const stopsByCategory = this.mergedStops(loadedKeys)
 
-      if (!this.map.getSource(`${cat}-routes`)) {
-        this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
-        this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
-        this.addCategoryLayers(cat)
-      }
+      MODE_ORDER.filter((cat) => this.enabled.has(cat)).forEach((cat) => {
+        const routes = {
+          type: "FeatureCollection",
+          features: active.flatMap((id) => this.feedData.get(`${id}:${cat}`)?.routes.features || []),
+        }
+        const stops = {type: "FeatureCollection", features: stopsByCategory.get(cat) || []}
 
-      this.loaded.add(cat)
-      this.setCategoryVisibility(cat)
-    } catch (error) {
-      console.error(`Unable to load ${cat} transit data:`, error)
-      throw error
+        if (this.map.getSource(`${cat}-routes`)) {
+          this.map.getSource(`${cat}-routes`).setData(routes)
+          this.map.getSource(`${cat}-stops`).setData(stops)
+        } else {
+          this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
+          this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
+          this.addCategoryLayers(cat)
+          this.loaded.add(cat)
+        }
+      })
     }
+
+    MODE_ORDER.forEach((cat) => (this.enabled.has(cat) ? this.setCategoryVisibility(cat) : this.hideCategory(cat)))
+  },
+
+  // Each agency's stations, once each (a station serving two modes arrives in
+  // both modes' responses), merged across agencies and handed to every mode
+  // they serve.
+  mergedStops(keys) {
+    const unique = new Map()
+
+    keys.forEach((key) => {
+      const feedId = key.split(":")[0]
+      ;(this.feedData.get(key)?.stops.features || []).forEach((feature) => {
+        const id = `${feedId}|${feature.geometry.coordinates.join(",")}|${feature.properties.name}`
+        if (!unique.has(id)) unique.set(id, feature)
+      })
+    })
+
+    const byCategory = new Map()
+    mergeColocatedStops([...unique.values()]).forEach((station) => {
+      ;(station.properties.categories || []).forEach((cat) => {
+        if (!byCategory.has(cat)) byCategory.set(cat, [])
+        byCategory.get(cat).push(station)
+      })
+    })
+
+    return byCategory
   },
 
   hideCategory(cat) {

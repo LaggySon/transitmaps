@@ -1,7 +1,8 @@
 defmodule TransitmapsWeb.MapLive do
   use TransitmapsWeb, :live_view
 
-  alias Transitmaps.Gtfs
+  alias Transitmaps.Agencies
+  alias Transitmaps.Catalog
   alias Transitmaps.Gtfs.RouteTypes
 
   @mode_groups [
@@ -39,13 +40,6 @@ defmodule TransitmapsWeb.MapLive do
     {"essentials", "Essentials", "#6B6B72"}
   ]
 
-  @regions [
-    {"great-britain", "Great Britain", "National rail, metro and local transit",
-     "London · Edinburgh"},
-    {"northeast-corridor", "Northeast Corridor", "Intercity and commuter connections",
-     "Boston · Washington"}
-  ]
-
   @default_enabled ~w(metro tram rail intercity ferry)
   @default_details ~w(labels stops)
   @details ~w(labels stops)
@@ -61,24 +55,41 @@ defmodule TransitmapsWeb.MapLive do
   }
   @visual_testing Mix.env() in [:dev, :test]
 
+  # The visual suite mocks the GeoJSON API, so it draws one stand-in agency
+  # covering the opening view instead of whatever the dev database holds.
+  @visual_feeds [
+    %{
+      id: 1,
+      label: "Fixture Rail",
+      catalog_id: nil,
+      bounds: [[-8.8, 49.7], [2.1, 59.2]],
+      counts: @visual_counts
+    }
+  ]
+
   @impl true
   def mount(params, _session, socket) do
-    counts =
-      if params["visual_test"] == "1" and @visual_testing do
-        @visual_counts
-      else
-        Gtfs.category_counts()
-      end
+    visual_test? = params["visual_test"] == "1" and @visual_testing
+
+    if connected?(socket) and not visual_test?, do: Agencies.subscribe()
+
+    feeds = if visual_test?, do: @visual_feeds, else: Agencies.list_feeds()
 
     {:ok,
      socket
      |> assign(:page_title, "Transit Maps")
-     |> assign(:counts, counts)
+     |> assign(:visual_test?, visual_test?)
      |> assign(:menu_open?, false)
-     |> assign(:region, "great-britain")
      |> assign(:enabled, MapSet.new(@default_enabled))
      |> assign(:details, MapSet.new(@default_details))
-     |> assign(:places, MapSet.new(@place_ids))}
+     |> assign(:places, MapSet.new(@place_ids))
+     |> assign(:hidden, MapSet.new())
+     |> assign(:agency_form, to_form(%{"query" => ""}, as: :agency))
+     |> assign(:results, [])
+     |> assign(:imports, %{})
+     |> assign(:requested, MapSet.new())
+     |> assign(:agency_error, nil)
+     |> assign_feeds(feeds, Enum.map(feeds, & &1.id))}
   end
 
   @impl true
@@ -122,12 +133,68 @@ defmodule TransitmapsWeb.MapLive do
      |> push_event("details-changed", %{enabled: MapSet.to_list(details)})}
   end
 
-  def handle_event("region", %{"region" => region}, socket)
-      when region in ~w(great-britain northeast-corridor) do
+  # The map reports which agencies overlap what is on screen; the menu's
+  # mode counts and agency list follow it.
+  def handle_event("view", %{"feeds" => feed_ids}, socket) when is_list(feed_ids) do
+    {:noreply, assign_feeds(socket, socket.assigns.feeds, feed_ids)}
+  end
+
+  def handle_event("search-agencies", %{"agency" => %{"query" => query}}, socket) do
+    results = on_map_matches(socket.assigns.feeds, query) ++ Catalog.search(query)
+
     {:noreply,
      socket
-     |> assign(:region, region)
-     |> push_event("map-region", %{region: region})}
+     |> assign(:agency_form, to_form(%{"query" => query}, as: :agency))
+     |> assign(:results, results)
+     |> assign(:imports, Agencies.imports(Enum.map(results, & &1.id)))
+     |> assign(:agency_error, nil)}
+  end
+
+  def handle_event("add-agency", %{"id" => catalog_id}, socket) do
+    case Agencies.request(catalog_id) do
+      {:ok, feed_import} ->
+        {:noreply,
+         socket
+         |> update(:imports, &Map.put(&1, catalog_id, feed_import))
+         |> update(:requested, &MapSet.put(&1, catalog_id))
+         |> assign(:agency_error, nil)}
+
+      {:error, :busy} ->
+        {:noreply,
+         assign(socket, :agency_error, "Lots of agencies are downloading. Try again shortly.")}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, :agency_error, "That agency isn't available to download.")}
+    end
+  end
+
+  def handle_event("show-agency", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.feeds, &(to_string(&1.id) == id)) do
+      nil ->
+        {:noreply, socket}
+
+      feed ->
+        {:noreply,
+         socket
+         |> assign(:menu_open?, false)
+         |> push_event("fly-to", %{bounds: feed.bounds})}
+    end
+  end
+
+  # Hiding is this visitor's own choice; the agency stays downloaded.
+  def handle_event("toggle-agency", %{"id" => id}, socket) do
+    case Integer.parse(id) do
+      {feed_id, ""} ->
+        hidden = toggle_member(socket.assigns.hidden, feed_id)
+
+        {:noreply,
+         socket
+         |> assign(:hidden, hidden)
+         |> push_event("agencies-hidden", %{hidden: MapSet.to_list(hidden)})}
+
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   def handle_event("toggle-menu", _params, socket) do
@@ -137,6 +204,72 @@ defmodule TransitmapsWeb.MapLive do
   def handle_event("close-menu", _params, socket) do
     {:noreply, assign(socket, :menu_open?, false)}
   end
+
+  @impl true
+  def handle_info({:import_updated, feed_import}, socket) do
+    {:noreply, update(socket, :imports, &Map.put(&1, feed_import.catalog_id, feed_import))}
+  end
+
+  # An agency finished downloading (or was replaced). Every map picks up the
+  # new index; the visitor who asked for it is flown there.
+  def handle_info(:feeds_changed, socket) do
+    feeds = Agencies.list_feeds()
+    arrived = Enum.filter(feeds, &MapSet.member?(socket.assigns.requested, &1.catalog_id))
+
+    socket =
+      socket
+      |> assign_feeds(feeds, socket.assigns.in_view)
+      |> push_event("feeds-changed", %{feeds: map_feeds(feeds)})
+      |> update(:requested, fn requested ->
+        Enum.reduce(arrived, requested, &MapSet.delete(&2, &1.catalog_id))
+      end)
+
+    socket =
+      case arrived do
+        [feed | _] -> push_event(socket, "fly-to", %{bounds: feed.bounds})
+        [] -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  defp assign_feeds(socket, feeds, in_view_ids) do
+    known = MapSet.new(feeds, & &1.id)
+    in_view = Enum.filter(in_view_ids, &MapSet.member?(known, &1))
+    in_view_set = MapSet.new(in_view)
+    visible = Enum.filter(feeds, &MapSet.member?(in_view_set, &1.id))
+
+    counts =
+      Enum.reduce(visible, %{}, fn feed, counts ->
+        Map.merge(counts, feed.counts, fn _category, a, b -> a + b end)
+      end)
+
+    assign(socket,
+      feeds: feeds,
+      in_view: in_view,
+      visible_feeds: visible,
+      counts: counts
+    )
+  end
+
+  # Hand-curated agencies aren't in the catalog, so search finds them among
+  # what is already on the map, shaped like catalog results.
+  defp on_map_matches(feeds, query) do
+    words = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
+
+    for feed <- feeds,
+        is_nil(feed.catalog_id),
+        words != [],
+        Enum.all?(words, &String.contains?(String.downcase(feed.label), &1)) do
+      %{id: "on-map-#{feed.id}", label: feed.label, place: "On the map", feed_id: feed.id}
+    end
+  end
+
+  defp result_feed(%{feed_id: feed_id}, feeds), do: Enum.find(feeds, &(&1.id == feed_id))
+  defp result_feed(entry, feeds), do: Enum.find(feeds, &(&1.catalog_id == entry.id))
+
+  # What the map hook needs to decide which agencies are on screen.
+  defp map_feeds(feeds), do: Enum.map(feeds, &Map.take(&1, [:id, :bounds]))
 
   defp put_enabled(socket, enabled) do
     socket
@@ -155,7 +288,6 @@ defmodule TransitmapsWeb.MapLive do
   end
 
   defp mode_groups, do: @mode_groups
-  defp regions, do: @regions
   defp place_groups, do: @place_groups
 
   defp all_places_enabled?(places), do: Enum.all?(@place_ids, &MapSet.member?(places, &1))
@@ -169,13 +301,6 @@ defmodule TransitmapsWeb.MapLive do
   # the client rather than the palette being restated in JavaScript.
   defp place_catalog do
     for {id, label, color} <- @place_groups, do: %{id: id, label: label, color: color}
-  end
-
-  defp region_label(region) do
-    case List.keyfind(@regions, region, 0) do
-      {_id, label, _description, _places} -> label
-      nil -> "Transit"
-    end
   end
 
   defp group_categories(group, counts) do
@@ -211,7 +336,8 @@ defmodule TransitmapsWeb.MapLive do
           data-details={Jason.encode!(MapSet.to_list(@details))}
           data-places={Jason.encode!(MapSet.to_list(@places))}
           data-place-catalog={Jason.encode!(place_catalog())}
-          data-region={@region}
+          data-feeds={Jason.encode!(map_feeds(@feeds))}
+          data-hidden={Jason.encode!(MapSet.to_list(@hidden))}
           aria-label="Interactive transit map"
           class="!absolute inset-0"
         >
@@ -276,7 +402,7 @@ defmodule TransitmapsWeb.MapLive do
                 Transit Maps
               </span>
               <span class="block truncate text-[10px] font-medium text-[#8a8a8e]">
-                {region_label(@region)} · {total_routes(@counts) |> format_count()} routes
+                {agencies_label(length(@visible_feeds))} · {total_routes(@counts) |> format_count()} routes
               </span>
             </span>
             <.icon
@@ -295,32 +421,88 @@ defmodule TransitmapsWeb.MapLive do
             class="map-popover flex max-h-[calc(100dvh-6.5rem)] w-full flex-col overflow-hidden"
           >
             <div class="apple-scrollbar min-h-0 flex-1 overflow-y-auto p-1.5">
-              <div id="region-menu">
-                <.menu_heading label="Region" />
-                <button
-                  :for={{region, label, _description, places} <- regions()}
-                  id={"region-#{region}"}
-                  type="button"
-                  role="radio"
-                  aria-checked={to_string(@region == region)}
-                  phx-click="region"
-                  phx-value-region={region}
-                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035]"
+              <div id="agency-menu" class="px-1 pb-1">
+                <.menu_heading label="Agencies" />
+                <.form
+                  for={@agency_form}
+                  id="agency-search"
+                  phx-change="search-agencies"
+                  phx-submit="search-agencies"
+                  class="px-1.5"
                 >
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate text-[12px] font-medium text-[#2c2c2e]">
-                      {label}
-                    </span>
-                    <span class="block truncate text-[10px] font-medium text-[#a4a4a8]">
-                      {places}
-                    </span>
-                  </span>
-                  <.icon
-                    :if={@region == region}
-                    name="hero-check-circle-solid"
-                    class="size-[18px] shrink-0 text-[#007aff]"
+                  <.input
+                    field={@agency_form[:query]}
+                    type="search"
+                    aria-label="Find an agency"
+                    placeholder="Find an agency — MBTA, Amtrak…"
+                    autocomplete="off"
+                    phx-debounce="250"
+                    class="agency-search"
                   />
-                </button>
+                </.form>
+
+                <p
+                  :if={@agency_error}
+                  id="agency-error"
+                  class="px-2.5 pb-1 text-[11px] font-semibold text-[#b3261e]"
+                >
+                  {@agency_error}
+                </p>
+
+                <%= if @agency_form[:query].value not in [nil, ""] do %>
+                  <ul id="agency-results">
+                    <li
+                      :for={entry <- @results}
+                      id={"agency-result-#{dom_key(entry.id)}"}
+                      class="flex items-center gap-2 rounded-lg px-2.5 py-1.5"
+                    >
+                      <span class="min-w-0 flex-1">
+                        <span class="block truncate text-[12px] font-medium text-[#2c2c2e]">
+                          {entry.label}
+                        </span>
+                        <span class="block truncate text-[10px] font-medium text-[#a4a4a8]">
+                          {entry.place}
+                        </span>
+                      </span>
+                      <.agency_action
+                        entry={entry}
+                        feed={result_feed(entry, @feeds)}
+                        feed_import={@imports[entry.id]}
+                      />
+                    </li>
+                    <li
+                      :if={@results == []}
+                      class="px-2.5 py-2 text-[11px] font-medium text-[#8a8a8e]"
+                    >
+                      No agencies match.
+                    </li>
+                  </ul>
+                <% else %>
+                  <ul id="agencies-in-view">
+                    <li :for={feed <- @visible_feeds}>
+                      <button
+                        id={"agency-toggle-#{feed.id}"}
+                        type="button"
+                        role="switch"
+                        aria-checked={to_string(not MapSet.member?(@hidden, feed.id))}
+                        phx-click="toggle-agency"
+                        phx-value-id={feed.id}
+                        class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035]"
+                      >
+                        <span class="flex-1 truncate text-[12px] font-medium text-[#2c2c2e]">
+                          {feed.label}
+                        </span>
+                        <.switch on={not MapSet.member?(@hidden, feed.id)} />
+                      </button>
+                    </li>
+                    <li
+                      :if={@visible_feeds == []}
+                      class="px-2.5 py-2 text-[11px] font-medium text-[#8a8a8e]"
+                    >
+                      No agencies downloaded here yet. Search to add one.
+                    </li>
+                  </ul>
+                <% end %>
               </div>
 
               <div :for={{group, group_label, _icon, modes} <- mode_groups()} id={"layers-#{group}"}>
@@ -492,6 +674,49 @@ defmodule TransitmapsWeb.MapLive do
         </div>
       </div>
     </Layouts.app>
+    """
+  end
+
+  defp agencies_label(1), do: "1 agency"
+  defp agencies_label(count), do: "#{count} agencies"
+
+  # Catalog ids are free text; DOM ids keep only the safe characters.
+  defp dom_key(id), do: String.replace(id, ~r/[^A-Za-z0-9_-]/, "_")
+
+  attr :entry, :map, required: true
+  attr :feed, :map, default: nil
+  attr :feed_import, :any, default: nil
+
+  # The one thing a search result offers: show it, wait for it, or get it.
+  defp agency_action(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% @feed_import && @feed_import.status in ~w(queued importing) -> %>
+        <span class="flex shrink-0 items-center gap-1.5 text-[10px] font-semibold text-[#8a8a8e]">
+          <span class="map-loading__spinner size-3 rounded-full border-2 border-[#007aff]/20 border-t-[#007aff]">
+          </span>
+          {if @feed_import.status == "queued", do: "Waiting", else: "Downloading"}
+        </span>
+      <% @feed -> %>
+        <button
+          type="button"
+          phx-click="show-agency"
+          phx-value-id={@feed.id}
+          class="agency-action"
+        >
+          Show
+        </button>
+      <% true -> %>
+        <button
+          type="button"
+          phx-click="add-agency"
+          phx-value-id={@entry.id}
+          title={@feed_import && @feed_import.status == "failed" && @feed_import.error}
+          class="agency-action agency-action--primary"
+        >
+          {if @feed_import && @feed_import.status == "failed", do: "Retry", else: "Add"}
+        </button>
+    <% end %>
     """
   end
 

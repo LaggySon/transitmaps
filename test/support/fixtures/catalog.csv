@@ -1,0 +1,8 @@
+id,data_type,entity_type,location.country_code,location.subdivision_name,location.municipality,provider,is_official,name,note,feed_contact_email,static_reference,urls.direct_download,urls.authentication_type,urls.authentication_info,urls.api_key_parameter_name,urls.latest,urls.license,location.bounding_box.minimum_latitude,location.bounding_box.maximum_latitude,location.bounding_box.minimum_longitude,location.bounding_box.maximum_longitude,location.bounding_box.extracted_on,status,features,redirect.id,redirect.comment
+mdb-9001,gtfs,,GB,England,London,Tiny Rail,,,,,,https://example.com/tiny.zip,0,,,tmp/fixtures/tiny-gtfs.zip,,,,,,,active,,,
+mdb-9005,gtfs,,GB,England,,Tiny Rail,,Copy,,,,https://example.com/tiny.zip,0,,,tmp/fixtures/tiny-copy.zip,,,,,,,active,,,
+mdb-9002,gtfs,,GB,,,Broken Buses,,,,,,,0,,,tmp/fixtures/missing-gtfs.zip,,,,,,,active,,,
+mdb-9003,gtfs,,GB,Scotland,,Inactive Buses,,,,,,,0,,,tmp/fixtures/inactive.zip,,,,,,,inactive,,,
+mdb-9004,gtfs,,GB,Wales,,Keyed Buses,,,,,,,2,,,tmp/fixtures/keyed.zip,,,,,,,active,,,
+mdb-437,gtfs,,US,Massachusetts,Boston,Massachusetts Bay Transportation Authority (MBTA),,,,,,https://cdn.mbta.com/MBTA_GTFS.zip,0,,,tmp/fixtures/mbta.zip,,,,,,,active,,,
+jbda-town/bus,gtfs,,JP,Kochi Prefecture,,Town Bus,,Loop,,,,,0,,,tmp/fixtures/town-bus.zip,,,,,,,active,,,

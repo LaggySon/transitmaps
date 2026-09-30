@@ -1,0 +1,96 @@
+defmodule Transitmaps.AgenciesTest do
+  use Transitmaps.DataCase, async: false
+
+  # A failed download logs a warning; those failures are the point of some tests.
+  @moduletag :capture_log
+
+  alias Transitmaps.Agencies
+  alias Transitmaps.Agencies.FeedImport
+  alias Transitmaps.Gtfs.{Feed, Importer}
+  alias Transitmaps.GtfsFixture
+
+  # Where the fixture catalog points its agencies' downloads.
+  @tiny_zip "tmp/fixtures/tiny-gtfs.zip"
+  @mbta_zip "tmp/fixtures/mbta.zip"
+
+  setup do
+    GtfsFixture.write!(@tiny_zip)
+    on_exit(fn -> File.rm(@tiny_zip) end)
+  end
+
+  describe "request/1" do
+    test "queues a catalog agency once" do
+      Agencies.subscribe()
+
+      assert {:ok, %FeedImport{status: "queued", label: "Tiny Rail"}} =
+               Agencies.request("mdb-9001")
+
+      assert {:ok, %FeedImport{status: "queued"}} = Agencies.request("mdb-9001")
+      assert Repo.aggregate(FeedImport, :count) == 1
+      assert_received {:import_updated, %FeedImport{catalog_id: "mdb-9001"}}
+    end
+
+    test "turns away agencies the catalog doesn't offer" do
+      assert Agencies.request("mdb-9003") == {:error, :unknown}
+      assert Agencies.request("nonsense") == {:error, :unknown}
+    end
+
+    test "turns requests away once the queue is full" do
+      for i <- 1..10,
+          do: Repo.insert!(%FeedImport{catalog_id: "q#{i}", label: "Q", status: "queued"})
+
+      assert Agencies.request("mdb-9001") == {:error, :busy}
+    end
+  end
+
+  describe "run_import/1" do
+    test "downloads the agency and puts it on the map where its stops are" do
+      {:ok, _import} = Agencies.request("mdb-9001")
+      Agencies.subscribe()
+
+      assert :ok = Agencies.run_import("mdb-9001")
+
+      assert %FeedImport{status: "ready", imported_at: %DateTime{}} =
+               Agencies.get_import("mdb-9001")
+
+      assert_received :feeds_changed
+
+      assert [%{label: "Tiny Rail", catalog_id: "mdb-9001", bounds: bounds, counts: counts}] =
+               Agencies.list_feeds()
+
+      assert [[west, south], [east, north]] = bounds
+      assert west >= -0.2 and east <= 0.0 and south >= 51.5 and north <= 51.54
+      assert counts == %{"rail" => 1}
+      refute File.exists?("priv/gtfs_cache/catalog-mdb-9001.zip")
+    end
+
+    test "replaces the hand-curated feeds it supersedes" do
+      GtfsFixture.write!(@mbta_zip, agency: "MBTA", stops: [{-71.06, 42.35}, {-71.05, 42.36}])
+      on_exit(fn -> File.rm(@mbta_zip) end)
+      Importer.import_feed("mbta-rapid", @tiny_zip)
+      Importer.import_feed("path", @tiny_zip)
+
+      {:ok, _import} = Agencies.request("mdb-437")
+      Agencies.run_import("mdb-437")
+
+      names = Feed |> Repo.all() |> Enum.map(& &1.name) |> Enum.sort()
+      assert names == ["catalog-mdb-437", "path"]
+    end
+
+    test "records a failed download and lets it be retried" do
+      {:ok, _import} = Agencies.request("mdb-9002")
+      Agencies.run_import("mdb-9002")
+
+      assert %FeedImport{status: "failed", error: error} = Agencies.get_import("mdb-9002")
+      assert error =~ "couldn't"
+      assert {:ok, %FeedImport{status: "queued"}} = Agencies.request("mdb-9002")
+    end
+  end
+
+  test "hand-curated feeds are labelled and placed by their own stops" do
+    Importer.import_feed("gb-rail", @tiny_zip)
+    Importer.import_feed("my-feed", @tiny_zip, feed: %{label: "My Buses"})
+
+    assert Agencies.list_feeds() |> Enum.map(& &1.label) == ["My Buses", "National Rail"]
+  end
+end

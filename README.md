@@ -143,9 +143,10 @@ small enough to render the whole country at once.
   dedupe, fragment stitching, and corner rounding
 - `Transitmaps.Display` — which drawn lines exist, via `Identity` (one
   line per national-rail operator or per TfL-style line, with brand
-  colours). Geometry is served exactly as imported: every line on its own
-  centreline, lines sharing track drawn on top of one another. The rules
-  for how track should actually be drawn are being rewritten from scratch
+  colours). No vertex is moved: every line sits on its own centreline and
+  lines sharing track are drawn on top of one another. Track a line's
+  service patterns re-trace is served once, which keeps Great Britain's
+  rail response about a seventh of its raw size
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
   rail-family categories (rail/intercity/metro/tram) are bundled
   together, so serving one loads the family
@@ -154,12 +155,9 @@ small enough to render the whole country at once.
   serves both) that returns the fewest-transfer itinerary between two
   named stations. Surfaced as the sidebar's "Trip" panel
 - `Transitmaps.Gtfs.GeoJsonCache` — ETS cache of encoded (and gzipped)
-  GeoJSON responses with ETags, warmed at boot, invalidated on import and
-  aged out hourly for imports run in a separate VM
+  GeoJSON responses with ETags, warmed at boot. Entries go stale on import
+  and hourly (for imports run in a separate VM); a stale response keeps
+  being served while it rebuilds in the background, one rebuild at a time
 - `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
-  MapLibre hook; layers lazy-load per category on first toggle. An optional
-  "Live trains" setting animates markers along the drawn rail-family track
-  geometry — simulated client-side from the served line shapes (the importer
-  is schedule-free), so it needs no realtime feed and respects
-  `prefers-reduced-motion`
+  MapLibre hook; layers lazy-load per category on first toggle

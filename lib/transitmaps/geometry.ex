@@ -25,6 +25,47 @@ defmodule Transitmaps.Geometry do
   end
 
   @doc """
+  Keeps each segment of `strands` once, however many strands re-trace it.
+
+  A drawn line gathers every service pattern its routes run, and those
+  patterns cover the same track over and over — Great Britain's rail
+  network arrives about twelve times heavier than the track it draws.
+  Walking the strands in order, a segment is kept the first time it appears
+  (in either direction) and dropped when it repeats one already kept, so a
+  strand splits where it joins drawn track and resumes where it leaves it.
+  Only exact repeats go; every vertex that is kept stays where it was, so
+  the drawn picture is unchanged.
+  """
+  def drop_retraced_segments(strands) do
+    {kept, _seen} =
+      Enum.reduce(strands, {[], MapSet.new()}, fn strand, {kept, seen} ->
+        keep_new_segments(strand, kept, seen)
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  defp keep_new_segments([first | rest], kept, seen) do
+    {kept, run, seen, _previous} =
+      Enum.reduce(rest, {kept, [first], seen, first}, fn point, {kept, run, seen, previous} ->
+        segment = if previous <= point, do: {previous, point}, else: {point, previous}
+
+        cond do
+          point == previous -> {kept, run, seen, previous}
+          MapSet.member?(seen, segment) -> {close_run(run, kept), [point], seen, point}
+          true -> {kept, [point | run], MapSet.put(seen, segment), point}
+        end
+      end)
+
+    {close_run(run, kept), seen}
+  end
+
+  defp keep_new_segments([], kept, seen), do: {kept, seen}
+
+  defp close_run([_, _ | _] = run, kept), do: [Enum.reverse(run) | kept]
+  defp close_run(_run, kept), do: kept
+
+  @doc """
   Splits a polyline at implausibly long jumps.
 
   This prevents malformed or stop-sequence fallback shapes from drawing

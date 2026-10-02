@@ -79,7 +79,10 @@ defmodule Transitmaps.Display.Identity do
     {"lumo", "#2B6EF5"},
     {"elizabeth line", "#6950A1"},
     {"london overground", "#EE7C0E"},
-    {"eurostar", "#0B2343"}
+    {"eurostar", "#0B2343"},
+    # Amtrak's feed colours every train a pale #CAE4F1 that all but vanishes
+    # on the basemap; its brand blue reads clearly along every corridor.
+    {"amtrak", "#00539B"}
   ]
 
   # Only rail-family categories take brand colours, so bus operators with

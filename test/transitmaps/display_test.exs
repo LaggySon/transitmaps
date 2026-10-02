@@ -77,6 +77,28 @@ defmodule Transitmaps.DisplayTest do
       assert Identity.brand_color("Great Western Railway", "ferry") == nil
     end
 
+    test "draws Amtrak in its brand blue rather than its feed's pale colour" do
+      [line] =
+        Identity.lines([
+          %{
+            route_id: "88",
+            agency_name: "Amtrak",
+            short_name: "Northeast Regional",
+            long_name: nil,
+            category: "intercity",
+            color: "#CAE4F1",
+            text_color: "#000000",
+            geometry: %{type: "MultiLineString", coordinates: [[[-74.0, 40.7], [-75.2, 39.9]]]}
+          }
+        ])
+
+      assert line.color == "#00539B"
+      assert line.name == "Amtrak"
+
+      # Its Thruway buses aren't rail, so they keep the feed's colour.
+      assert Identity.brand_color("Amtrak", "bus") == nil
+    end
+
     test "unknown operators keep feed colours" do
       assert Identity.brand_color("Acme Trains", "rail") == nil
       assert Identity.brand_color(nil, "rail") == nil

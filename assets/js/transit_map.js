@@ -773,17 +773,31 @@ const TransitMap = {
         "circle-stroke-color": "#4a4a4f",
         // Scaled by how many services meet at the stop, so a six-line
         // interchange reads as a landmark and a single-line halt stays a dot.
+        // Below zoom 13 stations sit only a few pixels apart, so the markers
+        // (radius and ring alike) shrink to stay separate small rings on the
+        // line rather than running together into a chain.
         "circle-radius": byZoomAndInterchange(
           [
-            [7.5, 1.2],
-            [11, 3.2],
+            [7.5, 0.7],
+            [9, 1],
+            [10, 1.4],
+            [12, 3],
+            [13, 4.5],
             [15, 5.8],
             [17, 7],
             [19, 8.5],
           ],
           1.5
         ),
-        "circle-stroke-width": ["*", ["case", ["get", "station"], 1.7, 1.05], interchangeScale(1.35)],
+        "circle-stroke-width": byZoomAndInterchange(
+          [
+            [7.5, 0.45],
+            [9, 0.55],
+            [10, 0.65],
+            [12, 1],
+          ].map(([zoom, factor]) => [zoom, ["*", factor, ["case", ["get", "station"], 1.7, 1.05]]]),
+          1.35
+        ),
         "circle-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
         "circle-stroke-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
       },

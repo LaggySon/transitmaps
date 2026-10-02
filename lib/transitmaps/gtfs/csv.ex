@@ -33,11 +33,22 @@ defmodule Transitmaps.Gtfs.Csv do
   end
 
   defp zip_row_with_headers(header_row, nil) do
-    {[], Enum.map(header_row, &strip_bom/1)}
+    {[], Enum.map(header_row, &(&1 |> strip_bom() |> trim_padding()))}
   end
 
   defp zip_row_with_headers(row, headers) do
-    {[headers |> Enum.zip(row) |> Map.new()], headers}
+    {[headers |> Enum.zip(Enum.map(row, &trim_padding/1)) |> Map.new()], headers}
+  end
+
+  # Some feeds (Metra's, for one) put a space after every comma, so a column
+  # reads " shape_id" and its values " BNSF_IB_1". Checking the ends first
+  # keeps the common, unpadded field free.
+  defp trim_padding(""), do: ""
+
+  defp trim_padding(field) do
+    if :binary.first(field) == ?\s or :binary.last(field) == ?\s,
+      do: String.trim(field),
+      else: field
   end
 
   defp strip_bom(<<0xEF, 0xBB, 0xBF>> <> header), do: header

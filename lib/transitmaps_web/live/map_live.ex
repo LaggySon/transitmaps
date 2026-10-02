@@ -4,6 +4,7 @@ defmodule TransitmapsWeb.MapLive do
   alias Transitmaps.Agencies
   alias Transitmaps.Catalog
   alias Transitmaps.Gtfs.RouteTypes
+  alias Transitmaps.Packages
 
   @mode_groups [
     {"rail", "Rail", "hero-building-library",
@@ -74,6 +75,12 @@ defmodule TransitmapsWeb.MapLive do
     if connected?(socket) and not visual_test?, do: Agencies.subscribe()
 
     feeds = if visual_test?, do: @visual_feeds, else: Agencies.list_feeds()
+    packages = Agencies.packages()
+
+    package_imports =
+      if visual_test?,
+        do: %{},
+        else: Agencies.imports(Enum.flat_map(packages, & &1.catalog_ids))
 
     {:ok,
      socket
@@ -86,7 +93,10 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:hidden, MapSet.new())
      |> assign(:agency_form, to_form(%{"query" => ""}, as: :agency))
      |> assign(:results, [])
-     |> assign(:imports, %{})
+     |> assign(:packages, packages)
+     |> assign(:package_results, [])
+     |> assign(:packages_open?, false)
+     |> assign(:imports, package_imports)
      |> assign(:requested, MapSet.new())
      |> assign(:agency_error, nil)
      |> assign_feeds(feeds, Enum.map(feeds, & &1.id))}
@@ -141,13 +151,43 @@ defmodule TransitmapsWeb.MapLive do
 
   def handle_event("search-agencies", %{"agency" => %{"query" => query}}, socket) do
     results = on_map_matches(socket.assigns.feeds, query) ++ Catalog.search(query)
+    package_ids = MapSet.new(Packages.search(query), & &1.id)
 
     {:noreply,
      socket
      |> assign(:agency_form, to_form(%{"query" => query}, as: :agency))
      |> assign(:results, results)
-     |> assign(:imports, Agencies.imports(Enum.map(results, & &1.id)))
+     |> assign(:package_results, Enum.filter(socket.assigns.packages, &(&1.id in package_ids)))
+     |> update(:imports, &Map.merge(&1, Agencies.imports(Enum.map(results, fn r -> r.id end))))
      |> assign(:agency_error, nil)}
+  end
+
+  # A pack lands agency by agency, so the map goes there straight away and
+  # draws each one as it arrives.
+  def handle_event("add-package", %{"id" => package_id}, socket) do
+    case Agencies.request_package(package_id) do
+      {:ok, feed_imports} ->
+        {:noreply,
+         socket
+         |> update(:imports, &Map.merge(&1, Map.new(feed_imports, fn i -> {i.catalog_id, i} end)))
+         |> assign(:agency_error, nil)
+         |> fly_to_package(package_id)}
+
+      {:error, :busy} ->
+        {:noreply,
+         assign(socket, :agency_error, "Lots of agencies are downloading. Try again shortly.")}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, :agency_error, "That pack isn't available to download.")}
+    end
+  end
+
+  def handle_event("toggle-packages", _params, socket) do
+    {:noreply, update(socket, :packages_open?, &(!&1))}
+  end
+
+  def handle_event("show-package", %{"id" => package_id}, socket) do
+    {:noreply, socket |> assign(:menu_open?, false) |> fly_to_package(package_id)}
   end
 
   def handle_event("add-agency", %{"id" => catalog_id}, socket) do
@@ -263,6 +303,42 @@ defmodule TransitmapsWeb.MapLive do
         Enum.all?(words, &String.contains?(String.downcase(feed.label), &1)) do
       %{id: "on-map-#{feed.id}", label: feed.label, place: "On the map", feed_id: feed.id}
     end
+  end
+
+  # Packs come grouped by region; the menu heads each group once.
+  defp packages_by_region(packages) do
+    packages
+    |> Enum.chunk_by(& &1.region)
+    |> Enum.map(&{hd(&1).region, &1})
+  end
+
+  defp fly_to_package(socket, package_id) do
+    case Enum.find(socket.assigns.packages, &(&1.id == package_id)) do
+      nil -> socket
+      package -> push_event(socket, "fly-to", %{bounds: package.bounds})
+    end
+  end
+
+  # How far a pack's download has got: members on the map, on their way, or
+  # turned away (an agency without shapes, say).
+  defp package_progress(package, feeds, imports) do
+    downloaded = MapSet.new(feeds, & &1.catalog_id)
+
+    Enum.reduce(
+      package.catalog_ids,
+      %{ready: 0, pending: 0, failed: 0, total: length(package.catalog_ids)},
+      fn catalog_id, progress ->
+        key =
+          cond do
+            MapSet.member?(downloaded, catalog_id) -> :ready
+            match?(%{status: s} when s in ~w(queued importing), imports[catalog_id]) -> :pending
+            match?(%{status: "failed"}, imports[catalog_id]) -> :failed
+            true -> nil
+          end
+
+        if key, do: Map.update!(progress, key, &(&1 + 1)), else: progress
+      end
+    )
   end
 
   defp result_feed(%{feed_id: feed_id}, feeds), do: Enum.find(feeds, &(&1.id == feed_id))
@@ -450,6 +526,14 @@ defmodule TransitmapsWeb.MapLive do
                 </p>
 
                 <%= if @agency_form[:query].value not in [nil, ""] do %>
+                  <ul :if={@package_results != []} id="package-results">
+                    <.package_row
+                      :for={package <- @package_results}
+                      id={"package-result-#{package.id}"}
+                      package={package}
+                      progress={package_progress(package, @feeds, @imports)}
+                    />
+                  </ul>
                   <ul id="agency-results">
                     <li
                       :for={entry <- @results}
@@ -478,6 +562,59 @@ defmodule TransitmapsWeb.MapLive do
                     </li>
                   </ul>
                 <% else %>
+                  <div id="package-menu" class="pt-1">
+                    <button
+                      id="packages-toggle"
+                      type="button"
+                      phx-click="toggle-packages"
+                      aria-expanded={to_string(@packages_open?)}
+                      aria-controls="packages"
+                      class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition hover:bg-black/[0.035]"
+                    >
+                      <span class="grid size-7 shrink-0 place-items-center rounded-[9px] bg-[#007aff]/[0.09] text-[#007aff]">
+                        <.icon name="hero-globe-europe-africa" class="size-4" />
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block truncate text-[12px] font-medium text-[#2c2c2e]">
+                          Regional packs
+                        </span>
+                        <span class="block truncate text-[10px] font-medium text-[#a4a4a8]">
+                          {length(@packages)} regions, every agency in one tap
+                        </span>
+                      </span>
+                      <.icon
+                        name="hero-chevron-right-mini"
+                        class={[
+                          "size-4 shrink-0 text-[#a4a4a8] transition-transform duration-200",
+                          @packages_open? && "rotate-90"
+                        ]}
+                      />
+                    </button>
+                    <div :if={@packages_open?} id="packages" class="pl-2">
+                      <div
+                        :for={{region, packages} <- packages_by_region(@packages)}
+                        id={"packages-#{dom_key(region)}"}
+                      >
+                        <h4 class="px-2.5 pt-1.5 pb-0.5 text-[9px] font-bold tracking-[0.06em] text-[#a4a4a8] uppercase">
+                          {region}
+                        </h4>
+                        <ul>
+                          <.package_row
+                            :for={package <- packages}
+                            id={"package-#{package.id}"}
+                            package={package}
+                            progress={package_progress(package, @feeds, @imports)}
+                          />
+                        </ul>
+                      </div>
+                    </div>
+                    <h4
+                      :if={@visible_feeds != []}
+                      class="px-2.5 pt-2 pb-0.5 text-[10px] font-semibold text-[#8a8a8e]"
+                    >
+                      In view
+                    </h4>
+                  </div>
                   <ul id="agencies-in-view">
                     <li :for={feed <- @visible_feeds}>
                       <button
@@ -715,6 +852,65 @@ defmodule TransitmapsWeb.MapLive do
           class="agency-action agency-action--primary"
         >
           {if @feed_import && @feed_import.status == "failed", do: "Retry", else: "Add"}
+        </button>
+    <% end %>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :package, :map, required: true
+  attr :progress, :map, required: true
+
+  defp package_row(assigns) do
+    ~H"""
+    <li id={@id} class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5">
+      <span class="grid size-7 shrink-0 place-items-center rounded-[9px] bg-[#007aff]/[0.09] text-[#007aff]">
+        <.icon name="hero-square-3-stack-3d" class="size-4" />
+      </span>
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-[12px] font-medium text-[#2c2c2e]">
+          {@package.label}
+        </span>
+        <span class="block truncate text-[10px] font-medium text-[#a4a4a8]">
+          {agencies_label(@progress.total)} · {@package.place}
+        </span>
+      </span>
+      <.package_action package={@package} progress={@progress} />
+    </li>
+    """
+  end
+
+  attr :package, :map, required: true
+  attr :progress, :map, required: true
+
+  # Like a single agency's action, with a running count while it downloads.
+  # A pack is done once every member has landed or been turned away.
+  defp package_action(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% @progress.pending > 0 -> %>
+        <span class="flex shrink-0 items-center gap-1.5 text-[10px] font-semibold tabular-nums text-[#8a8a8e]">
+          <span class="map-loading__spinner size-3 rounded-full border-2 border-[#007aff]/20 border-t-[#007aff]">
+          </span>
+          {@progress.ready}/{@progress.total}
+        </span>
+      <% @progress.ready > 0 and @progress.ready + @progress.failed == @progress.total -> %>
+        <button
+          type="button"
+          phx-click="show-package"
+          phx-value-id={@package.id}
+          class="agency-action"
+        >
+          Show
+        </button>
+      <% true -> %>
+        <button
+          type="button"
+          phx-click="add-package"
+          phx-value-id={@package.id}
+          class="agency-action agency-action--primary"
+        >
+          {if @progress.ready > 0, do: "Add rest", else: "Add"}
         </button>
     <% end %>
     """

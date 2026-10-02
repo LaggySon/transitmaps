@@ -6,6 +6,10 @@ defmodule Transitmaps.Gtfs.Importer do
   needs — routes with a representative geometry per service pattern, and
   stations tagged with the categories of the routes that serve them.
 
+  Lines are drawn only from the feed's `shapes.txt`. A feed without shapes
+  is refused: its stops joined by straight lines would cut across cities
+  and countries rather than follow the track.
+
   Large files (`stop_times.txt`, `shapes.txt`) are streamed, never loaded
   wholesale. Geometries are simplified at import time so API payloads stay
   small.
@@ -52,7 +56,8 @@ defmodule Transitmaps.Gtfs.Importer do
 
   @doc """
   Imports feed `name` from `source` (a zip URL or local path), replacing any
-  previous import under that name.
+  previous import under that name. Returns `{:error, :no_shapes}`, and
+  removes any previous import, when the feed has no route shapes to draw.
 
   Options:
 
@@ -71,18 +76,33 @@ defmodule Transitmaps.Gtfs.Importer do
       routes = read_routes(dir, read_agencies(dir))
       trip_index = index_trips(dir, routes)
       shape_geometries = read_selected_shapes(dir, trip_index.selected_shape_ids)
-      {stop_route_ids, fallback_paths} = scan_stop_times(dir, trip_index)
-      {stations, stop_coords} = read_stations(dir, stop_route_ids)
 
-      route_rows =
-        build_route_rows(name, routes, trip_index, shape_geometries, fallback_paths, stop_coords)
-        |> normalize_feed_categories(name)
-        |> Enum.map(&amtrak_as_intercity/1)
+      if Enum.any?(shape_geometries, fn {_id, line} -> line_length(line) >= 2 end) do
+        stations = read_stations(dir, scan_stop_times(dir, trip_index))
 
-      persist_rows(name, source, route_rows, station_rows(stations, route_rows), opts)
+        route_rows =
+          build_route_rows(routes, trip_index, shape_geometries)
+          |> normalize_feed_categories(name)
+          |> Enum.map(&amtrak_as_intercity/1)
+
+        persist_rows(name, source, route_rows, station_rows(stations, route_rows), opts)
+      else
+        remove_feed(name)
+        {:error, :no_shapes}
+      end
     after
       File.rm_rf!(dir)
     end
+  end
+
+  # A feed without shapes can only be drawn by joining its stops with
+  # straight lines, which cut across cities and countries, so it isn't
+  # supported. An earlier import of it goes too.
+  defp remove_feed(name) do
+    import Ecto.Query, only: [from: 2]
+
+    {removed, _} = Repo.delete_all(from f in Transitmaps.Gtfs.Feed, where: f.name == ^name)
+    if removed > 0, do: Transitmaps.Gtfs.GeoJsonCache.invalidate()
   end
 
   # Amtrak files its long-distance trains as ordinary rail, in its own feed
@@ -204,10 +224,11 @@ defmodule Transitmaps.Gtfs.Importer do
     |> Csv.stream("routes.txt")
     |> Map.new(fn row ->
       route_type = parse_int(row["route_type"], 3)
+      route_id = :binary.copy(row["route_id"])
 
-      {row["route_id"],
+      {route_id,
        %{
-         route_id: row["route_id"],
+         route_id: route_id,
          agency_name: agencies[row["agency_id"] || ""] || row["agency_id"],
          short_name: presence(row["route_short_name"]),
          long_name: presence(row["route_long_name"]),
@@ -224,26 +245,30 @@ defmodule Transitmaps.Gtfs.Importer do
   # One pass over trips.txt yields everything later passes need:
   #   * trip_id -> route_id (to tag stops with route categories)
   #   * the most-used shape_ids per route (its display geometry)
-  #   * one representative trip per route+direction for shapeless routes,
-  #     whose stop sequence becomes the fallback geometry
+  #
+  # A national feed runs millions of trips, so this is the import's biggest
+  # table. Each trip id is copied out of the CSV line it was parsed from
+  # (a parsed field otherwise keeps its whole line alive), every trip of a
+  # route shares routes.txt's one copy of the route id, and trips of routes
+  # the feed doesn't define are skipped: nothing could list or draw them.
   defp index_trips(dir, routes) do
-    initial = %{trip_to_route: %{}, shape_counts: %{}, fallback_trip_ids: %{}}
+    initial = %{trip_to_route: %{}, shape_counts: %{}}
 
     index =
       dir
       |> Csv.stream("trips.txt")
       |> Enum.reduce(initial, fn row, acc ->
-        trip_id = row["trip_id"]
-        route_id = row["route_id"]
-        shape_id = presence(row["shape_id"])
+        case routes[row["route_id"]] do
+          nil ->
+            acc
 
-        acc = put_in(acc.trip_to_route[trip_id], route_id)
+          %{route_id: route_id} ->
+            acc = put_in(acc.trip_to_route[:binary.copy(row["trip_id"])], route_id)
 
-        if shape_id do
-          update_in(acc.shape_counts[route_id], &increment_count(&1, shape_id))
-        else
-          direction_key = {route_id, row["direction_id"] || "0"}
-          update_in(acc.fallback_trip_ids, &Map.put_new(&1, direction_key, trip_id))
+            case presence(row["shape_id"]) do
+              nil -> acc
+              shape_id -> update_in(acc.shape_counts[route_id], &increment_count(&1, shape_id))
+            end
         end
       end)
 
@@ -252,13 +277,18 @@ defmodule Transitmaps.Gtfs.Importer do
     %{
       trip_to_route: index.trip_to_route,
       route_shape_ids: selected,
-      selected_shape_ids: selected |> Map.values() |> List.flatten() |> MapSet.new(),
-      fallback_trip_ids: fallback_trips_for_shapeless_routes(index, routes)
+      selected_shape_ids: selected |> Map.values() |> List.flatten() |> MapSet.new()
     }
   end
 
-  defp increment_count(nil, shape_id), do: %{shape_id => 1}
-  defp increment_count(counts, shape_id), do: Map.update(counts, shape_id, 1, &(&1 + 1))
+  defp increment_count(nil, shape_id), do: %{:binary.copy(shape_id) => 1}
+
+  defp increment_count(counts, shape_id) do
+    case counts do
+      %{^shape_id => count} -> %{counts | shape_id => count + 1}
+      _ -> Map.put(counts, :binary.copy(shape_id), 1)
+    end
+  end
 
   defp select_shapes_per_route(shape_counts) do
     Map.new(shape_counts, fn {route_id, counts} ->
@@ -272,29 +302,88 @@ defmodule Transitmaps.Gtfs.Importer do
     end)
   end
 
-  # Only routes with no shape at all fall back to stop-sequence geometry.
-  defp fallback_trips_for_shapeless_routes(index, routes) do
-    index.fallback_trip_ids
-    |> Enum.filter(fn {{route_id, _direction}, _trip_id} ->
-      Map.has_key?(routes, route_id) and not Map.has_key?(index.shape_counts, route_id)
-    end)
-    |> Map.new(fn {{route_id, _direction}, trip_id} -> {trip_id, route_id} end)
-  end
-
   # -- shapes ------------------------------------------------------------------
 
-  defp read_selected_shapes(dir, selected_shape_ids) do
+  # shapes.txt holds every point of every shape (tens of millions of rows in
+  # a national feed), so each wanted shape is simplified as soon as its rows
+  # end and only the simplified line is kept. Feeds list a shape's rows
+  # together, but GTFS doesn't promise it: a shape whose rows turn up again
+  # after another wanted shape's is set aside and read whole in a second
+  # pass, so its line comes out the same either way.
+  #
+  # The reading runs in its own short-lived process, so the garbage of
+  # parsing gigabytes of rows goes with it, and each line it keeps is packed
+  # (see `pack_line/1`), so passing them back copies nothing. A file that
+  # can't be read raises here, in the caller, as it would without the task,
+  # so the import is marked failed rather than taking its worker down.
+  @doc false
+  def read_selected_shapes(dir, selected_shape_ids) do
+    fn ->
+      try do
+        {lines, scattered} = read_grouped_shapes(dir, selected_shape_ids)
+
+        if MapSet.size(scattered) == 0,
+          do: {:ok, lines},
+          else: {:ok, Map.merge(lines, read_whole_shapes(dir, scattered))}
+      rescue
+        error -> {:error, error, __STACKTRACE__}
+      end
+    end
+    |> Task.async()
+    |> Task.await(:infinity)
+    |> case do
+      {:ok, lines} -> lines
+      {:error, error, stacktrace} -> reraise error, stacktrace
+    end
+  end
+
+  defp read_grouped_shapes(dir, selected_shape_ids) do
+    {lines, scattered, current} =
+      dir
+      |> Csv.stream("shapes.txt")
+      |> Stream.filter(&MapSet.member?(selected_shape_ids, &1["shape_id"]))
+      |> Enum.reduce({%{}, MapSet.new(), nil}, fn row, {lines, scattered, current} ->
+        shape_id = row["shape_id"]
+
+        case current do
+          {^shape_id, points} ->
+            {lines, scattered, {shape_id, [shape_point(row) | points]}}
+
+          _ ->
+            {lines, scattered} = finish_shape(current, lines, scattered)
+            {lines, scattered, {:binary.copy(shape_id), [shape_point(row)]}}
+        end
+      end)
+
+    finish_shape(current, lines, scattered)
+  end
+
+  defp finish_shape(nil, lines, scattered), do: {lines, scattered}
+
+  defp finish_shape({shape_id, points}, lines, scattered) do
+    if Map.has_key?(lines, shape_id) or MapSet.member?(scattered, shape_id),
+      do: {Map.delete(lines, shape_id), MapSet.put(scattered, shape_id)},
+      else: {Map.put(lines, shape_id, points_to_simplified_line(points)), scattered}
+  end
+
+  defp read_whole_shapes(dir, shape_ids) do
     dir
     |> Csv.stream("shapes.txt")
-    |> Stream.filter(&MapSet.member?(selected_shape_ids, &1["shape_id"]))
+    |> Stream.filter(&MapSet.member?(shape_ids, &1["shape_id"]))
     |> Enum.reduce(%{}, fn row, acc ->
-      point =
-        {parse_int(row["shape_pt_sequence"], 0), parse_float(row["shape_pt_lon"]),
-         parse_float(row["shape_pt_lat"])}
+      shape_id = row["shape_id"]
+      point = shape_point(row)
 
-      Map.update(acc, row["shape_id"], [point], &[point | &1])
+      if is_map_key(acc, shape_id),
+        do: Map.update!(acc, shape_id, &[point | &1]),
+        else: Map.put(acc, :binary.copy(shape_id), [point])
     end)
     |> Map.new(fn {shape_id, points} -> {shape_id, points_to_simplified_line(points)} end)
+  end
+
+  defp shape_point(row) do
+    {parse_int(row["shape_pt_sequence"], 0), parse_float(row["shape_pt_lon"]),
+     parse_float(row["shape_pt_lat"])}
   end
 
   defp points_to_simplified_line(points) do
@@ -302,41 +391,51 @@ defmodule Transitmaps.Gtfs.Importer do
     |> Enum.sort()
     |> Enum.map(fn {_seq, lon, lat} -> [lon, lat] end)
     |> Geometry.simplify(@simplify_tolerance)
+    |> pack_line()
   end
+
+  # A national feed keeps millions of simplified points until they're saved.
+  # As `[lon, lat]` lists they take about 80 bytes each; packed as two
+  # 64-bit floats, 16, and a float comes back out exactly as it went in. A
+  # line with a coordinate that didn't parse stays a list, as it always was.
+  defp pack_line(line) do
+    if Enum.all?(line, fn [lon, lat] -> is_float(lon) and is_float(lat) end),
+      do: for([lon, lat] <- line, into: <<>>, do: <<lon::float-64, lat::float-64>>),
+      else: line
+  end
+
+  @doc false
+  def unpack_line(packed) when is_binary(packed),
+    do: for(<<lon::float-64, lat::float-64 <- packed>>, do: [lon, lat])
+
+  def unpack_line(line) when is_list(line), do: line
+
+  defp line_length(packed) when is_binary(packed), do: div(byte_size(packed), 16)
+  defp line_length(line) when is_list(line), do: length(line)
 
   # -- stop_times ---------------------------------------------------------------
 
-  # One streaming pass over the (potentially huge) stop_times.txt collects:
-  #   * stop_id -> categories of routes serving it
-  #   * ordered stop sequences for the fallback trips
+  # One streaming pass over the (potentially huge) stop_times.txt collects
+  # stop_id -> the routes serving it. A stop is called at by the same route
+  # over and over, so the set is only rebuilt for a route it hasn't seen.
   defp scan_stop_times(dir, trip_index) do
     dir
     |> Csv.stream("stop_times.txt")
-    |> Enum.reduce({%{}, %{}}, fn row, {stop_route_ids, fallback_paths} ->
-      trip_id = row["trip_id"]
+    |> Enum.reduce(%{}, fn row, stop_route_ids ->
       stop_id = row["stop_id"]
-      route_id = trip_index.trip_to_route[trip_id]
 
-      stop_route_ids =
-        case route_id do
-          nil ->
-            stop_route_ids
+      case {trip_index.trip_to_route[row["trip_id"]], stop_route_ids} do
+        {nil, _} ->
+          stop_route_ids
 
-          _ ->
-            Map.update(stop_route_ids, stop_id, MapSet.new([route_id]), &MapSet.put(&1, route_id))
-        end
+        {route_id, %{^stop_id => route_ids}} ->
+          if MapSet.member?(route_ids, route_id),
+            do: stop_route_ids,
+            else: %{stop_route_ids | stop_id => MapSet.put(route_ids, route_id)}
 
-      fallback_paths =
-        case trip_index.fallback_trip_ids[trip_id] do
-          nil ->
-            fallback_paths
-
-          fallback_route_id ->
-            point = {parse_int(row["stop_sequence"], 0), stop_id, fallback_route_id}
-            Map.update(fallback_paths, trip_id, [point], &[point | &1])
-        end
-
-      {stop_route_ids, fallback_paths}
+        {route_id, _} ->
+          Map.put(stop_route_ids, :binary.copy(stop_id), MapSet.new([route_id]))
+      end
     end)
   end
 
@@ -349,38 +448,32 @@ defmodule Transitmaps.Gtfs.Importer do
       dir
       |> Csv.stream("stops.txt")
       |> Map.new(fn row ->
-        {row["stop_id"],
+        stop_id = :binary.copy(row["stop_id"])
+
+        {stop_id,
          %{
-           stop_id: row["stop_id"],
-           name: presence(row["stop_name"]),
+           stop_id: stop_id,
+           name: copy_presence(row["stop_name"]),
            lat: parse_float(row["stop_lat"]),
            lon: parse_float(row["stop_lon"]),
            location_type: parse_int(row["location_type"], 0),
-           parent_station: presence(row["parent_station"])
+           parent_station: copy_presence(row["parent_station"])
          }}
       end)
 
-    stations =
-      stop_route_ids
-      |> Enum.reduce(%{}, fn {stop_id, route_ids}, station_routes ->
-        case station_for(all_stops, stop_id) do
-          nil ->
-            station_routes
+    stop_route_ids
+    |> Enum.reduce(%{}, fn {stop_id, route_ids}, station_routes ->
+      case station_for(all_stops, stop_id) do
+        nil ->
+          station_routes
 
-          station_id ->
-            Map.update(station_routes, station_id, route_ids, &MapSet.union(&1, route_ids))
-        end
-      end)
-      |> Map.new(fn {station_id, route_ids} ->
-        {station_id, Map.put(all_stops[station_id], :route_ids, route_ids)}
-      end)
-
-    stop_coords =
-      all_stops
-      |> Enum.filter(fn {_id, stop} -> stop.lat && stop.lon end)
-      |> Map.new(fn {stop_id, stop} -> {stop_id, [stop.lon, stop.lat]} end)
-
-    {stations, stop_coords}
+        station_id ->
+          Map.update(station_routes, station_id, route_ids, &MapSet.union(&1, route_ids))
+      end
+    end)
+    |> Map.new(fn {station_id, route_ids} ->
+      {station_id, Map.put(all_stops[station_id], :route_ids, route_ids)}
+    end)
   end
 
   defp station_for(all_stops, stop_id) do
@@ -393,78 +486,33 @@ defmodule Transitmaps.Gtfs.Importer do
 
   # -- assembling rows ------------------------------------------------------------
 
-  defp build_route_rows(
-         feed_name,
-         routes,
-         trip_index,
-         shape_geometries,
-         fallback_paths,
-         stop_coords
-       ) do
-    fallback_geometries = fallback_geometries_by_route(fallback_paths, stop_coords)
+  # Every route that runs is kept, so its stations list it, but only a route
+  # with a shape is drawn: joining stops with straight lines cuts across
+  # cities and countries rather than following the track.
+  defp build_route_rows(routes, trip_index, shape_geometries) do
+    running = trip_index.trip_to_route |> Map.values() |> MapSet.new()
 
     routes
     |> Map.values()
     |> Enum.map(fn route ->
-      shaped = shape_multiline(route.route_id, trip_index.route_shape_ids, shape_geometries)
-      fallback = fallback_geometries[route.route_id]
-
-      Map.put(route, :geometry, route_geometry(feed_name, route.category, shaped, fallback))
+      Map.put(
+        route,
+        :geometry,
+        shape_multiline(route.route_id, trip_index.route_shape_ids, shape_geometries)
+      )
     end)
-    |> Enum.filter(&(&1.geometry || feed_name == "gb-rail"))
+    |> Enum.filter(&(&1.geometry || MapSet.member?(running, &1.route_id)))
   end
-
-  @doc false
-  def route_geometry(_feed_name, _category, shaped, _fallback) when is_list(shaped) do
-    %{type: "MultiLineString", coordinates: shaped}
-  end
-
-  # The generated Great Britain feed contains dense, track-following shapes
-  # for the rail network, but some individual service records have no shape.
-  # Joining those services' stops with straight lines draws cross-city and
-  # cross-country chords (for example Cardiff Central directly to Newport).
-  # Keep the route row so its service still appears at stations, but reserve
-  # drawable geometry for services backed by an actual track shape.
-  def route_geometry("gb-rail", category, nil, _fallback)
-      when category in ~w(rail intercity metro tram),
-      do: nil
-
-  def route_geometry(_feed_name, _category, nil, fallback) when is_list(fallback) do
-    %{type: "MultiLineString", coordinates: fallback}
-  end
-
-  def route_geometry(_feed_name, _category, _shaped, _fallback), do: nil
 
   defp shape_multiline(route_id, route_shape_ids, shape_geometries) do
     lines =
       route_shape_ids
       |> Map.get(route_id, [])
       |> Enum.map(&shape_geometries[&1])
-      |> Enum.reject(&(&1 == nil or length(&1) < 2))
+      |> Enum.reject(&(&1 == nil or line_length(&1) < 2))
 
-    if lines == [], do: nil, else: lines
+    if lines == [], do: nil, else: %{type: "MultiLineString", coordinates: lines}
   end
-
-  defp fallback_geometries_by_route(fallback_paths, stop_coords) do
-    fallback_paths
-    |> Enum.group_by(
-      fn {_trip_id, [{_seq, _stop, route_id} | _]} -> route_id end,
-      fn {_trip_id, points} -> stop_sequence_to_line(points, stop_coords) end
-    )
-    |> Map.new(fn {route_id, lines} ->
-      {route_id, lines |> Enum.reject(&(length(&1) < 2)) |> non_empty_or_nil()}
-    end)
-  end
-
-  defp stop_sequence_to_line(points, stop_coords) do
-    points
-    |> Enum.sort()
-    |> Enum.map(fn {_seq, stop_id, _route} -> stop_coords[stop_id] end)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp non_empty_or_nil([]), do: nil
-  defp non_empty_or_nil(lines), do: lines
 
   defp station_rows(stations, route_rows) do
     retained_route_ids = MapSet.new(route_rows, & &1.route_id)
@@ -506,7 +554,7 @@ defmodule Transitmaps.Gtfs.Importer do
 
           insert_batched!(
             Transitmaps.Gtfs.Route,
-            Enum.map(route_rows, &route_insert(&1, feed.id, now))
+            Stream.map(route_rows, &route_insert(&1, feed.id, now))
           )
 
           insert_batched!(
@@ -587,7 +635,13 @@ defmodule Transitmaps.Gtfs.Importer do
       :geometry
     ])
     |> Map.merge(%{feed_id: feed_id, inserted_at: now, updated_at: now})
+    |> Map.replace_lazy(:geometry, &unpack_geometry/1)
   end
+
+  defp unpack_geometry(%{coordinates: lines} = geometry),
+    do: %{geometry | coordinates: Enum.map(lines, &unpack_line/1)}
+
+  defp unpack_geometry(geometry), do: geometry
 
   defp stop_insert(station, feed_id, now, routes_by_id) do
     lines =
@@ -622,9 +676,10 @@ defmodule Transitmaps.Gtfs.Importer do
     })
   end
 
+  # Rows may be a stream, so a batch is only built just before it's inserted.
   defp insert_batched!(schema, rows) do
     rows
-    |> Enum.chunk_every(@insert_batch)
+    |> Stream.chunk_every(@insert_batch)
     |> Enum.each(&Repo.insert_all(schema, &1))
   end
 
@@ -633,6 +688,11 @@ defmodule Transitmaps.Gtfs.Importer do
   defp presence(nil), do: nil
   defp presence(""), do: nil
   defp presence(value), do: value
+
+  # For values kept past their CSV line, which would otherwise stay alive.
+  defp copy_presence(value) do
+    if value = presence(value), do: :binary.copy(value)
+  end
 
   defp parse_int(nil, default), do: default
   defp parse_int("", default), do: default

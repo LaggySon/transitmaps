@@ -65,6 +65,32 @@ defmodule TransitmapsWeb.MapLiveTest do
       assert is_integer(feed_id)
     end
 
+    test "adds a regional pack in one go and shows it once it lands", %{conn: conn} do
+      for zip <- ~w(tmp/fixtures/bart.zip tmp/fixtures/ac-transit.zip) do
+        GtfsFixture.write!(zip, stops: [{-122.27, 37.80}, {-122.40, 37.79}])
+        on_exit(fn -> File.rm(zip) end)
+      end
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      view |> element("#map-menu-button") |> render_click()
+
+      refute has_element?(view, "#packages")
+      view |> element("#packages-toggle") |> render_click()
+      assert has_element?(view, "#packages-North_America #package-bay-area", "2 agencies")
+      view |> element("#package-bay-area button", "Add") |> render_click()
+      assert_push_event(view, "fly-to", %{bounds: [[-122.8, 37.15], [-121.6, 38.15]]})
+      assert has_element?(view, "#package-bay-area", "0/2")
+
+      Transitmaps.Agencies.run_import("mdb-53")
+      Transitmaps.Agencies.run_import("mdb-2455")
+      assert has_element?(view, "#package-bay-area button", "Show")
+
+      # Search finds packs by the cities they cover.
+      view |> form("#agency-search", agency: %{query: "oakland"}) |> render_change()
+      view |> element("#package-result-bay-area button", "Show") |> render_click()
+      refute has_element?(view, "#map-menu")
+    end
+
     test "lists the agencies in view, each of which can be hidden", %{conn: conn} do
       {:ok, feed} = Importer.import_feed("gb-rail", "tmp/fixtures/tiny-gtfs.zip")
       {:ok, view, _html} = live(conn, ~p"/")

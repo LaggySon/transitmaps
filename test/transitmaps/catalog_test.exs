@@ -12,6 +12,9 @@ defmodule Transitmaps.CatalogTest do
     refute "mdb-9003" in ids, "inactive feeds are skipped"
     refute "mdb-9004" in ids, "feeds behind an API key are skipped"
     refute "mdb-9005" in ids, "a second listing of the same download is skipped"
+    refute "mdb-9006" in ids, "feeds listed as having no shapes are skipped"
+    assert "mdb-9007" in ids, "feeds with no features listed are offered"
+    assert "mdb-2455" in ids, "a regional pack vouches for its members behind an API key"
   end
 
   test "labels agencies with their provider, feed name and place" do

@@ -15,6 +15,7 @@ defmodule Transitmaps.Catalog do
 
   alias Transitmaps.Catalog.Countries
   alias Transitmaps.Gtfs.Csv
+  alias Transitmaps.Packages
 
   @default_source "https://files.mobilitydatabase.org/feeds_v2.csv"
   @refresh_ms :timer.hours(24)
@@ -46,21 +47,43 @@ defmodule Transitmaps.Catalog do
 
   @doc false
   def parse(path) do
-    path
-    |> Path.dirname()
-    |> Csv.stream(Path.basename(path))
-    |> Stream.filter(&usable?/1)
+    pinned = Packages.catalog_ids()
+
+    {packed, listed} =
+      path
+      |> Path.dirname()
+      |> Csv.stream(Path.basename(path))
+      |> Stream.filter(&downloadable?/1)
+      |> Enum.split_with(&MapSet.member?(pinned, &1["id"]))
+
+    # A few agencies are catalogued twice under one download; a pack's
+    # listing wins.
+    (packed ++ Enum.filter(listed, &listed?/1))
     |> Enum.map(&feed/1)
-    # A few agencies are catalogued twice under one download.
     |> Enum.uniq_by(&(&1.source_url || &1.id))
   end
 
-  # Only static GTFS that is live today and can be downloaded without a key
-  # from MobilityData's mirror.
-  defp usable?(row) do
-    row["data_type"] == "gtfs" and row["status"] in ["active", ""] and
-      present?(row["urls.latest"]) and row["urls.authentication_type"] in [nil, "", "0"] and
+  # Static GTFS with a copy on MobilityData's mirror.
+  defp downloadable?(row) do
+    row["data_type"] == "gtfs" and present?(row["urls.latest"]) and
       String.match?(row["location.country_code"] || "", ~r/^[A-Z]{2}$/)
+  end
+
+  # Search offers feeds that are live today and need no key at the source.
+  # `Transitmaps.Packages` vouches for its members beyond that.
+  defp listed?(row) do
+    row["status"] in ["active", ""] and row["urls.authentication_type"] in [nil, "", "0"] and
+      not known_shapeless?(row)
+  end
+
+  # The map draws only route shapes, so feeds the catalog lists as having
+  # none are left out. Many feeds have no features listed at all (Amtrak's
+  # does ship shapes); those are offered and checked when imported.
+  defp known_shapeless?(row) do
+    case presence(row["features"]) do
+      nil -> false
+      features -> "Shapes" not in String.split(features, "|")
+    end
   end
 
   defp feed(row) do

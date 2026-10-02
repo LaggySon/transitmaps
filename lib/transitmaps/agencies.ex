@@ -21,7 +21,7 @@ defmodule Transitmaps.Agencies do
   alias Transitmaps.Agencies.FeedImport
   alias Transitmaps.Catalog
   alias Transitmaps.Gtfs.{Feed, GeoJsonCache, Importer, Route}
-  alias Transitmaps.Repo
+  alias Transitmaps.{Packages, Repo}
 
   @topic "agencies"
 
@@ -31,13 +31,17 @@ defmodule Transitmaps.Agencies do
 
   @stale_after_days 7
 
-  # Beyond this a feed is too big to parse safely in the web VM's memory.
-  @max_download_bytes 200 * 1024 * 1024
+  # Beyond this a feed is too big to import safely in the web VM's memory.
+  # Measured peaks (whole VM): Paris 133 MB zip, 420 MB; the Netherlands
+  # 239 MB, 546 MB; Norway 580 MB, 881 MB; Sweden 644 MB, 607 MB.
+  @max_download_bytes 700 * 1024 * 1024
 
-  # Hand-curated feeds each catalog agency replaces once downloaded. PATH and
-  # WMATA stay hand-curated: the catalog's PATH feed is inactive and WMATA's
-  # needs an API key.
+  # Hand-curated feeds each catalog agency replaces once downloaded. PATH
+  # stays hand-curated: the catalog's PATH feed is inactive. WMATA's needs an
+  # API key at the source, but the Northeast Corridor pack vouches for the
+  # mirrored copy.
   @supersedes %{
+    "mdb-1847" => ~w(wmata-rapid),
     "mdb-11" => ~w(amtrak),
     "mdb-437" => ~w(mbta-commuter mbta-rapid),
     "mdb-502" => ~w(septa-rapid),
@@ -102,6 +106,47 @@ defmodule Transitmaps.Agencies do
 
       {entry, existing} ->
         if queued_count() >= @max_queued, do: {:error, :busy}, else: queue(entry, existing)
+    end
+  end
+
+  @doc """
+  The `Transitmaps.Packages` packs, each listing only the members the
+  catalog currently offers.
+  """
+  def packages do
+    for package <- Packages.all() do
+      %{package | catalog_ids: Enum.filter(package.catalog_ids, &Catalog.get/1)}
+    end
+  end
+
+  @doc """
+  Queues every agency in pack `package_id` that isn't downloaded or on its
+  way. A pack is one request: it is turned away when the queue is full, but
+  otherwise queues all its members at once. Returns `{:ok, imports}`, or
+  `{:error, reason}` with `:unknown` or `:busy`.
+  """
+  def request_package(package_id) do
+    case Enum.find(packages(), &(&1.id == package_id)) do
+      nil ->
+        {:error, :unknown}
+
+      package ->
+        if queued_count() >= @max_queued,
+          do: {:error, :busy},
+          else: {:ok, queue_package(package)}
+    end
+  end
+
+  defp queue_package(package) do
+    existing = imports(package.catalog_ids)
+
+    for catalog_id <- package.catalog_ids,
+        not match?(
+          %FeedImport{status: s} when s in ~w(queued importing ready),
+          existing[catalog_id]
+        ) do
+      {:ok, feed_import} = queue(Catalog.get(catalog_id), existing[catalog_id])
+      feed_import
     end
   end
 
@@ -176,14 +221,31 @@ defmodule Transitmaps.Agencies do
     # filename-safe characters survive.
     name = "catalog-" <> String.replace(entry.id, ~r/[^A-Za-z0-9_.-]/, "_")
 
-    {:ok, feed} =
-      Importer.import_feed(name, entry.url,
-        feed: %{label: entry.label, catalog_id: entry.id},
-        max_bytes: @max_download_bytes,
-        keep_download: false,
-        invalidate: false
-      )
+    Importer.import_feed(name, entry.url,
+      feed: %{label: entry.label, catalog_id: entry.id},
+      max_bytes: @max_download_bytes,
+      keep_download: false,
+      invalidate: false
+    )
+    |> case do
+      {:ok, feed} ->
+        imported(entry, feed)
 
+      {:error, :no_shapes} ->
+        mark_failed(
+          entry.id,
+          "This agency doesn't publish route shapes, so its lines can't be drawn"
+        )
+
+        broadcast(:feeds_changed)
+    end
+  rescue
+    error ->
+      Logger.warning("Catalog agency #{entry.id} failed: " <> Exception.message(error))
+      mark_failed(entry.id, "The download couldn't be imported")
+  end
+
+  defp imported(entry, feed) do
     replaced = Map.get(@supersedes, entry.id, [])
     if replaced != [], do: Repo.delete_all(from f in Feed, where: f.name in ^replaced)
 
@@ -194,10 +256,6 @@ defmodule Transitmaps.Agencies do
 
     update_import(entry.id, status: "ready", error: nil, imported_at: DateTime.utc_now(:second))
     broadcast(:feeds_changed)
-  rescue
-    error ->
-      Logger.warning("Catalog agency #{entry.id} failed: " <> Exception.message(error))
-      mark_failed(entry.id, "The download couldn't be imported")
   end
 
   @doc "Records that `catalog_id`'s download stopped without finishing."

@@ -55,17 +55,30 @@ agencies within 250 m into one interchange marker.
 
 - The Mobility Database feed list (`feeds_v2.csv`) is downloaded at boot and
   daily, cached in `priv/gtfs_cache/catalog.csv`; a failed download keeps the
-  previous copy. Feeds that are inactive, need an API key, or repeat another
-  listing's download are left out.
+  previous copy. Feeds that are inactive, need an API key, are listed
+  without route shapes, or repeat another listing's download are left out.
+- **Regional packs** (`Transitmaps.Packages`) bundle the agencies of a region
+  — 16 of them, from the Bay Area and the Northeast Corridor to Central
+  Europe, New Zealand and Latin American cities — for visitors who don't
+  know the operators. They sit under one collapsible row in the menu,
+  grouped by continent, and search finds them by the cities they cover.
+  **Add** queues every member at once (one request against the queue limit)
+  and flies the map there. Each member is vetted: under the import size
+  limit, with trips drawn from shapes. A pack vouches for members the search
+  would leave out, such as Muni (inactive in the catalog) or 511.org and
+  WMATA feeds (keyed at the source, but public on MobilityData's mirror).
 - Pressing **Add** on a search result queues the agency. One background
   worker downloads queued agencies one at a time from MobilityData's mirrors
-  (up to 200 MB each). Progress shows live in every open map, the visitor
+  (up to 700 MB each: the importer streams the big files and keeps only
+  simplified, packed lines, so even Norway's or Sweden's national feed
+  peaks under 1 GB). Progress shows live in every open map, the visitor
   who asked is flown to it when it lands, and a restart resumes an
   interrupted download. At most 10 agencies can wait in the queue.
 - Downloaded agencies refresh weekly. Download state lives in the
   `feed_imports` table.
 - Some hand-curated feeds are partial copies of a catalog agency (MBTA,
-  NYC Subway, Metro-North, NJ Transit Rail, SEPTA, MARC, Baltimore, Amtrak).
+  NYC Subway, Metro-North, NJ Transit Rail, SEPTA, MARC, Baltimore, Amtrak,
+  WMATA).
   Adding the catalog agency deletes the hand-curated copy so nothing is
   drawn twice; the list lives in `Transitmaps.Agencies`.
 - Visitors can hide an agency on their own map from the menu's in-view list;
@@ -111,9 +124,10 @@ above have labels of their own.
 WMATA requires a free developer key; the importer sends `WMATA_API_KEY` as
 the official feed's `api_key` request header.
 
-For `gb-rail`, only feed-provided shapes are used as drawable track geometry.
-Services without a shape are retained for station and operator metadata, but
-are not rendered as straight stop-to-stop lines.
+Lines are drawn only from a feed's own shapes (`shapes.txt`), never by joining
+stops with straight lines. Services without a shape still appear at their
+stations, but aren't drawn. A feed with no shapes at all is refused, and the
+agency search leaves out feeds the catalog lists as having none.
 
 The TfL importer uses the public Unified API. Anonymous access works for
 occasional imports; set `TFL_APP_KEY` to a registered API key for a higher

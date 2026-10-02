@@ -12,6 +12,7 @@ defmodule Transitmaps.AgenciesTest do
   # Where the fixture catalog points its agencies' downloads.
   @tiny_zip "tmp/fixtures/tiny-gtfs.zip"
   @mbta_zip "tmp/fixtures/mbta.zip"
+  @shapeless_zip "tmp/fixtures/shapeless-gtfs.zip"
 
   setup do
     GtfsFixture.write!(@tiny_zip)
@@ -40,6 +41,36 @@ defmodule Transitmaps.AgenciesTest do
           do: Repo.insert!(%FeedImport{catalog_id: "q#{i}", label: "Q", status: "queued"})
 
       assert Agencies.request("mdb-9001") == {:error, :busy}
+    end
+  end
+
+  describe "request_package/1" do
+    test "lists each pack with only the members the catalog offers" do
+      bay_area = Enum.find(Agencies.packages(), &(&1.id == "bay-area"))
+      assert bay_area.catalog_ids == ["mdb-53", "mdb-2455"]
+    end
+
+    test "queues every member of a pack once" do
+      Agencies.subscribe()
+
+      assert {:ok, [%FeedImport{catalog_id: "mdb-53"}, %FeedImport{catalog_id: "mdb-2455"}]} =
+               Agencies.request_package("bay-area")
+
+      assert {:ok, []} = Agencies.request_package("bay-area")
+      assert Repo.aggregate(FeedImport, :count) == 2
+      assert_received {:import_updated, %FeedImport{catalog_id: "mdb-2455", status: "queued"}}
+    end
+
+    test "is one request against the queue limit" do
+      for i <- 1..9,
+          do: Repo.insert!(%FeedImport{catalog_id: "q#{i}", label: "Q", status: "queued"})
+
+      assert {:ok, [_, _]} = Agencies.request_package("bay-area")
+      assert Agencies.request_package("northeast-corridor") == {:error, :busy}
+    end
+
+    test "turns away packs that don't exist" do
+      assert Agencies.request_package("atlantis") == {:error, :unknown}
     end
   end
 
@@ -75,6 +106,21 @@ defmodule Transitmaps.AgenciesTest do
 
       names = Feed |> Repo.all() |> Enum.map(& &1.name) |> Enum.sort()
       assert names == ["catalog-mdb-437", "path"]
+    end
+
+    test "turns away an agency without route shapes, and drops an earlier import of it" do
+      GtfsFixture.write!(@shapeless_zip, shapes: false)
+      on_exit(fn -> File.rm(@shapeless_zip) end)
+      {:ok, _feed} = Importer.import_feed("catalog-mdb-9007", @tiny_zip)
+
+      {:ok, _import} = Agencies.request("mdb-9007")
+      Agencies.subscribe()
+      Agencies.run_import("mdb-9007")
+
+      assert %FeedImport{status: "failed", error: error} = Agencies.get_import("mdb-9007")
+      assert error =~ "shapes"
+      assert_received :feeds_changed
+      assert Agencies.list_feeds() == []
     end
 
     test "records a failed download and lets it be retried" do

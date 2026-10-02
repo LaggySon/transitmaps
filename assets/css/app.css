@@ -19,17 +19,30 @@ body {
   overscroll-behavior: none;
 }
 
-button,
-input {
-  font: inherit;
-}
+/* Resets live in the base layer. Unlayered, they would outrank every
+   Tailwind utility, so a text size set on a button would be ignored. */
+@layer base {
+  button,
+  input {
+    font: inherit;
+  }
 
-button {
-  -webkit-tap-highlight-color: transparent;
-}
+  /* Taps act at once: no grey flash, no double-tap-to-zoom delay. */
+  button,
+  a,
+  input {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
 
-input[type="search"]::-webkit-search-cancel-button {
-  display: none;
+  :focus-visible {
+    outline: 2px solid #007aff;
+    outline-offset: 2px;
+  }
+
+  input[type="search"]::-webkit-search-cancel-button {
+    display: none;
+  }
 }
 
 .maplibregl-map,
@@ -121,7 +134,7 @@ input[type="search"]::-webkit-search-cancel-button {
 
 .map-fab,
 .map-control-group,
-.map-popover {
+.map-sheet {
   border: 1px solid rgb(255 255 255 / 0.76);
   background: rgb(255 255 255 / 0.84);
   box-shadow: 0 8px 24px rgb(35 42 45 / 0.15), 0 1px 2px rgb(0 0 0 / 0.08);
@@ -134,13 +147,168 @@ input[type="search"]::-webkit-search-cancel-button {
   transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
-.map-fab:hover {
-  background: rgb(255 255 255 / 0.96);
-  box-shadow: 0 10px 28px rgb(35 42 45 / 0.18), 0 1px 2px rgb(0 0 0 / 0.08);
-}
-
 .map-fab:active {
   transform: scale(0.94);
+}
+
+/*
+ * The menu, phone first: a bottom sheet in thumb reach. Its header always
+ * peeks above the bottom edge (clear of the home indicator) and opening it
+ * slides the filters up beneath. From tablet width it floats over the map's
+ * top-left corner instead: a button with the filters in a popover below.
+ */
+.map-sheet {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  display: flex;
+  max-height: calc(100dvh - max(1rem, env(safe-area-inset-top)) - 3.5rem);
+  flex-direction: column;
+  border-bottom: 0;
+  border-radius: 1.4rem 1.4rem 0 0;
+  padding: 0.4rem max(0.5rem, env(safe-area-inset-right)) env(safe-area-inset-bottom)
+    max(0.5rem, env(safe-area-inset-left));
+  box-shadow: 0 -6px 28px rgb(35 42 45 / 0.16), 0 -1px 2px rgb(0 0 0 / 0.06);
+}
+
+.map-sheet__handle {
+  width: 2.25rem;
+  height: 0.3rem;
+  flex: none;
+  margin: 0 auto 0.2rem;
+  border-radius: 999px;
+  background: rgb(60 60 67 / 0.28);
+}
+
+.map-sheet__header {
+  display: flex;
+  width: 100%;
+  min-height: 3.5rem;
+  flex: none;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.9rem;
+  padding: 0.25rem 0.75rem 0.5rem 0.5rem;
+  text-align: left;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.map-sheet__header:active {
+  background: rgb(0 0 0 / 0.04);
+}
+
+.map-sheet__body {
+  min-height: 0;
+  flex: 1;
+  border-top: 1px solid rgb(0 0 0 / 0.06);
+  overscroll-behavior: contain;
+  animation: sheet-enter 220ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+/* Map controls sit above the sheet's peeking header on a phone. */
+.map-controls {
+  position: absolute;
+  right: max(0.75rem, env(safe-area-inset-right));
+  bottom: calc(5.25rem + env(safe-area-inset-bottom));
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+/* MapLibre's attribution must stay readable, so it rises above the sheet. */
+.maplibregl-ctrl-bottom-left,
+.maplibregl-ctrl-bottom-right {
+  bottom: calc(4.75rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 48rem) {
+  .map-sheet {
+    top: 1.25rem;
+    right: auto;
+    bottom: auto;
+    left: 1.25rem;
+    width: 18rem;
+    max-height: calc(100dvh - 2.5rem);
+    align-items: flex-start;
+    gap: 0.5rem;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .map-sheet__handle {
+    display: none;
+  }
+
+  .map-sheet__header,
+  .map-sheet__body {
+    border: 1px solid rgb(255 255 255 / 0.76);
+    background: rgb(255 255 255 / 0.84);
+    box-shadow: 0 8px 24px rgb(35 42 45 / 0.15), 0 1px 2px rgb(0 0 0 / 0.08);
+    backdrop-filter: blur(24px) saturate(155%);
+    -webkit-backdrop-filter: blur(24px) saturate(155%);
+  }
+
+  .map-sheet__header {
+    width: auto;
+    max-width: 100%;
+    min-height: 2.75rem;
+    gap: 0.625rem;
+    border-radius: 0.82rem;
+    padding: 0 0.75rem 0 0.5rem;
+    transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  }
+
+  .map-sheet__header:active {
+    background: rgb(255 255 255 / 0.84);
+    transform: scale(0.97);
+  }
+
+  .map-sheet__body {
+    width: 100%;
+    border-radius: 1.1rem;
+    animation-name: popover-enter;
+    animation-duration: 180ms;
+  }
+
+  .map-controls {
+    top: 1.25rem;
+    right: 1.25rem;
+    bottom: auto;
+  }
+
+  .maplibregl-ctrl-bottom-left,
+  .maplibregl-ctrl-bottom-right {
+    bottom: 0;
+  }
+}
+
+/* A touch tablet gets the floating panel at touch size, so it's wider. */
+@media (min-width: 48rem) and (pointer: coarse) {
+  .map-sheet {
+    width: 21rem;
+  }
+}
+
+/* Hover only where there is a pointer to hover with; on touch screens a
+   tapped control would otherwise stay lit. */
+@media (hover: hover) {
+  .map-fab:hover,
+  .map-sheet__header:hover {
+    background: rgb(255 255 255 / 0.96);
+  }
+
+  .map-fab:hover {
+    box-shadow: 0 10px 28px rgb(35 42 45 / 0.18), 0 1px 2px rgb(0 0 0 / 0.08);
+  }
 }
 
 .map-control-group {
@@ -157,30 +325,28 @@ input[type="search"]::-webkit-search-cancel-button {
   transition: background 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
-.map-control-button:hover {
-  background: rgb(255 255 255 / 0.78);
-  color: #007aff;
+@media (hover: hover) {
+  .map-control-button:hover {
+    background: rgb(255 255 255 / 0.78);
+    color: #007aff;
+  }
 }
 
 .map-control-button:active {
   transform: scale(0.88);
 }
 
-.map-popover {
-  border-radius: 1.1rem;
-  animation: popover-enter 180ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
-}
-
 /* The agency search field, styled like the map's other inset fields. */
 .agency-search {
   width: 100%;
-  height: 2.25rem;
+  height: 2.75rem;
   border: 0;
-  border-radius: 0.625rem;
-  padding: 0 0.75rem;
+  border-radius: 0.75rem;
+  padding: 0 0.875rem;
   background: rgb(238 238 239 / 0.95);
   color: #1d1d1f;
-  font-size: 12px;
+  /* At 16px iOS leaves the page alone when the field takes focus. */
+  font-size: 16px;
   font-weight: 500;
   letter-spacing: -0.01em;
   outline: none;
@@ -196,19 +362,18 @@ input[type="search"]::-webkit-search-cancel-button {
   box-shadow: 0 0 0 2px rgb(0 122 255 / 0.3);
 }
 
-/* A search result's Add / Show / Retry button. */
+/* A search result's Add / Show / Retry button: a thumb-sized pill on a
+   phone, compact beside a pointer. */
 .agency-action {
+  min-width: 3.5rem;
+  min-height: 2.25rem;
   flex: none;
   border-radius: 999px;
-  padding: 0.25rem 0.7rem;
+  padding: 0.4rem 0.9rem;
   color: #007aff;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
   transition: transform 140ms ease, background-color 140ms ease;
-}
-
-.agency-action:hover {
-  background-color: rgb(0 122 255 / 0.08);
 }
 
 .agency-action--primary {
@@ -216,8 +381,32 @@ input[type="search"]::-webkit-search-cancel-button {
   color: #fff;
 }
 
-.agency-action--primary:hover {
-  background-color: #0071eb;
+@media (hover: hover) {
+  .agency-action:hover {
+    background-color: rgb(0 122 255 / 0.08);
+  }
+
+  .agency-action--primary:hover {
+    background-color: #0071eb;
+  }
+}
+
+/* Beside a mouse or trackpad the controls can be compact. Touch screens of
+   any size, tablets included, keep thumb-sized targets. */
+@media (pointer: fine) {
+  .agency-search {
+    height: 2.25rem;
+    border-radius: 0.625rem;
+    padding: 0 0.75rem;
+    font-size: 12px;
+  }
+
+  .agency-action {
+    min-width: 0;
+    min-height: 0;
+    padding: 0.25rem 0.7rem;
+    font-size: 11px;
+  }
 }
 
 .agency-action:active {
@@ -258,8 +447,8 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 .maplibregl-popup-content {
-  min-width: 14rem;
-  max-width: 18rem;
+  min-width: min(14rem, calc(100vw - 2rem));
+  max-width: min(18rem, calc(100vw - 2rem));
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.82);
   border-radius: 1rem;
@@ -276,11 +465,11 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 .maplibregl-popup-close-button {
-  top: 0.55rem;
-  right: 0.55rem;
+  top: 0.45rem;
+  right: 0.45rem;
   display: grid;
-  width: 1.55rem;
-  height: 1.55rem;
+  width: 2rem;
+  height: 2rem;
   place-items: center;
   border-radius: 999px;
   background: rgb(118 118 128 / 0.1);
@@ -289,9 +478,20 @@ input[type="search"]::-webkit-search-cancel-button {
   line-height: 1;
 }
 
-.maplibregl-popup-close-button:hover {
-  background: rgb(118 118 128 / 0.18);
-  color: #1d1d1f;
+@media (hover: hover) {
+  .maplibregl-popup-close-button:hover {
+    background: rgb(118 118 128 / 0.18);
+    color: #1d1d1f;
+  }
+}
+
+@media (pointer: fine) {
+  .maplibregl-popup-close-button {
+    top: 0.55rem;
+    right: 0.55rem;
+    width: 1.55rem;
+    height: 1.55rem;
+  }
 }
 
 .station-popup {
@@ -496,6 +696,17 @@ body.playwright-visuals #map-zoom-readout {
   }
 }
 
+@keyframes sheet-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes map-spin {
   to {
     transform: rotate(360deg);
@@ -521,13 +732,6 @@ body.playwright-visuals #map-zoom-readout {
   100% {
     opacity: 0;
     transform: scale(1.2);
-  }
-}
-
-@media (max-width: 639px) {
-  #map-control-stack,
-  #map-menu-root {
-    top: max(1rem, env(safe-area-inset-top));
   }
 }
 

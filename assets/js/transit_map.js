@@ -299,8 +299,8 @@ const TransitMap = {
     this.el.dataset.mapReady = "error"
     this.el.innerHTML =
       `<div class="grid h-full place-items-center bg-[#f3f2ee] p-8 text-center">` +
-      `<div><strong class="text-sm text-[#3a3a3c]">The map could not be loaded</strong>` +
-      `<p class="mt-1 text-xs text-[#77777c]">${this.escapeHtml(error.message)}</p></div></div>`
+      `<div class="max-w-sm min-w-0"><strong class="text-sm text-[#3a3a3c]">The map could not be loaded</strong>` +
+      `<p class="mt-1 text-xs wrap-anywhere text-[#77777c]">${this.escapeHtml(error.message)}</p></div></div>`
   },
 
   markMapReady() {
@@ -386,13 +386,18 @@ const TransitMap = {
     if (readout) readout.textContent = `z${zoom.toFixed(1)}`
   },
 
-  // Room for the floating menu button and map controls, which sit over the map.
+  // Room for what sits over the map. From tablet width that's the floating
+  // menu and the controls; on a phone it's the bottom sheet, so a place flown
+  // to lands above it. An opened sheet covers most of the screen, so it
+  // claims at most 60% of the height and the map keeps the rest.
   mapPadding() {
-    if (window.matchMedia("(min-width: 640px)").matches) {
+    if (window.matchMedia("(min-width: 48rem)").matches) {
       return {top: 84, right: 72, bottom: 40, left: 40}
     }
 
-    return {top: 76, right: 28, bottom: 28, left: 28}
+    const sheet = document.getElementById("map-menu-root")
+    const covered = sheet ? Math.min(sheet.offsetHeight, window.innerHeight * 0.6) : 96
+    return {top: 28, right: 28, bottom: Math.round(covered) + 20, left: 28}
   },
 
   destroyed() {

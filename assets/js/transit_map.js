@@ -169,6 +169,22 @@ const byZoomAndInterchange = (stops, busy) => [
   ...stops.flatMap(([zoom, size]) => [zoom, ["*", size, interchangeScale(busy)]]),
 ]
 
+// Stations fade in as the view reaches neighbourhood level; other stops
+// (bus stops, platforms without a station) follow once streets are legible.
+const stopOpacity = [
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  10.5,
+  0,
+  11,
+  ["case", ["get", "station"], 1, 0],
+  12.5,
+  ["case", ["get", "station"], 1, 0],
+  13,
+  1,
+]
+
 const layerIds = (cat) => ({
   line: `${cat}-line`,
   lineLabels: `${cat}-line-labels`,
@@ -767,7 +783,9 @@ const TransitMap = {
       id: ids.stops,
       type: "circle",
       source: `${cat}-stops`,
-      minzoom: 7.5,
+      // Stations wait for a neighbourhood-level view (fading in from 10.5 to
+      // 11); further out they only crowd the lines. Other stops wait for 13.
+      minzoom: 10.5,
       paint: {
         "circle-color": "#ffffff",
         "circle-stroke-color": "#4a4a4f",
@@ -778,8 +796,6 @@ const TransitMap = {
         // line rather than running together into a chain.
         "circle-radius": byZoomAndInterchange(
           [
-            [7.5, 0.7],
-            [9, 1],
             [10, 1.4],
             [12, 3],
             [13, 4.5],
@@ -791,15 +807,13 @@ const TransitMap = {
         ),
         "circle-stroke-width": byZoomAndInterchange(
           [
-            [7.5, 0.45],
-            [9, 0.55],
             [10, 0.65],
             [12, 1],
           ].map(([zoom, factor]) => [zoom, ["*", factor, ["case", ["get", "station"], 1.7, 1.05]]]),
           1.35
         ),
-        "circle-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
-        "circle-stroke-opacity": ["step", ["zoom"], ["case", ["get", "station"], 1, 0], 13, 1],
+        "circle-opacity": stopOpacity,
+        "circle-stroke-opacity": stopOpacity,
       },
     })
 
@@ -807,7 +821,7 @@ const TransitMap = {
       id: ids.labels,
       type: "symbol",
       source: `${cat}-stops`,
-      minzoom: 8,
+      minzoom: 11,
       filter: ["==", ["get", "station"], true],
       layout: {
         "text-field": ["get", "name"],

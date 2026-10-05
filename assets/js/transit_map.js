@@ -8,6 +8,7 @@ import {
   placeSubtitle,
   renderPlacePin,
 } from "./map_places"
+import {sideBySide} from "./shared_paths"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
 const tileProxyUrl = (path) => `${location.origin}/tiles${path}`
@@ -124,6 +125,26 @@ const MODE_LABEL = {
 }
 // Every mode draws at one flat width, at every zoom. A starting point, not a rule.
 const LINE_WIDTH = 2
+
+// Lines sharing a path sit side by side, one line-width apart, once the view
+// is close enough for a corridor to be told apart from its neighbours; at
+// country zooms they still collapse onto their shared centreline.
+const LINE_OFFSET = [
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  7,
+  0,
+  10,
+  ["*", ["coalesce", ["get", "slot"], 0], LINE_WIDTH],
+]
+
+// Which lines sit nearest the left of a shared path (in the direction the
+// first of them is drawn): rail-family modes first, then by operator and name.
+const lineRank = (feature) => {
+  const {category, agency, name} = feature.properties
+  return `${String(MODE_ORDER.length - MODE_ORDER.indexOf(category)).padStart(2, "0")}|${agency}|${name}`
+}
 
 // Mode brand colours mirror Transitmaps.Gtfs.RouteTypes.default_color/1 so a
 // station's mode headings read the same as the toggles in the layers menu.
@@ -669,19 +690,38 @@ const TransitMap = {
     if (renderKey !== this.renderedKey) {
       this.renderedKey = renderKey
       const stopsByCategory = this.mergedStops(loadedKeys)
+      const enabled = MODE_ORDER.filter((cat) => this.enabled.has(cat))
+      const routesByCategory = new Map(
+        enabled.map((cat) => [
+          cat,
+          active.flatMap((id) => this.feedData.get(`${id}:${cat}`)?.routes.features || []),
+        ])
+      )
 
-      MODE_ORDER.filter((cat) => this.enabled.has(cat)).forEach((cat) => {
-        const routes = {
-          type: "FeatureCollection",
-          features: active.flatMap((id) => this.feedData.get(`${id}:${cat}`)?.routes.features || []),
-        }
+      // Shared paths are found across every drawn mode at once, so an
+      // Overground line and the National Rail services on its track part too.
+      const runsByCategory = new Map()
+      sideBySide([...routesByCategory.values()].flat(), {keyOf: (feature) => lineKey(feature.properties), rankOf: lineRank})
+        .forEach((run) => {
+          const cat = run.properties.category
+          if (!runsByCategory.has(cat)) runsByCategory.set(cat, [])
+          runsByCategory.get(cat).push(run)
+        })
+
+      enabled.forEach((cat) => {
+        const routes = {type: "FeatureCollection", features: runsByCategory.get(cat) || []}
+        // Names follow each line's own path rather than its offset runs, so a
+        // line cut into many runs is not labelled on every one.
+        const labels = {type: "FeatureCollection", features: routesByCategory.get(cat)}
         const stops = {type: "FeatureCollection", features: stopsByCategory.get(cat) || []}
 
         if (this.map.getSource(`${cat}-routes`)) {
           this.map.getSource(`${cat}-routes`).setData(routes)
+          this.map.getSource(`${cat}-route-labels`).setData(labels)
           this.map.getSource(`${cat}-stops`).setData(stops)
         } else {
           this.map.addSource(`${cat}-routes`, {type: "geojson", data: routes})
+          this.map.addSource(`${cat}-route-labels`, {type: "geojson", data: labels})
           this.map.addSource(`${cat}-stops`, {type: "geojson", data: stops})
           this.addCategoryLayers(cat)
           this.loaded.add(cat)
@@ -743,8 +783,8 @@ const TransitMap = {
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
 
-    // Every line on its own centreline, one flat colour, one flat width.
-    // Lines sharing track draw on top of one another; nothing separates them.
+    // Every line one flat colour at one flat width, shifted sideways where
+    // it shares its path so lines on common track sit next to each other.
     this.addLayerInOrder({
       id: ids.line,
       type: "line",
@@ -753,13 +793,14 @@ const TransitMap = {
       paint: {
         "line-color": ["get", "color"],
         "line-width": LINE_WIDTH,
+        "line-offset": LINE_OFFSET,
       },
     })
 
     this.addLayerInOrder({
       id: ids.lineLabels,
       type: "symbol",
-      source: `${cat}-routes`,
+      source: `${cat}-route-labels`,
       minzoom: 10.5,
       layout: {
         "symbol-placement": "line",

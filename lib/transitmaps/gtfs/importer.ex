@@ -104,12 +104,8 @@ defmodule Transitmaps.Gtfs.Importer do
   # long-distance feed keeps a 3 km border crossing, BreizhGo's coaches
   # hop 12 km at a time), so the whole feed is untrustworthy.
   defp drawable?(route_rows) do
-    {drawn_km, stop_to_stop_km} =
-      Enum.reduce(route_rows, {0.0, 0.0}, fn route, {drawn, dropped} ->
-        if route.geometry,
-          do: {drawn + route.shape_km, dropped},
-          else: {drawn, dropped + route.shape_km}
-      end)
+    drawn_km = route_rows |> Enum.map(& &1.drawn_km) |> Enum.sum()
+    stop_to_stop_km = route_rows |> Enum.map(& &1.stop_to_stop_km) |> Enum.sum()
 
     drawn_km > 0 and drawn_km >= stop_to_stop_km
   end
@@ -330,6 +326,18 @@ defmodule Transitmaps.Gtfs.Importer do
   # after another wanted shape's is set aside and read whole in a second
   # pass, so its line comes out the same either way.
   #
+  # Each shape comes back as `%{line: line, track: lines, hop_km: km}`:
+  # the whole simplified line, and the pieces of it that follow the track.
+  # Some feeds trace their own network but join stations abroad (NS
+  # International, DSB, GoVolta) or on rail-replacement buses with straight
+  # hops of up to hundreds of kilometres. In the raw shape such a hop is one
+  # gap of more than 5 km from one station to the next, which
+  # traced track never is, however sparse its points (Amtrak's run 80 km
+  # apart, but never between two stations); the hop is cut out and its
+  # length kept in `hop_km`. So is any gap of more than 100 km, which no
+  # traced track has and broken shapes do (NS's Amsterdam–Hannover ICE
+  # jumps 185 km from Osnabrück).
+  #
   # The reading runs in its own short-lived process, so the garbage of
   # parsing gigabytes of rows goes with it, and each line it keeps is packed
   # (see `pack_line/1`), so passing them back copies nothing. A file that
@@ -339,11 +347,12 @@ defmodule Transitmaps.Gtfs.Importer do
   def read_selected_shapes(dir, selected_shape_ids) do
     fn ->
       try do
-        {lines, scattered} = read_grouped_shapes(dir, selected_shape_ids)
+        stops = read_stop_grid(dir)
+        {lines, scattered} = read_grouped_shapes(dir, selected_shape_ids, stops)
 
         if MapSet.size(scattered) == 0,
           do: {:ok, lines},
-          else: {:ok, Map.merge(lines, read_whole_shapes(dir, scattered))}
+          else: {:ok, Map.merge(lines, read_whole_shapes(dir, scattered, stops))}
       rescue
         error -> {:error, error, __STACKTRACE__}
       end
@@ -356,7 +365,7 @@ defmodule Transitmaps.Gtfs.Importer do
     end
   end
 
-  defp read_grouped_shapes(dir, selected_shape_ids) do
+  defp read_grouped_shapes(dir, selected_shape_ids, stops) do
     {lines, scattered, current} =
       dir
       |> Csv.stream("shapes.txt")
@@ -369,23 +378,23 @@ defmodule Transitmaps.Gtfs.Importer do
             {lines, scattered, {shape_id, [shape_point(row) | points]}}
 
           _ ->
-            {lines, scattered} = finish_shape(current, lines, scattered)
+            {lines, scattered} = finish_shape(current, lines, scattered, stops)
             {lines, scattered, {:binary.copy(shape_id), [shape_point(row)]}}
         end
       end)
 
-    finish_shape(current, lines, scattered)
+    finish_shape(current, lines, scattered, stops)
   end
 
-  defp finish_shape(nil, lines, scattered), do: {lines, scattered}
+  defp finish_shape(nil, lines, scattered, _stops), do: {lines, scattered}
 
-  defp finish_shape({shape_id, points}, lines, scattered) do
+  defp finish_shape({shape_id, points}, lines, scattered, stops) do
     if Map.has_key?(lines, shape_id) or MapSet.member?(scattered, shape_id),
       do: {Map.delete(lines, shape_id), MapSet.put(scattered, shape_id)},
-      else: {Map.put(lines, shape_id, points_to_simplified_line(points)), scattered}
+      else: {Map.put(lines, shape_id, simplified_shape(points, stops)), scattered}
   end
 
-  defp read_whole_shapes(dir, shape_ids) do
+  defp read_whole_shapes(dir, shape_ids, stops) do
     dir
     |> Csv.stream("shapes.txt")
     |> Stream.filter(&MapSet.member?(shape_ids, &1["shape_id"]))
@@ -397,7 +406,7 @@ defmodule Transitmaps.Gtfs.Importer do
         do: Map.update!(acc, shape_id, &[point | &1]),
         else: Map.put(acc, :binary.copy(shape_id), [point])
     end)
-    |> Map.new(fn {shape_id, points} -> {shape_id, points_to_simplified_line(points)} end)
+    |> Map.new(fn {shape_id, points} -> {shape_id, simplified_shape(points, stops)} end)
   end
 
   defp shape_point(row) do
@@ -405,13 +414,78 @@ defmodule Transitmaps.Gtfs.Importer do
      parse_float(row["shape_pt_lat"])}
   end
 
-  defp points_to_simplified_line(points) do
-    points
-    |> Enum.sort()
-    |> Enum.map(fn {_seq, lon, lat} -> [lon, lat] end)
-    |> Geometry.simplify(@simplify_tolerance)
-    |> pack_line()
+  defp simplified_shape(points, stops) do
+    line = points |> Enum.sort() |> Enum.map(fn {_seq, lon, lat} -> [lon, lat] end)
+    whole = simplify_line(line)
+    {pieces, hop_km} = cut_station_hops(line, stops)
+
+    case pieces do
+      [^line] -> %{line: whole, track: [whole], hop_km: 0.0}
+      pieces -> %{line: whole, track: Enum.map(pieces, &simplify_line/1), hop_km: hop_km}
+    end
   end
+
+  defp simplify_line(line), do: line |> Geometry.simplify(@simplify_tolerance) |> pack_line()
+
+  @hop_km 5.0
+  @station_radius_km 0.15
+  @max_gap_km 100.0
+
+  defp cut_station_hops([first | rest], stops) when map_size(stops) > 0 do
+    {pieces, current, hop_km, _previous} =
+      Enum.reduce(rest, {[], [first], 0.0, first}, fn point,
+                                                      {pieces, current, hop_km, previous} ->
+        if station_hop?(previous, point, stops) do
+          {[Enum.reverse(current) | pieces], [point], hop_km + haversine(previous, point), point}
+        else
+          {pieces, [point | current], hop_km, point}
+        end
+      end)
+
+    pieces =
+      [Enum.reverse(current) | pieces] |> Enum.reverse() |> Enum.filter(&match?([_, _ | _], &1))
+
+    {pieces, hop_km}
+  end
+
+  defp cut_station_hops(line, _stops), do: {[line], 0.0}
+
+  defp station_hop?(from, to, stops) do
+    gap = haversine(from, to)
+
+    gap > @max_gap_km or
+      (gap > @hop_km and near_stop?(from, stops) and near_stop?(to, stops))
+  end
+
+  defp haversine(from, to), do: Geometry.length_km([[from, to]])
+
+  # Stops by ~1 km grid cell, so a point's neighbours are in its own cell
+  # and the eight around it.
+  defp read_stop_grid(dir) do
+    dir
+    |> Csv.stream("stops.txt")
+    |> Enum.reduce(%{}, fn row, grid ->
+      case {parse_float(row["stop_lon"]), parse_float(row["stop_lat"])} do
+        {lon, lat} when is_float(lon) and is_float(lat) ->
+          Map.update(grid, stop_cell([lon, lat]), [[lon, lat]], &[[lon, lat] | &1])
+
+        _ ->
+          grid
+      end
+    end)
+  end
+
+  defp stop_cell([lon, lat]), do: {floor(lon * 100), floor(lat * 100)}
+
+  defp near_stop?([lon, lat] = point, stops) when is_float(lon) and is_float(lat) do
+    {x, y} = stop_cell(point)
+
+    Enum.any?(for(dx <- -1..1, dy <- -1..1, do: {x + dx, y + dy}), fn cell ->
+      stops |> Map.get(cell, []) |> Enum.any?(&(haversine(point, &1) < @station_radius_km))
+    end)
+  end
+
+  defp near_stop?(_point, _stops), do: false
 
   # A national feed keeps millions of simplified points until they're saved.
   # As `[lon, lat]` lists they take about 80 bytes each; packed as two
@@ -514,34 +588,46 @@ defmodule Transitmaps.Gtfs.Importer do
     routes
     |> Map.values()
     |> Enum.map(fn route ->
-      {geometry, shape_km} = shape_multiline(route, trip_index.route_shape_ids, shape_geometries)
-      Map.merge(route, %{geometry: geometry, shape_km: shape_km})
+      Map.merge(route, shape_multiline(route, trip_index.route_shape_ids, shape_geometries))
     end)
     |> Enum.filter(&(&1.geometry || MapSet.member?(running, &1.route_id)))
   end
 
-  # The route's drawn geometry, or nil when it has no shape or its shapes
-  # only join its stops, and the length of its shapes either way.
+  # The route's drawn geometry (nil when it has no shape or its shapes only
+  # join its stops), the length drawn, and the length of station-to-station
+  # hops left out. Ferries and cable cars really do run straight between
+  # their stops, so they keep their whole shapes.
   defp shape_multiline(route, route_shape_ids, shape_geometries) do
-    packed =
+    shapes =
       route_shape_ids
       |> Map.get(route.route_id, [])
       |> Enum.map(&shape_geometries[&1])
-      |> Enum.reject(&(&1 == nil or line_length(&1) < 2))
+      |> Enum.reject(&is_nil/1)
 
+    {packed, hop_km} =
+      if route.category in ~w(ferry other),
+        do: {Enum.map(shapes, & &1.line), 0.0},
+        else: {Enum.flat_map(shapes, & &1.track), shapes |> Enum.map(& &1.hop_km) |> Enum.sum()}
+
+    packed = Enum.reject(packed, &(line_length(&1) < 2))
     lines = Enum.map(packed, &unpack_line/1)
+    length_km = Geometry.length_km(lines)
 
-    geometry =
-      if packed == [] or stop_to_stop?(route, lines),
-        do: nil,
-        else: %{type: "MultiLineString", coordinates: packed}
+    cond do
+      packed == [] ->
+        %{geometry: nil, drawn_km: 0.0, stop_to_stop_km: hop_km}
 
-    {geometry, Geometry.length_km(lines)}
+      route.category not in ~w(ferry other) and Geometry.stop_to_stop?(lines) ->
+        %{geometry: nil, drawn_km: 0.0, stop_to_stop_km: hop_km + length_km}
+
+      true ->
+        %{
+          geometry: %{type: "MultiLineString", coordinates: packed},
+          drawn_km: length_km,
+          stop_to_stop_km: hop_km
+        }
+    end
   end
-
-  # Ferries and cable cars really do run straight between their stops.
-  defp stop_to_stop?(%{category: category}, _lines) when category in ~w(ferry other), do: false
-  defp stop_to_stop?(_route, lines), do: Geometry.stop_to_stop?(lines)
 
   defp station_rows(stations, route_rows) do
     retained_route_ids = MapSet.new(route_rows, & &1.route_id)

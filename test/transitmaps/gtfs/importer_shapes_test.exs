@@ -65,7 +65,7 @@ defmodule Transitmaps.Gtfs.ImporterShapesTest do
     assert Importer.read_selected_shapes(dir, selected) == grouped
 
     assert Map.keys(grouped) == ["A", "B"]
-    line = Importer.unpack_line(grouped["A"])
+    line = Importer.unpack_line(grouped["A"].line)
     assert length(line) > 2 and length(line) < 40
     assert [[lon, lat] | _] = line
     assert lon == -0.20 + :math.sin(1 / 3) * 0.002 and lat == 51.50 + 0.001

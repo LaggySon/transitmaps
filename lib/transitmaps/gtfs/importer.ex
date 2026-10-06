@@ -9,8 +9,8 @@ defmodule Transitmaps.Gtfs.Importer do
   Lines are drawn only from the feed's `shapes.txt`, and only from shapes
   that follow the track: some feeds' shapes merely join each route's stops
   (see `Transitmaps.Geometry.stop_to_stop?/1`). A feed with nothing else
-  to draw is refused: its stops joined by straight lines would cut across
-  cities and countries.
+  to draw, or whose shapes mostly join stops, is refused: its stops joined
+  by straight lines would cut across cities and countries.
 
   Large files (`stop_times.txt`, `shapes.txt`) are streamed, never loaded
   wholesale. Geometries are simplified at import time so API payloads stay
@@ -85,7 +85,7 @@ defmodule Transitmaps.Gtfs.Importer do
         |> normalize_feed_categories(name)
         |> Enum.map(&amtrak_as_intercity/1)
 
-      if Enum.any?(route_rows, & &1.geometry) do
+      if drawable?(route_rows) do
         stations = read_stations(dir, scan_stop_times(dir, trip_index))
 
         persist_rows(name, source, route_rows, station_rows(stations, route_rows), opts)
@@ -96,6 +96,22 @@ defmodule Transitmaps.Gtfs.Importer do
     after
       File.rm_rf!(dir)
     end
+  end
+
+  # A feed is drawn when shapes that follow the track outweigh shapes that
+  # only join stops. Where most of its shapes are straight hops, the few
+  # that pass the test are short or straight hops too (Germany's
+  # long-distance feed keeps a 3 km border crossing, BreizhGo's coaches
+  # hop 12 km at a time), so the whole feed is untrustworthy.
+  defp drawable?(route_rows) do
+    {drawn_km, stop_to_stop_km} =
+      Enum.reduce(route_rows, {0.0, 0.0}, fn route, {drawn, dropped} ->
+        if route.geometry,
+          do: {drawn + route.shape_km, dropped},
+          else: {drawn, dropped + route.shape_km}
+      end)
+
+    drawn_km > 0 and drawn_km >= stop_to_stop_km
   end
 
   # A feed without shapes that follow the track can only be drawn by
@@ -498,32 +514,34 @@ defmodule Transitmaps.Gtfs.Importer do
     routes
     |> Map.values()
     |> Enum.map(fn route ->
-      Map.put(
-        route,
-        :geometry,
-        shape_multiline(route, trip_index.route_shape_ids, shape_geometries)
-      )
+      {geometry, shape_km} = shape_multiline(route, trip_index.route_shape_ids, shape_geometries)
+      Map.merge(route, %{geometry: geometry, shape_km: shape_km})
     end)
     |> Enum.filter(&(&1.geometry || MapSet.member?(running, &1.route_id)))
   end
 
+  # The route's drawn geometry, or nil when it has no shape or its shapes
+  # only join its stops, and the length of its shapes either way.
   defp shape_multiline(route, route_shape_ids, shape_geometries) do
-    lines =
+    packed =
       route_shape_ids
       |> Map.get(route.route_id, [])
       |> Enum.map(&shape_geometries[&1])
       |> Enum.reject(&(&1 == nil or line_length(&1) < 2))
 
-    if lines == [] or stop_to_stop?(route, lines),
-      do: nil,
-      else: %{type: "MultiLineString", coordinates: lines}
+    lines = Enum.map(packed, &unpack_line/1)
+
+    geometry =
+      if packed == [] or stop_to_stop?(route, lines),
+        do: nil,
+        else: %{type: "MultiLineString", coordinates: packed}
+
+    {geometry, Geometry.length_km(lines)}
   end
 
   # Ferries and cable cars really do run straight between their stops.
   defp stop_to_stop?(%{category: category}, _lines) when category in ~w(ferry other), do: false
-
-  defp stop_to_stop?(_route, lines),
-    do: lines |> Enum.map(&unpack_line/1) |> Geometry.stop_to_stop?()
+  defp stop_to_stop?(_route, lines), do: Geometry.stop_to_stop?(lines)
 
   defp station_rows(stations, route_rows) do
     retained_route_ids = MapSet.new(route_rows, & &1.route_id)

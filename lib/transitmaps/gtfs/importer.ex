@@ -6,11 +6,12 @@ defmodule Transitmaps.Gtfs.Importer do
   needs — routes with a representative geometry per service pattern, and
   stations tagged with the categories of the routes that serve them.
 
-  Lines are drawn only from the feed's `shapes.txt`, and only from shapes
-  that follow the track: some feeds' shapes merely join each route's stops
-  (see `Transitmaps.Geometry.stop_to_stop?/1`). A feed with nothing else
-  to draw, or whose shapes mostly join stops, is refused: its stops joined
-  by straight lines would cut across cities and countries.
+  Lines are drawn only from the feed's `shapes.txt`. Some feeds' shapes
+  merely join each route's stops with straight lines (see
+  `Transitmaps.Geometry.stop_to_stop?/1`). A feed whose shapes mostly do
+  that is refused: it would draw spokes across cities and countries. In a
+  feed that otherwise follows the track, a straight stretch between nearby
+  stations is close enough to draw, but a hop of more than 50 km isn't.
 
   Large files (`stop_times.txt`, `shapes.txt`) are streamed, never loaded
   wholesale. Geometries are simplified at import time so API payloads stay
@@ -329,13 +330,15 @@ defmodule Transitmaps.Gtfs.Importer do
   # Each shape comes back as `%{line: line, track: lines, hop_km: km}`:
   # the whole simplified line, and the pieces of it that follow the track.
   # Some feeds trace their own network but join stations abroad (NS
-  # International, DSB, GoVolta) or on rail-replacement buses with straight
-  # hops of up to hundreds of kilometres. In the raw shape such a hop is one
-  # gap of more than 5 km from one station to the next, which
-  # traced track never is, however sparse its points (Amtrak's run 80 km
-  # apart, but never between two stations); the hop is cut out and its
-  # length kept in `hop_km`. So is any gap of more than 100 km, which no
-  # traced track has and broken shapes do (NS's Amsterdam–Hannover ICE
+  # International, DSB, GoVolta, Snälltåget) with straight hops of up to
+  # hundreds of kilometres. In the raw shape such a hop is one gap from one
+  # station to the next, which traced track never is, however sparse its
+  # points (Amtrak's run 80 km apart, but never between two stations). Hops
+  # of more than 50 km are cut out and their length kept in `hop_km`;
+  # shorter ones, like a regional line's run outside its own network
+  # (typically 5–20 km between stations), stay drawn, since a gap would look
+  # worse than a straight stretch. So is any gap of more than 100 km, which
+  # no traced track has and broken shapes do (NS's Amsterdam–Hannover ICE
   # jumps 185 km from Osnabrück).
   #
   # The reading runs in its own short-lived process, so the garbage of
@@ -427,7 +430,7 @@ defmodule Transitmaps.Gtfs.Importer do
 
   defp simplify_line(line), do: line |> Geometry.simplify(@simplify_tolerance) |> pack_line()
 
-  @hop_km 5.0
+  @hop_km 50.0
   @station_radius_km 0.15
   @max_gap_km 100.0
 
@@ -579,9 +582,8 @@ defmodule Transitmaps.Gtfs.Importer do
 
   # -- assembling rows ------------------------------------------------------------
 
-  # Every route that runs is kept, so its stations list it, but only a route
-  # with a shape that follows the track is drawn: joining stops with
-  # straight lines cuts across cities and countries.
+  # Every route that runs is kept, so its stations list it, and every route
+  # with a shape is drawn.
   defp build_route_rows(routes, trip_index, shape_geometries) do
     running = trip_index.trip_to_route |> Map.values() |> MapSet.new()
 
@@ -593,10 +595,13 @@ defmodule Transitmaps.Gtfs.Importer do
     |> Enum.filter(&(&1.geometry || MapSet.member?(running, &1.route_id)))
   end
 
-  # The route's drawn geometry (nil when it has no shape or its shapes only
-  # join its stops), the length drawn, and the length of station-to-station
-  # hops left out. Ferries and cable cars really do run straight between
-  # their stops, so they keep their whole shapes.
+  # The route's drawn geometry (nil when it has no shape), and for judging
+  # the feed, how much of it follows the track and how much only joins
+  # stops, counting hops cut out. A route that only joins its stops is still
+  # drawn — its stations are a few kilometres apart at most, once long hops
+  # are cut — but a feed made of them is refused. Ferries and cable cars
+  # really do run straight between their stops, so they keep their whole
+  # shapes.
   defp shape_multiline(route, route_shape_ids, shape_geometries) do
     shapes =
       route_shape_ids
@@ -618,7 +623,11 @@ defmodule Transitmaps.Gtfs.Importer do
         %{geometry: nil, drawn_km: 0.0, stop_to_stop_km: hop_km}
 
       route.category not in ~w(ferry other) and Geometry.stop_to_stop?(lines) ->
-        %{geometry: nil, drawn_km: 0.0, stop_to_stop_km: hop_km + length_km}
+        %{
+          geometry: %{type: "MultiLineString", coordinates: packed},
+          drawn_km: 0.0,
+          stop_to_stop_km: hop_km + length_km
+        }
 
       true ->
         %{

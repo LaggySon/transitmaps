@@ -133,15 +133,26 @@ defmodule Transitmaps.AgenciesTest do
       assert Agencies.list_feeds() == []
     end
 
-    test "draws a shape's traced track but not its hop between stations" do
+    test "draws a shape's traced track but not a long hop between stations" do
+      # Traced for 97 km, then 76 km straight to the last station.
+      stops = [{-1.50, 51.50}, {-0.80, 51.51}, {-0.10, 51.52}, {1.00, 51.54}]
+      GtfsFixture.write!(@hop_zip, stops: stops, shapes: :last_leg_hop)
+      on_exit(fn -> File.rm(@hop_zip) end)
+
+      {:ok, feed} = Importer.import_feed("hop", @hop_zip)
+
+      [%{geometry: %{"coordinates" => lines}}] = Repo.all(Ecto.assoc(feed, :routes))
+      assert lines |> List.flatten() |> Enum.take_every(2) |> Enum.max() < -0.09
+    end
+
+    test "draws a short straight stretch between stations" do
       GtfsFixture.write!(@hop_zip, shapes: :last_leg_hop)
       on_exit(fn -> File.rm(@hop_zip) end)
 
       {:ok, feed} = Importer.import_feed("hop", @hop_zip)
 
       [%{geometry: %{"coordinates" => lines}}] = Repo.all(Ecto.assoc(feed, :routes))
-      points = List.flatten(lines)
-      assert Enum.max(Enum.take_every(points, 2)) < -0.09
+      assert lines |> List.flatten() |> Enum.take_every(2) |> Enum.max() == 0.0
     end
 
     test "records a failed download and lets it be retried" do

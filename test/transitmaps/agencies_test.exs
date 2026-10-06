@@ -14,6 +14,7 @@ defmodule Transitmaps.AgenciesTest do
   @mbta_zip "tmp/fixtures/mbta.zip"
   @shapeless_zip "tmp/fixtures/shapeless-gtfs.zip"
   @stop_to_stop_zip "tmp/fixtures/stop-to-stop-gtfs.zip"
+  @hop_zip "tmp/fixtures/hop-gtfs.zip"
 
   setup do
     GtfsFixture.write!(@tiny_zip)
@@ -130,6 +131,17 @@ defmodule Transitmaps.AgenciesTest do
 
       assert Importer.import_feed("stop-to-stop", @stop_to_stop_zip) == {:error, :no_shapes}
       assert Agencies.list_feeds() == []
+    end
+
+    test "draws a shape's traced track but not its hop between stations" do
+      GtfsFixture.write!(@hop_zip, shapes: :last_leg_hop)
+      on_exit(fn -> File.rm(@hop_zip) end)
+
+      {:ok, feed} = Importer.import_feed("hop", @hop_zip)
+
+      [%{geometry: %{"coordinates" => lines}}] = Repo.all(Ecto.assoc(feed, :routes))
+      points = List.flatten(lines)
+      assert Enum.max(Enum.take_every(points, 2)) < -0.09
     end
 
     test "records a failed download and lets it be retried" do

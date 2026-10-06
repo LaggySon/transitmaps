@@ -3,8 +3,9 @@ defmodule Transitmaps.GtfsFixture do
   Writes a tiny GTFS zip — one agency, one rail route, three stations — for
   tests that run the real importer end to end. The route has a shape traced
   through its stations, the way a feed traces the track, unless
-  `shapes: false`, or `shapes: :stop_to_stop` for a shape that only joins
-  the stations with straight lines.
+  `shapes: false`, `shapes: :stop_to_stop` for a shape that only joins
+  the stations with straight lines, or `shapes: :last_leg_hop` for one
+  traced up to the last station and hopping straight to it.
   """
 
   @doc "Writes the feed to `path` (relative to the project root) and returns it."
@@ -49,6 +50,9 @@ defmodule Transitmaps.GtfsFixture do
 
   defp shapes_file(stops, :stop_to_stop), do: [shapes_txt(stops)]
   defp shapes_file(stops, true), do: [shapes_txt(traced(stops))]
+
+  defp shapes_file(stops, :last_leg_hop),
+    do: [shapes_txt(traced(Enum.drop(stops, -1)) ++ [List.last(stops)])]
 
   defp shapes_txt(points) do
     {"shapes.txt",

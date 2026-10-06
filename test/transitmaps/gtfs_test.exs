@@ -250,6 +250,23 @@ defmodule Transitmaps.GtfsTest do
     end
   end
 
+  describe "Geometry.stop_to_stop?/1" do
+    test "flags shapes that only join stations several kilometres apart" do
+      # Berlin to Hamburg in three hops.
+      assert Geometry.stop_to_stop?([[[13.37, 52.52], [12.0, 52.9], [11.0, 53.3], [10.0, 53.55]]])
+    end
+
+    test "passes shapes traced along the track" do
+      traced = for i <- 0..200, do: [-0.2 + i * 0.001, 51.5 + :math.sin(i / 5) * 0.0005]
+
+      refute Geometry.stop_to_stop?([traced])
+    end
+
+    test "passes short shuttles, which barely differ from their track" do
+      refute Geometry.stop_to_stop?([[[-0.2, 51.5], [-0.17, 51.5]]])
+    end
+  end
+
   describe "Geometry.split_at_reversals/1" do
     test "splits an out-and-back hairpin at the reversal point" do
       out = [[-1.0, 51.4], [-0.99, 51.4], [-0.98, 51.4]]

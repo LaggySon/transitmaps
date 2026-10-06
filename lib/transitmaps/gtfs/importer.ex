@@ -6,9 +6,11 @@ defmodule Transitmaps.Gtfs.Importer do
   needs — routes with a representative geometry per service pattern, and
   stations tagged with the categories of the routes that serve them.
 
-  Lines are drawn only from the feed's `shapes.txt`. A feed without shapes
-  is refused: its stops joined by straight lines would cut across cities
-  and countries rather than follow the track.
+  Lines are drawn only from the feed's `shapes.txt`, and only from shapes
+  that follow the track: some feeds' shapes merely join each route's stops
+  (see `Transitmaps.Geometry.stop_to_stop?/1`). A feed with nothing else
+  to draw is refused: its stops joined by straight lines would cut across
+  cities and countries.
 
   Large files (`stop_times.txt`, `shapes.txt`) are streamed, never loaded
   wholesale. Geometries are simplified at import time so API payloads stay
@@ -57,7 +59,8 @@ defmodule Transitmaps.Gtfs.Importer do
   @doc """
   Imports feed `name` from `source` (a zip URL or local path), replacing any
   previous import under that name. Returns `{:error, :no_shapes}`, and
-  removes any previous import, when the feed has no route shapes to draw.
+  removes any previous import, when the feed has no route shapes that
+  follow the track.
 
   Options:
 
@@ -77,13 +80,13 @@ defmodule Transitmaps.Gtfs.Importer do
       trip_index = index_trips(dir, routes)
       shape_geometries = read_selected_shapes(dir, trip_index.selected_shape_ids)
 
-      if Enum.any?(shape_geometries, fn {_id, line} -> line_length(line) >= 2 end) do
-        stations = read_stations(dir, scan_stop_times(dir, trip_index))
+      route_rows =
+        build_route_rows(routes, trip_index, shape_geometries)
+        |> normalize_feed_categories(name)
+        |> Enum.map(&amtrak_as_intercity/1)
 
-        route_rows =
-          build_route_rows(routes, trip_index, shape_geometries)
-          |> normalize_feed_categories(name)
-          |> Enum.map(&amtrak_as_intercity/1)
+      if Enum.any?(route_rows, & &1.geometry) do
+        stations = read_stations(dir, scan_stop_times(dir, trip_index))
 
         persist_rows(name, source, route_rows, station_rows(stations, route_rows), opts)
       else
@@ -95,9 +98,9 @@ defmodule Transitmaps.Gtfs.Importer do
     end
   end
 
-  # A feed without shapes can only be drawn by joining its stops with
-  # straight lines, which cut across cities and countries, so it isn't
-  # supported. An earlier import of it goes too.
+  # A feed without shapes that follow the track can only be drawn by
+  # joining its stops with straight lines, which cut across cities and
+  # countries, so it isn't supported. An earlier import of it goes too.
   defp remove_feed(name) do
     import Ecto.Query, only: [from: 2]
 
@@ -487,8 +490,8 @@ defmodule Transitmaps.Gtfs.Importer do
   # -- assembling rows ------------------------------------------------------------
 
   # Every route that runs is kept, so its stations list it, but only a route
-  # with a shape is drawn: joining stops with straight lines cuts across
-  # cities and countries rather than following the track.
+  # with a shape that follows the track is drawn: joining stops with
+  # straight lines cuts across cities and countries.
   defp build_route_rows(routes, trip_index, shape_geometries) do
     running = trip_index.trip_to_route |> Map.values() |> MapSet.new()
 
@@ -498,21 +501,29 @@ defmodule Transitmaps.Gtfs.Importer do
       Map.put(
         route,
         :geometry,
-        shape_multiline(route.route_id, trip_index.route_shape_ids, shape_geometries)
+        shape_multiline(route, trip_index.route_shape_ids, shape_geometries)
       )
     end)
     |> Enum.filter(&(&1.geometry || MapSet.member?(running, &1.route_id)))
   end
 
-  defp shape_multiline(route_id, route_shape_ids, shape_geometries) do
+  defp shape_multiline(route, route_shape_ids, shape_geometries) do
     lines =
       route_shape_ids
-      |> Map.get(route_id, [])
+      |> Map.get(route.route_id, [])
       |> Enum.map(&shape_geometries[&1])
       |> Enum.reject(&(&1 == nil or line_length(&1) < 2))
 
-    if lines == [], do: nil, else: %{type: "MultiLineString", coordinates: lines}
+    if lines == [] or stop_to_stop?(route, lines),
+      do: nil,
+      else: %{type: "MultiLineString", coordinates: lines}
   end
+
+  # Ferries and cable cars really do run straight between their stops.
+  defp stop_to_stop?(%{category: category}, _lines) when category in ~w(ferry other), do: false
+
+  defp stop_to_stop?(_route, lines),
+    do: lines |> Enum.map(&unpack_line/1) |> Geometry.stop_to_stop?()
 
   defp station_rows(stations, route_rows) do
     retained_route_ids = MapSet.new(route_rows, & &1.route_id)

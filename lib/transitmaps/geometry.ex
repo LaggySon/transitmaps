@@ -65,6 +65,36 @@ defmodule Transitmaps.Geometry do
   defp close_run([_, _ | _] = run, kept), do: [Enum.reverse(run) | kept]
   defp close_run(_run, kept), do: kept
 
+  # A shape traced along the track keeps a vertex every few hundred metres
+  # even after simplification, on curves and GPS noise alike. One that only
+  # joins its stations averages the stop spacing: kilometres in a city, tens
+  # of kilometres on a main line.
+  @stop_to_stop_min_km 5.0
+  @stop_to_stop_mean_segment_km 1.5
+
+  @doc """
+  Whether `lines` (a route's shapes) only join its stops with straight
+  segments rather than following the track: averaging more than 1.5 km
+  between vertices over at least 5 km. Several feeds (Germany's long-distance
+  rail, SNCF Transilien, Metrolink) ship shapes like that, which draw as
+  straight lines across cities and countries.
+  """
+  def stop_to_stop?(lines) do
+    {length_km, segments} =
+      Enum.reduce(lines, {0.0, 0}, fn line, {length_km, segments} ->
+        {length_km + path_km(line), segments + max(length(line) - 1, 0)}
+      end)
+
+    segments > 0 and length_km >= @stop_to_stop_min_km and
+      length_km / segments > @stop_to_stop_mean_segment_km
+  end
+
+  defp path_km(line) do
+    line
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.reduce(0.0, fn [a, b], acc -> acc + haversine_km(a, b) end)
+  end
+
   @doc """
   Splits a polyline at implausibly long jumps.
 
@@ -155,8 +185,9 @@ defmodule Transitmaps.Geometry do
     indexes
     |> Enum.reduce([], fn index, accepted ->
       case accepted do
-        [previous | _] when elem(distances, index) - elem(distances, previous) <
-                              @heading_window_km ->
+        [previous | _]
+        when elem(distances, index) - elem(distances, previous) <
+               @heading_window_km ->
           accepted
 
         _ ->
@@ -517,10 +548,13 @@ defmodule Transitmaps.Geometry do
 
   defp nearest_covered_point(coverage, {x, y} = point, cell_km) do
     {cx, cy} = cell(point, cell_km)
-    (for dx <- -1..1,
-         dy <- -1..1,
-         candidate <- List.wrap(Map.get(coverage, {cx + dx, cy + dy})),
-         do: candidate)
+
+    for(
+      dx <- -1..1,
+      dy <- -1..1,
+      candidate <- List.wrap(Map.get(coverage, {cx + dx, cy + dy})),
+      do: candidate
+    )
     |> Enum.min_by(
       fn {{candidate_x, candidate_y}, _coordinate} ->
         (candidate_x - x) * (candidate_x - x) + (candidate_y - y) * (candidate_y - y)

@@ -234,7 +234,7 @@ defmodule Transitmaps.Agencies do
       {:error, :no_shapes} ->
         mark_failed(
           entry.id,
-          "This agency doesn't publish route shapes, so its lines can't be drawn"
+          "This agency doesn't publish route shapes that follow the track, so its lines can't be drawn"
         )
 
         broadcast(:feeds_changed)

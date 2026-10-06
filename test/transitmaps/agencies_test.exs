@@ -13,6 +13,7 @@ defmodule Transitmaps.AgenciesTest do
   @tiny_zip "tmp/fixtures/tiny-gtfs.zip"
   @mbta_zip "tmp/fixtures/mbta.zip"
   @shapeless_zip "tmp/fixtures/shapeless-gtfs.zip"
+  @stop_to_stop_zip "tmp/fixtures/stop-to-stop-gtfs.zip"
 
   setup do
     GtfsFixture.write!(@tiny_zip)
@@ -120,6 +121,14 @@ defmodule Transitmaps.AgenciesTest do
       assert %FeedImport{status: "failed", error: error} = Agencies.get_import("mdb-9007")
       assert error =~ "shapes"
       assert_received :feeds_changed
+      assert Agencies.list_feeds() == []
+    end
+
+    test "turns away an agency whose shapes only join its stations" do
+      GtfsFixture.write!(@stop_to_stop_zip, shapes: :stop_to_stop)
+      on_exit(fn -> File.rm(@stop_to_stop_zip) end)
+
+      assert Importer.import_feed("stop-to-stop", @stop_to_stop_zip) == {:error, :no_shapes}
       assert Agencies.list_feeds() == []
     end
 

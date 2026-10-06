@@ -14,8 +14,9 @@ defmodule Transitmaps.Packages do
   reach: Amtrak alone spans the continent.
 
   Some obvious regions are missing because no feed for them can be drawn:
-  Switzerland's, Germany's national rail, SNCF's and SNCB's feeds have no
-  shapes; Melbourne's feed nests one feed per mode in folders, which the
+  Switzerland's, SNCF's and SNCB's feeds have no shapes, and Germany's
+  national rail (gtfs.de), SNCF Transilien's and Metrolink's shapes only
+  join their stops with straight lines; Melbourne's feed nests one feed per mode in folders, which the
   importer doesn't read; Sydney, Brisbane and Tokyo's railways aren't in the
   catalog.
   """
@@ -162,10 +163,11 @@ defmodule Transitmaps.Packages do
       region: "Europe",
       label: "France",
       place: "Paris and major cities",
-      keywords: "paris lyon toulouse bordeaux nantes nice rennes montpellier bretagne eurostar",
+      keywords: "paris lyon toulouse bordeaux nantes nice rennes montpellier eurostar",
       bounds: [[-4.9, 42.2], [8.4, 51.2]],
-      # SNCF's national TGV, Intercités and TER feed has no shapes, so the
-      # mainline network can't be drawn; the regions and cities can.
+      # SNCF's national TGV, Intercités and TER feed has no shapes, and
+      # BreizhGo's TER shapes only join their stations, so the mainline
+      # network can't be drawn; the regions and cities can.
       catalog_ids: [
         # Île-de-France Mobilités (Métro, RER, Transilien, tram, bus), Eurostar
         "tdg-80921",
@@ -175,11 +177,10 @@ defmodule Transitmaps.Packages do
         "tdg-81678",
         "tdg-83024",
         "tdg-84101",
-        # Lignes d'Azur Nice, STAR Rennes, TaM Montpellier, BreizhGo TER
+        # Lignes d'Azur Nice, STAR Rennes, TaM Montpellier
         "tdg-83178",
         "tdg-83281",
-        "tdg-83773",
-        "tdg-81474"
+        "tdg-83773"
       ]
     },
     %{
@@ -189,7 +190,8 @@ defmodule Transitmaps.Packages do
       place: "Berlin, Hamburg, Munich and Cologne",
       keywords: "deutschland germany berlin brandenburg hamburg munich münchen cologne köln bonn",
       bounds: [[5.8, 47.3], [15.1, 55.0]],
-      # Germany's national rail feeds have no shapes.
+      # Germany's national rail feeds (gtfs.de) only join their stations
+      # with straight lines.
       catalog_ids: [
         # VBB Berlin-Brandenburg, HVV Hamburg, MVG Munich, VRS Cologne/Bonn
         "mdb-782",

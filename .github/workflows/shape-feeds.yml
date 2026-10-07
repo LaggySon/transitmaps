@@ -1,0 +1,157 @@
+name: Shape rail feeds
+
+# National rail feeds that publish no route shapes (Germany's, SNCF's, SNCB's,
+# Switzerland's) can't be drawn: the map only draws shapes, and their stops
+# joined by straight lines would cut across countries. This traces their
+# trains along OpenStreetMap's railways with pfaedle
+# (https://github.com/ad-freiburg/pfaedle) and publishes the shaped feeds on
+# the `shaped-feeds` release, which `Transitmaps.Catalog` downloads instead of
+# the originals. Feeds that shape most trips but not all (Eurostar's London
+# trains) get the missing ones filled in.
+#
+# Shapes are derived from OpenStreetMap data, © OpenStreetMap contributors,
+# ODbL 1.0.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays, ahead of the app's weekly agency refresh.
+    - cron: "0 2 * * 1"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shape-feeds
+  cancel-in-progress: false
+
+jobs:
+  rail-map:
+    name: Europe rail map
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Week
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cached rail map
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: europe-rail.osm.pbf
+          key: europe-rail-${{ steps.week.outputs.week }}
+
+      - name: Install osmium
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+
+      # Each country is downloaded, cut down to its railways, stations and
+      # train routes, and deleted, so the runner's disk only ever holds one.
+      - name: Build rail map
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          regions="germany france switzerland austria belgium netherlands luxembourg liechtenstein
+                   poland czech-republic slovakia hungary slovenia croatia denmark italy spain
+                   portugal great-britain sweden norway finland"
+          for region in $regions; do
+            curl -sSfL --retry 3 -o region.osm.pbf "https://download.geofabrik.de/europe/${region}-latest.osm.pbf"
+            osmium tags-filter region.osm.pbf \
+              nwr/railway nwr/public_transport \
+              r/route=train,subway,light_rail,tram,railway,monorail,funicular \
+              -o "rail-${region}.osm.pbf" --overwrite
+            rm region.osm.pbf
+            echo "${region}: $(du -h "rail-${region}.osm.pbf" | cut -f1)"
+          done
+          osmium merge rail-*.osm.pbf -o europe-rail.osm.pbf
+          rm rail-*.osm.pbf
+          du -h europe-rail.osm.pbf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: europe-rail
+          path: europe-rail.osm.pbf
+          retention-days: 2
+
+  shape:
+    name: Shape ${{ matrix.feed.id }}
+    needs: rail-map
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        feed:
+          # Germany: long-distance and regional rail (gtfs.de / DELFI)
+          - {id: mdb-768, mot: "rail"}
+          - {id: mdb-1089, mot: "rail,tram,subway,funicular"}
+          # SNCF: TGV, Intercités and TER
+          - {id: tdg-83582, mot: "rail"}
+          # SNCB (Belgium)
+          - {id: mdb-1859, mot: "rail"}
+          # Switzerland, every operator
+          - {id: mdb-2898, mot: "rail,tram,subway,funicular"}
+          # Eurostar: its London trains have no shapes
+          - {id: tdg-82199, mot: "rail"}
+          # Lyon: its metro, trams and funiculars have no shapes
+          - {id: tdg-81943, mot: "subway,tram,funicular"}
+          # Sweden: its trains' shapes only join their stations, so they
+          # are dropped and traced again
+          - {id: mdb-2939, mot: "rail", unshape: true}
+          # Norway: its cross-border trains hop straight between stations
+          - {id: mdb-1078, mot: "rail", unshape: true}
+          # Spain's Cercanías: one shape per line, which leaves out branches
+          - {id: mdb-2653, mot: "rail", unshape: true}
+          # Finland's passenger trains (Fintraffic), which MobilityData doesn't
+          # mirror: already shaped, published here for a stable download
+          - {id: mdb-1102, mot: "rail", url: "https://rata.digitraffic.fi/api/v1/trains/gtfs-passenger.zip"}
+          # Great Britain's national rail (hand-curated, not in the catalog):
+          # the North Wales coast trains have no shapes
+          - {id: gb-rail, mot: "rail", url: "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: europe-rail
+
+      - name: Download feed
+        # Fintraffic refuses requests that don't accept gzip or name themselves.
+        run: |
+          curl -sSfL --retry 3 --compressed -H "Digitraffic-User: transitmaps" -o feed.zip \
+            "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
+
+      - name: Drop station-to-station train shapes
+        if: matrix.feed.unshape
+        run: python3 .github/scripts/unshape_rail.py feed.zip unshaped.zip && mv unshaped.zip feed.zip
+
+      # Only trips without a shape are traced, so a feed's own shapes stay.
+      - name: Trace trains along OpenStreetMap
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/data" -v "$PWD/out:/gtfs-out" ghcr.io/ad-freiburg/pfaedle:latest \
+            -x /data/europe-rail.osm.pbf -m "${{ matrix.feed.mot }}" -i /data/feed.zip
+          ls -la out
+
+      - name: Package
+        run: |
+          cd out && zip -q -r ../traced.zip . && cd ..
+          python3 .github/scripts/simplify_shapes.py traced.zip simplified.zip
+          python3 .github/scripts/dedupe_shapes.py simplified.zip "${{ matrix.feed.id }}.zip"
+          du -h traced.zip simplified.zip "${{ matrix.feed.id }}.zip"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view shaped-feeds --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create shaped-feeds --repo "$GITHUB_REPOSITORY" --title "Shaped rail feeds" \
+              --notes "GTFS feeds with route shapes traced along OpenStreetMap railways by pfaedle. Shapes © OpenStreetMap contributors, ODbL 1.0. Refreshed weekly by the Shape rail feeds workflow."
+          # Replacing a release file now and then meets a GitHub 500.
+          for attempt in 1 2 3 4 5; do
+            gh release upload shaped-feeds "${{ matrix.feed.id }}.zip" --clobber --repo "$GITHUB_REPOSITORY" && exit 0
+            echo "Upload attempt $attempt failed; retrying"
+            sleep $((attempt * 30))
+          done
+          exit 1

@@ -144,4 +144,10 @@ jobs:
           gh release view shaped-feeds --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
             gh release create shaped-feeds --repo "$GITHUB_REPOSITORY" --title "Shaped rail feeds" \
               --notes "GTFS feeds with route shapes traced along OpenStreetMap railways by pfaedle. Shapes © OpenStreetMap contributors, ODbL 1.0. Refreshed weekly by the Shape rail feeds workflow."
-          gh release upload shaped-feeds "${{ matrix.feed.id }}.zip" --clobber --repo "$GITHUB_REPOSITORY"
+          # Replacing a release file now and then meets a GitHub 500.
+          for attempt in 1 2 3 4 5; do
+            gh release upload shaped-feeds "${{ matrix.feed.id }}.zip" --clobber --repo "$GITHUB_REPOSITORY" && exit 0
+            echo "Upload attempt $attempt failed; retrying"
+            sleep $((attempt * 30))
+          done
+          exit 1

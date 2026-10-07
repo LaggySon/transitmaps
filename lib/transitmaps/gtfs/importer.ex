@@ -26,9 +26,20 @@ defmodule Transitmaps.Gtfs.Importer do
 
   @cache_dir Path.join(["priv", "gtfs_cache"])
 
-  # Most-used service patterns kept per route; more adds branches, but too
-  # many just re-draws the same track and bloats memory/payloads.
+  # Service patterns read per route, most-used first. A train line's
+  # branches can each be a small share of its trips (RER C runs 81 patterns,
+  # and its six most-used cover a third of its trips), so a rail route reads
+  # many and keeps those that add track (see `cover_track/1`). A bus
+  # route's few most-used patterns already cover its streets, and a national
+  # feed runs thousands of them.
   @max_shapes_per_route 6
+  @max_rail_shapes_per_route 50
+  @rail_categories ~w(metro tram rail intercity)
+
+  # A pattern is drawn when it adds this much track the route's busier
+  # patterns don't already cover, in 100 m cells.
+  @cover_cell_km 0.1
+  @min_new_cells 3
 
   # ~2.5 m at UK latitudes. Keeping close-zoom geometry this precise avoids
   # long angular chords through bends while remaining compact enough to serve
@@ -325,7 +336,7 @@ defmodule Transitmaps.Gtfs.Importer do
         end
       end)
 
-    selected = select_shapes_per_route(index.shape_counts)
+    selected = select_shapes_per_route(index.shape_counts, routes)
 
     %{
       trip_to_route: index.trip_to_route,
@@ -343,12 +354,17 @@ defmodule Transitmaps.Gtfs.Importer do
     end
   end
 
-  defp select_shapes_per_route(shape_counts) do
+  defp select_shapes_per_route(shape_counts, routes) do
     Map.new(shape_counts, fn {route_id, counts} ->
+      limit =
+        if routes[route_id].category in @rail_categories,
+          do: @max_rail_shapes_per_route,
+          else: @max_shapes_per_route
+
       top_shapes =
         counts
         |> Enum.sort_by(fn {_shape_id, count} -> -count end)
-        |> Enum.take(@max_shapes_per_route)
+        |> Enum.take(limit)
         |> Enum.map(fn {shape_id, _count} -> shape_id end)
 
       {route_id, top_shapes}
@@ -651,8 +667,13 @@ defmodule Transitmaps.Gtfs.Importer do
         do: {Enum.map(shapes, & &1.line), 0.0},
         else: {Enum.flat_map(shapes, & &1.track), shapes |> Enum.map(& &1.hop_km) |> Enum.sum()}
 
-    packed = Enum.reject(packed, &(line_length(&1) < 2))
-    lines = Enum.map(packed, &unpack_line/1)
+    lines =
+      packed
+      |> Enum.reject(&(line_length(&1) < 2))
+      |> Enum.map(&unpack_line/1)
+      |> cover_track()
+
+    packed = Enum.map(lines, &pack_line/1)
     length_km = Geometry.length_km(lines)
 
     cond do
@@ -673,6 +694,27 @@ defmodule Transitmaps.Gtfs.Importer do
           stop_to_stop_km: hop_km
         }
     end
+  end
+
+  # Keeps each line (most-used first) that adds track the kept ones don't
+  # cover: a branch, not the same track run in the other direction or with
+  # one more stop.
+  defp cover_track([]), do: []
+
+  defp cover_track([[first | _] | _] = lines) do
+    scale = Geometry.km_scale(first)
+
+    {kept, _covered} =
+      Enum.reduce(lines, {[], MapSet.new()}, fn line, {kept, covered} ->
+        cells = Geometry.covered_cells(line, scale, @cover_cell_km)
+        new_cells = MapSet.size(MapSet.difference(cells, covered))
+
+        if kept == [] or new_cells >= @min_new_cells,
+          do: {[line | kept], MapSet.union(covered, cells)},
+          else: {kept, covered}
+      end)
+
+    Enum.reverse(kept)
   end
 
   defp station_rows(stations, route_rows) do

@@ -47,7 +47,11 @@ defmodule Transitmaps.Agencies.Worker do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{running: {key, ref}} = state) do
     if reason != :normal do
       Logger.error("Agency download #{key} crashed: #{inspect(reason, limit: 5)}")
-      Agencies.mark_failed(key, "The import stopped unexpectedly")
+
+      Agencies.mark_failed(
+        key,
+        "The import stopped unexpectedly (#{inspect(reason, limit: 5, printable_limit: 400) |> String.slice(0, 900)})"
+      )
     end
 
     {:noreply, run_next(%{state | running: nil})}

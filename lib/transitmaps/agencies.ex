@@ -242,7 +242,13 @@ defmodule Transitmaps.Agencies do
   rescue
     error ->
       Logger.warning("Catalog agency #{entry.id} failed: " <> Exception.message(error))
-      mark_failed(entry.id, "The download couldn't be imported")
+      # The reason is kept with the record (the column holds 1,000
+      # characters), so a failure that only happens in production can be
+      # read without its logs.
+      mark_failed(
+        entry.id,
+        "The download couldn't be imported (#{String.slice(Exception.message(error), 0, 900)})"
+      )
   end
 
   defp imported(entry, feed) do

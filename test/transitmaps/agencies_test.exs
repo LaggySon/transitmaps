@@ -156,6 +156,56 @@ defmodule Transitmaps.AgenciesTest do
       assert lines |> List.flatten() |> Enum.take_every(2) |> Enum.max() == 0.0
     end
 
+    test "draws a train line's rarely run branch" do
+      # Six variants of the trunk, each busier than the one branch train.
+      trunk = for i <- 0..40, do: {-0.20 + i * 0.005, 51.50 + :math.sin(i / 4) * 0.001}
+      branch = for i <- 0..40, do: {-0.20 + i * 0.002, 51.50 - i * 0.004}
+
+      shapes =
+        for(n <- 1..6, do: {"T#{n}", trunk}) ++ [{"BR", branch}]
+
+      trips =
+        for(
+          {shape_id, _} <- shapes,
+          copies = if(shape_id == "BR", do: 1, else: 3),
+          k <- 1..copies,
+          do: "R1,S1,#{shape_id}-#{k},#{shape_id}"
+        )
+
+      zip = "tmp/fixtures/branch-gtfs.zip"
+      on_exit(fn -> File.rm(zip) end)
+      [{x1, y1} | _] = trunk
+      {x2, y2} = List.last(branch)
+
+      files = [
+        {~c"agency.txt",
+         "agency_id,agency_name,agency_url,agency_timezone\nA,Branch Rail,https://e.com,Europe/London\n"},
+        {~c"routes.txt", "route_id,agency_id,route_short_name,route_type\nR1,A,B1,2\n"},
+        {~c"trips.txt",
+         "route_id,service_id,trip_id,shape_id\n" <> Enum.join(trips, "\n") <> "\n"},
+        {~c"stops.txt",
+         "stop_id,stop_name,stop_lat,stop_lon\nS1,One,#{y1},#{x1}\nS2,Two,#{y2},#{x2}\n"},
+        {~c"stop_times.txt",
+         "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nBR-1,08:00:00,08:00:00,S1,1\nBR-1,08:30:00,08:30:00,S2,2\n"},
+        {~c"shapes.txt",
+         "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n" <>
+           Enum.map_join(shapes, fn {id, points} ->
+             points
+             |> Enum.with_index(1)
+             |> Enum.map_join(fn {{lon, lat}, i} -> "#{id},#{lat},#{lon},#{i}\n" end)
+           end)}
+      ]
+
+      File.mkdir_p!("tmp/fixtures")
+      {:ok, _} = :zip.create(String.to_charlist(zip), files)
+
+      {:ok, feed} = Importer.import_feed("branch", zip)
+
+      [%{geometry: %{"coordinates" => lines}}] = Repo.all(Ecto.assoc(feed, :routes))
+      assert length(lines) == 2
+      assert lines |> List.flatten() |> Enum.drop(1) |> Enum.take_every(2) |> Enum.min() < 51.4
+    end
+
     test "imports a zip with a web page appended after the archive" do
       GtfsFixture.write!(@padded_zip)
       File.write!(@padded_zip, "<html><body>Download</body></html>\r\n", [:append])

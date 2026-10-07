@@ -98,6 +98,9 @@ jobs:
           - {id: tdg-82199, mot: "rail"}
           # Lyon: its metro, trams and funiculars have no shapes
           - {id: tdg-81943, mot: "subway,tram,funicular"}
+          # Sweden: its trains' shapes only join their stations, so they
+          # are dropped and traced again
+          - {id: mdb-2939, mot: "rail", unshape: true}
           # Great Britain's national rail (hand-curated, not in the catalog):
           # the North Wales coast trains have no shapes
           - {id: gb-rail, mot: "rail", url: "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"}
@@ -110,6 +113,10 @@ jobs:
 
       - name: Download feed
         run: curl -sSfL --retry 3 -o feed.zip "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
+
+      - name: Drop station-to-station train shapes
+        if: matrix.feed.unshape
+        run: python3 .github/scripts/unshape_rail.py feed.zip unshaped.zip && mv unshaped.zip feed.zip
 
       # Only trips without a shape are traced, so a feed's own shapes stay.
       - name: Trace trains along OpenStreetMap

@@ -17,8 +17,6 @@ on:
   schedule:
     # Mondays, ahead of the app's weekly agency refresh.
     - cron: "0 2 * * 1"
-  push:
-    branches: [ci/shape-feeds]
 
 permissions:
   contents: write

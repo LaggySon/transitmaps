@@ -29,6 +29,7 @@ defmodule Transitmaps.Agencies.Worker do
 
   @impl true
   def handle_continue(:start, state) do
+    Transitmaps.Gtfs.Importer.clean_leftovers()
     Agencies.requeue_interrupted()
     Process.send_after(self(), :refresh_check, @refresh_check_ms)
     {:noreply, run_next(state)}

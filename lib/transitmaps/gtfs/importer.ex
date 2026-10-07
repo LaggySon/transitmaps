@@ -267,12 +267,40 @@ defmodule Transitmaps.Gtfs.Importer do
         end
 
       %{status: 200} =
+        response =
         Req.get!(source, [into: File.stream!(zip_path), raw: true] ++ request_options)
 
+      check_complete!(zip_path, response)
       zip_path
     else
       source
     end
+  end
+
+  # A download cut short (a full disk, a dropped connection) still ends in
+  # a 200, and `:zip` then fails deep in a match on the missing bytes. The
+  # file is checked against the length the server sent instead.
+  defp check_complete!(zip_path, response) do
+    with [length] <- Req.Response.get_header(response, "content-length"),
+         {expected, ""} <- Integer.parse(length),
+         %{size: size} when size != expected <- File.stat!(zip_path) do
+      File.rm(zip_path)
+      raise "the download stopped at #{size} of #{expected} bytes"
+    else
+      _ -> :ok
+    end
+  end
+
+  @doc """
+  Removes what imports cut short by a restart leave behind: extracted feeds
+  in the temporary directory and downloads in the cache. Run at boot,
+  before any import starts.
+  """
+  def clean_leftovers do
+    for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "gtfs_*")), do: File.rm_rf(dir)
+
+    for file <- Path.wildcard(Path.join(@cache_dir, "catalog-*.zip*")), do: File.rm(file)
+    :ok
   end
 
   # -- routes & agencies -----------------------------------------------------

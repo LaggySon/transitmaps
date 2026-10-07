@@ -588,6 +588,30 @@ body {
   line-height: 1.1;
 }
 
+button.station-popup__badge {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+button.station-popup__badge:hover {
+  background: color-mix(in srgb, var(--line-color) 20%, #ffffff);
+}
+
+button.station-popup__badge:active {
+  transform: scale(0.96);
+}
+
+button.station-popup__badge[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1.5px var(--line-color);
+}
+
+button.station-popup__badge:focus-visible {
+  outline: 2px solid var(--line-color);
+  outline-offset: 1px;
+}
+
 .station-popup__badge::before {
   content: "";
   width: 0.28rem;

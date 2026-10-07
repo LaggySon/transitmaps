@@ -718,14 +718,26 @@ const TransitMap = {
   // line is found by what it is (mode, operator, name, colour) in every loaded
   // agency, so the whole line is framed, not just the tiles on screen.
   focusLine(props) {
-    this.focus = {
-      category: props.category,
-      agency: props.agency ?? null,
-      name: props.name ?? null,
-      color: props.color ?? null,
-    }
+    const line = {agency: props.agency ?? null, name: props.name ?? null, color: props.color ?? null}
+    this.focusFirstMatch(props.category, [line])
+  },
 
-    const features = this.focusedFeatures()
+  // A station lists routes, and the map draws lines that may group several
+  // (New York's Q is drawn as the yellow "N Q R W"), so a route picked there
+  // is matched by name and colour, else by its operator's line of that
+  // colour, else by name alone. Returns whether anything matched.
+  focusRoute({category, agency, name, color}) {
+    return this.focusFirstMatch(category, [{agency, name, color}, {agency, color}, {agency, name}])
+  },
+
+  focusFirstMatch(category, candidates) {
+    const match = candidates
+      .map((fields) => ({category, fields}))
+      .find((focus) => this.featuresMatching(focus).length > 0)
+
+    if (!match) return false
+    this.focus = match
+    const features = this.featuresMatching(match)
     this.applyFocus()
 
     const bounds = new maplibregl.LngLatBounds()
@@ -736,6 +748,7 @@ const TransitMap = {
     if (!bounds.isEmpty()) {
       this.map.fitBounds(bounds, {padding: this.mapPadding(), maxZoom: 15, duration: 900, essential: true})
     }
+    return true
   },
 
   clearFocus() {
@@ -745,16 +758,16 @@ const TransitMap = {
   },
 
   focusedFeatures() {
-    if (!this.focus) return []
-    const {category, agency, name, color} = this.focus
+    return this.focus ? this.featuresMatching(this.focus) : []
+  },
+
+  // Loaded lines of `category` whose properties equal every one of `fields`.
+  featuresMatching({category, fields}) {
+    const entries = Object.entries(fields)
 
     return this.activeFeeds()
       .flatMap((id) => this.feedData.get(`${id}:${category}`)?.routes.features || [])
-      .filter(({properties}) =>
-        (properties.agency ?? null) === agency &&
-        (properties.name ?? null) === name &&
-        (properties.color ?? null) === color
-      )
+      .filter(({properties}) => entries.every(([key, value]) => (properties[key] ?? null) === (value ?? null)))
   },
 
   // Draws the focused line (or nothing) and fades the rest to match. Run on
@@ -800,12 +813,9 @@ const TransitMap = {
   },
 
   focusMatch() {
-    const {agency, name, color} = this.focus
     return [
       "all",
-      ["==", ["get", "agency"], agency],
-      ["==", ["get", "name"], name],
-      ["==", ["get", "color"], color],
+      ...Object.entries(this.focus.fields).map(([key, value]) => ["==", ["get", key], value ?? null]),
     ]
   },
 
@@ -984,7 +994,8 @@ const TransitMap = {
 
     this.map.on("click", ids.stops, (event) => {
       const props = event.features[0].properties
-      this.openPopup(event.lngLat, this.stationPopupHtml(props))
+      this.openPopup(event.lngLat, this.stationPopupHtml(props), () => this.clearFocus())
+      this.bindRouteBadges()
     })
 
     this.map.on("click", ids.line, (event) => {
@@ -1010,6 +1021,25 @@ const TransitMap = {
     ;[ids.stops, ids.line].forEach((id) => {
       this.map.on("mouseenter", id, setPointer(true))
       this.map.on("mouseleave", id, setPointer(false))
+    })
+  },
+
+  // A station's line badges focus their line on the map; the popup stays
+  // open, with the picked badge marked.
+  bindRouteBadges() {
+    const element = this.popup?.getElement()
+    if (!element) return
+
+    element.querySelectorAll("[data-focus-route]").forEach((badge) => {
+      badge.addEventListener("click", (event) => {
+        event.stopPropagation()
+        const route = JSON.parse(badge.dataset.focusRoute)
+        if (this.focusRoute(route)) {
+          element.querySelectorAll("[data-focus-route]").forEach((other) =>
+            other.setAttribute("aria-pressed", String(other === badge))
+          )
+        }
+      })
     })
   },
 
@@ -1042,8 +1072,9 @@ const TransitMap = {
               `<div class="station-popup__badges">${group.lines
                 .map(
                   (line) =>
-                    `<span class="station-popup__badge" style="--line-color:${this.safeColor(line.color)}">` +
-                    `${this.escapeHtml(line.label)}</span>`
+                    `<button type="button" class="station-popup__badge" style="--line-color:${this.safeColor(line.color)}"` +
+                    ` data-focus-route="${this.escapeHtml(JSON.stringify(line.route))}" title="Show this line">` +
+                    `${this.escapeHtml(line.label)}</button>`
                 )
                 .join("")}</div>` +
               `</section>`
@@ -1136,7 +1167,7 @@ const TransitMap = {
       const key = `${label}::${agency || ""}`
       if (group.seen.has(key)) return
       group.seen.add(key)
-      group.lines.push({label, agency, color: line.color})
+      group.lines.push({label, agency, color: line.color, route: {category, agency: line.agency ?? null, name: line.name ?? null, color: line.color ?? null}})
       groups.set(category, group)
     })
 

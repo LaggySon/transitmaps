@@ -41,8 +41,9 @@ def main(src, dst):
         print(f"leaving out {len(late_trips)} trips timed past hour 255")
 
         with zin.open("routes.txt") as f:
+            # Renfe pads its route ids with spaces in routes.txt, not trips.txt.
             rail_routes = {
-                row["route_id"]
+                row["route_id"].strip()
                 for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
                 if rail(row["route_type"])
             }
@@ -63,7 +64,7 @@ def main(src, dst):
                 for row in reader:
                     if row["trip_id"] in late_trips:
                         continue
-                    if info.filename == "trips.txt" and row["route_id"] in rail_routes:
+                    if info.filename == "trips.txt" and row["route_id"].strip() in rail_routes:
                         row["shape_id"] = ""
                     writer.writerow(row)
                 text.flush()

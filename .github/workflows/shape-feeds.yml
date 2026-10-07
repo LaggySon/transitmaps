@@ -129,8 +129,9 @@ jobs:
       - name: Package
         run: |
           cd out && zip -q -r ../traced.zip . && cd ..
-          python3 .github/scripts/simplify_shapes.py traced.zip "${{ matrix.feed.id }}.zip"
-          du -h traced.zip "${{ matrix.feed.id }}.zip"
+          python3 .github/scripts/simplify_shapes.py traced.zip simplified.zip
+          python3 .github/scripts/dedupe_shapes.py simplified.zip "${{ matrix.feed.id }}.zip"
+          du -h traced.zip simplified.zip "${{ matrix.feed.id }}.zip"
 
       - name: Publish
         env:

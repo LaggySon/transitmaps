@@ -116,7 +116,9 @@ jobs:
 
       - name: Download feed
         # Fintraffic refuses requests that don't accept gzip or name themselves.
-        run: curl -sSfL --retry 3 --compressed -H "Digitraffic-User: transitmaps" -o feed.zip "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
+        run: |
+          curl -sSfL --retry 3 --compressed -H "Digitraffic-User: transitmaps" -o feed.zip \
+            "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
 
       - name: Drop station-to-station train shapes
         if: matrix.feed.unshape

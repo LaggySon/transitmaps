@@ -15,6 +15,7 @@ defmodule Transitmaps.AgenciesTest do
   @shapeless_zip "tmp/fixtures/shapeless-gtfs.zip"
   @stop_to_stop_zip "tmp/fixtures/stop-to-stop-gtfs.zip"
   @hop_zip "tmp/fixtures/hop-gtfs.zip"
+  @padded_zip "tmp/fixtures/padded-gtfs.zip"
 
   setup do
     GtfsFixture.write!(@tiny_zip)
@@ -153,6 +154,14 @@ defmodule Transitmaps.AgenciesTest do
 
       [%{geometry: %{"coordinates" => lines}}] = Repo.all(Ecto.assoc(feed, :routes))
       assert lines |> List.flatten() |> Enum.take_every(2) |> Enum.max() == 0.0
+    end
+
+    test "imports a zip with a web page appended after the archive" do
+      GtfsFixture.write!(@padded_zip)
+      File.write!(@padded_zip, "<html><body>Download</body></html>\r\n", [:append])
+      on_exit(fn -> File.rm(@padded_zip) end)
+
+      assert {:ok, _feed} = Importer.import_feed("padded", @padded_zip)
     end
 
     test "records a failed download and lets it be retried" do

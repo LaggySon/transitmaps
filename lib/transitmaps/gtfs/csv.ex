@@ -4,7 +4,9 @@ defmodule Transitmaps.Gtfs.Csv do
 
   GTFS files are plain RFC4180 CSVs with a header row. This module streams
   them as maps keyed by header name so callers never deal with positional
-  columns, and strips the UTF-8 BOM some feeds prepend to the header.
+  columns, and strips the UTF-8 BOM some feeds prepend to the header —
+  before parsing, since a BOM ahead of a quoted header (OCTA's) is
+  otherwise a parse error.
   """
 
   NimbleCSV.define(__MODULE__.Parser, separator: ",", escape: "\"")
@@ -24,7 +26,7 @@ defmodule Transitmaps.Gtfs.Csv do
       # A few otherwise-valid public feeds leave spaces after the final
       # quoted field. RFC4180 parsers reject that, so normalize line endings
       # and trailing whitespace before parsing.
-      |> Stream.map(&(String.trim_trailing(&1) <> "\n"))
+      |> Stream.map(&(String.trim_trailing(strip_bom(&1)) <> "\n"))
       |> __MODULE__.Parser.parse_stream(skip_headers: false)
       |> Stream.transform(nil, &zip_row_with_headers/2)
     else
@@ -33,7 +35,7 @@ defmodule Transitmaps.Gtfs.Csv do
   end
 
   defp zip_row_with_headers(header_row, nil) do
-    {[], Enum.map(header_row, &(&1 |> strip_bom() |> trim_padding()))}
+    {[], Enum.map(header_row, &trim_padding/1)}
   end
 
   defp zip_row_with_headers(row, headers) do

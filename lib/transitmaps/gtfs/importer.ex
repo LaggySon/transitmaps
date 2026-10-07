@@ -159,8 +159,7 @@ defmodule Transitmaps.Gtfs.Importer do
       File.rm_rf!(extract_dir)
       File.mkdir_p!(extract_dir)
 
-      {:ok, _files} =
-        :zip.extract(String.to_charlist(zip_path), cwd: String.to_charlist(extract_dir))
+      extract_zip!(zip_path, extract_dir)
     after
       if opts[:keep_download] == false and zip_path != source, do: File.rm(zip_path)
     end
@@ -169,6 +168,42 @@ defmodule Transitmaps.Gtfs.Importer do
 
     Logger.info("Extracted #{name} to #{extract_dir}")
     extract_dir
+  end
+
+  defp extract_zip!(zip_path, dir) do
+    case :zip.extract(String.to_charlist(zip_path), cwd: String.to_charlist(dir)) do
+      {:ok, _files} ->
+        :ok
+
+      # Some of MobilityData's mirrored zips (Metro Bilbao's, ACE's,
+      # SamTrans's) have a web page appended after the archive, which
+      # `unzip` ignores and `:zip` refuses. The archive itself is intact.
+      {:error, :bad_eocd} ->
+        trimmed = zip_path <> ".trimmed"
+
+        try do
+          trim_after_archive!(zip_path, trimmed)
+
+          {:ok, _files} =
+            :zip.extract(String.to_charlist(trimmed), cwd: String.to_charlist(dir))
+        after
+          File.rm(trimmed)
+        end
+    end
+  end
+
+  # Copies the archive up to the end of its end-of-central-directory record
+  # (22 bytes and its comment), found in the last megabyte of the file.
+  defp trim_after_archive!(zip_path, trimmed) do
+    %{size: size} = File.stat!(zip_path)
+    tail_size = min(size, 1_048_576)
+    {:ok, file} = :file.open(zip_path, [:read, :binary, :raw])
+    {:ok, tail} = :file.pread(file, size - tail_size, tail_size)
+    :ok = :file.close(file)
+
+    {at, _} = tail |> :binary.matches(<<"PK", 5, 6>>) |> List.last() || raise "not a zip"
+    <<_::binary-size(at + 20), comment_length::little-16, _::binary>> = tail
+    {:ok, _} = :file.copy(zip_path, trimmed, size - tail_size + at + 22 + comment_length)
   end
 
   defp extract_nested_feed!(dir, name) do

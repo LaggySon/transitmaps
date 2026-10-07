@@ -17,6 +17,14 @@ defmodule Transitmaps.Gtfs.CsvTest do
            ]
   end
 
+  test "reads a quoted header after a BOM", %{tmp_dir: dir} do
+    File.write!(Path.join(dir, "routes.txt"), "\uFEFF\"route_id\",\"route_type\"\n\"1\",\"3\"\n")
+
+    assert Csv.stream(dir, "routes.txt") |> Enum.to_list() == [
+             %{"route_id" => "1", "route_type" => "3"}
+           ]
+  end
+
   test "a missing file is an empty stream", %{tmp_dir: dir} do
     assert Csv.stream(dir, "shapes.txt") |> Enum.to_list() == []
   end

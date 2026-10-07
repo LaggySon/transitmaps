@@ -192,9 +192,18 @@ const layerIds = (cat) => ({
   labels: `${cat}-station-labels`,
 })
 
-// Lines first, then their names, then stops and station names on top.
+// A clicked line, drawn again above every other line while it has focus.
+const FOCUS_SOURCE_ID = "focus-line"
+const FOCUS_CASING_ID = "focus-line-casing"
+const FOCUS_LINE_ID = "focus-line"
+// How far the other lines and their names fade back while one has focus.
+const UNFOCUSED_OPACITY = 0.16
+
+// Lines first (a focused line above the rest), then their names, then stops
+// and station names on top.
 const desiredLayerOrder = () =>
   MODE_ORDER.map((cat) => layerIds(cat).line).concat(
+    [FOCUS_CASING_ID, FOCUS_LINE_ID],
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -295,6 +304,14 @@ const TransitMap = {
       const center = event.detail?.center
       if (Number.isFinite(zoom)) this.map.jumpTo({zoom, ...(Array.isArray(center) ? {center} : {})})
     }
+
+    // Escape lets a focused line go (the menu has its own Escape).
+    this.escapeHandler = (event) => {
+      if (event.key !== "Escape" || !this.focus) return
+      if (this.popup) this.popup.remove()
+      this.clearFocus()
+    }
+    window.addEventListener("keydown", this.escapeHandler)
 
     this.el.addEventListener("map:zoom-in", this.zoomInHandler)
     this.el.addEventListener("map:zoom-out", this.zoomOutHandler)
@@ -417,6 +434,7 @@ const TransitMap = {
   },
 
   destroyed() {
+    window.removeEventListener("keydown", this.escapeHandler)
     this.el.removeEventListener("map:zoom-in", this.zoomInHandler)
     this.el.removeEventListener("map:zoom-out", this.zoomOutHandler)
     this.el.removeEventListener("map:locate", this.locateHandler)
@@ -690,6 +708,105 @@ const TransitMap = {
     }
 
     MODE_ORDER.forEach((cat) => (this.enabled.has(cat) ? this.setCategoryVisibility(cat) : this.hideCategory(cat)))
+    this.applyFocus()
+  },
+
+  // -- focusing a line ---------------------------------------------------------
+
+  // Clicking a line picks it out: it is drawn again on top, wider and cased
+  // in white, every other line fades back, and the map frames all of it. The
+  // line is found by what it is (mode, operator, name, colour) in every loaded
+  // agency, so the whole line is framed, not just the tiles on screen.
+  focusLine(props) {
+    this.focus = {
+      category: props.category,
+      agency: props.agency ?? null,
+      name: props.name ?? null,
+      color: props.color ?? null,
+    }
+
+    const features = this.focusedFeatures()
+    this.applyFocus()
+
+    const bounds = new maplibregl.LngLatBounds()
+    features.forEach((feature) =>
+      feature.geometry.coordinates.forEach((line) => line.forEach((point) => bounds.extend(point)))
+    )
+
+    if (!bounds.isEmpty()) {
+      this.map.fitBounds(bounds, {padding: this.mapPadding(), maxZoom: 15, duration: 900, essential: true})
+    }
+  },
+
+  clearFocus() {
+    if (!this.focus) return
+    this.focus = null
+    this.applyFocus()
+  },
+
+  focusedFeatures() {
+    if (!this.focus) return []
+    const {category, agency, name, color} = this.focus
+
+    return this.activeFeeds()
+      .flatMap((id) => this.feedData.get(`${id}:${category}`)?.routes.features || [])
+      .filter(({properties}) =>
+        (properties.agency ?? null) === agency &&
+        (properties.name ?? null) === name &&
+        (properties.color ?? null) === color
+      )
+  },
+
+  // Draws the focused line (or nothing) and fades the rest to match. Run on
+  // every render, so the focus follows agencies loading as the map moves.
+  applyFocus() {
+    if (!this.map?.isStyleLoaded()) return
+
+    const data = {type: "FeatureCollection", features: this.focusedFeatures()}
+
+    if (this.map.getSource(FOCUS_SOURCE_ID)) {
+      this.map.getSource(FOCUS_SOURCE_ID).setData(data)
+    } else {
+      this.map.addSource(FOCUS_SOURCE_ID, {type: "geojson", data})
+      this.addLayerInOrder({
+        id: FOCUS_CASING_ID,
+        type: "line",
+        source: FOCUS_SOURCE_ID,
+        layout: {"line-join": "round", "line-cap": "round"},
+        paint: {"line-color": "#ffffff", "line-width": LINE_WIDTH + 5},
+      })
+      this.addLayerInOrder({
+        id: FOCUS_LINE_ID,
+        type: "line",
+        source: FOCUS_SOURCE_ID,
+        layout: {"line-join": "round", "line-cap": "round"},
+        paint: {"line-color": ["get", "color"], "line-width": LINE_WIDTH + 2},
+      })
+    }
+
+    const opacity = this.focus ? UNFOCUSED_OPACITY : 1
+    this.loaded.forEach((cat) => {
+      const ids = layerIds(cat)
+      if (this.map.getLayer(ids.line)) this.map.setPaintProperty(ids.line, "line-opacity", opacity)
+      if (this.map.getLayer(ids.lineLabels)) {
+        // The focused line keeps its name; the rest fade with their lines.
+        this.map.setPaintProperty(
+          ids.lineLabels,
+          "text-opacity",
+          this.focus ? ["case", this.focusMatch(), 1, UNFOCUSED_OPACITY] : 1
+        )
+      }
+    })
+  },
+
+  focusMatch() {
+    const {agency, name, color} = this.focus
+    return [
+      "all",
+      ["==", ["get", "agency"], agency],
+      ["==", ["get", "name"], name],
+      ["==", ["get", "color"], color],
+    ]
   },
 
   // Each agency's stations, once each (a station serving two modes arrives in
@@ -881,8 +998,12 @@ const TransitMap = {
       this.openPopup(
         event.lngLat,
         `<div class="map-route-popup"><div class="map-route-popup__name" style="color:${this.safeColor(props.color)}">` +
-          `${this.escapeHtml(title)}</div>${agency}</div>`
+          `${this.escapeHtml(title)}</div>${agency}</div>`,
+        // Closing the line's popup (or clicking away, which closes it) lets
+        // the line go.
+        () => this.clearFocus()
       )
+      this.focusLine({...props, category: cat})
     })
 
     const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
@@ -963,12 +1084,13 @@ const TransitMap = {
     )
   },
 
-  openPopup(lngLat, html) {
+  openPopup(lngLat, html, onClose) {
     if (this.popup) this.popup.remove()
     this.popup = new maplibregl.Popup({closeButton: true, closeOnClick: true, maxWidth: "288px"})
       .setLngLat(lngLat)
       .setHTML(html)
       .addTo(this.map)
+    if (onClose) this.popup.on("close", onClose)
   },
 
   escapeHtml(value) {

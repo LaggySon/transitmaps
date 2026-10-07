@@ -80,9 +80,12 @@ defmodule Transitmaps.Geometry do
   straight lines across cities and countries.
   """
   def stop_to_stop?(lines) do
-    length_km = length_km(lines)
     segments = lines |> Enum.map(&max(length(&1) - 1, 0)) |> Enum.sum()
+    stop_to_stop_length?(length_km(lines), segments)
+  end
 
+  @doc "`stop_to_stop?/1` for lines already measured: their length and segments."
+  def stop_to_stop_length?(length_km, segments) do
     segments > 0 and length_km >= @stop_to_stop_min_km and
       length_km / segments > @stop_to_stop_mean_segment_km
   end

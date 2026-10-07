@@ -48,6 +48,12 @@ defmodule Transitmaps.Gtfs.Importer do
 
   @insert_batch 500
 
+  # Routes are saved in batches of at most this many points as well: each
+  # batch is unpacked from binaries into lists and JSON-encoded at once, and
+  # 500 traced intercity routes (Germany's long-distance trains) came to
+  # millions of points and most of a gigabyte.
+  @insert_batch_points 100_000
+
   # What the agency list calls the hand-curated feeds. Any other feed is
   # labelled by its name unless the caller passes a label.
   @known_labels %{
@@ -695,20 +701,17 @@ defmodule Transitmaps.Gtfs.Importer do
         do: {Enum.map(shapes, & &1.line), 0.0},
         else: {Enum.flat_map(shapes, & &1.track), shapes |> Enum.map(& &1.hop_km) |> Enum.sum()}
 
-    lines =
+    %{lines: packed, length_km: length_km, segments: segments} =
       packed
       |> Enum.reject(&(line_length(&1) < 2))
-      |> Enum.map(&unpack_line/1)
       |> cover_track()
-
-    packed = Enum.map(lines, &pack_line/1)
-    length_km = Geometry.length_km(lines)
 
     cond do
       packed == [] ->
         %{geometry: nil, drawn_km: 0.0, stop_to_stop_km: hop_km}
 
-      route.category not in ~w(ferry other) and Geometry.stop_to_stop?(lines) ->
+      route.category not in ~w(ferry other) and
+          Geometry.stop_to_stop_length?(length_km, segments) ->
         %{
           geometry: %{type: "MultiLineString", coordinates: packed},
           drawn_km: 0.0,
@@ -724,25 +727,35 @@ defmodule Transitmaps.Gtfs.Importer do
     end
   end
 
-  # Keeps each line (most-used first) that adds track the kept ones don't
-  # cover: a branch, not the same track run in the other direction or with
-  # one more stop.
-  defp cover_track([]), do: []
+  # Keeps each packed line (most-used first) that adds track the kept ones
+  # don't cover: a branch, not the same track run in the other direction or
+  # with one more stop. Lines are unpacked one at a time and kept as they
+  # were packed, so a route with dozens of long traced patterns
+  # (Switzerland's) never holds them all as lists at once. Also measures
+  # what is kept.
+  defp cover_track(packed) do
+    initial = %{lines: [], covered: MapSet.new(), scale: nil, length_km: 0.0, segments: 0}
 
-  defp cover_track([[first | _] | _] = lines) do
-    scale = Geometry.km_scale(first)
+    packed
+    |> Enum.reduce(initial, fn packed_line, acc ->
+      line = unpack_line(packed_line)
+      scale = acc.scale || Geometry.km_scale(hd(line))
+      cells = Geometry.covered_cells(line, scale, @cover_cell_km)
 
-    {kept, _covered} =
-      Enum.reduce(lines, {[], MapSet.new()}, fn line, {kept, covered} ->
-        cells = Geometry.covered_cells(line, scale, @cover_cell_km)
-        new_cells = MapSet.size(MapSet.difference(cells, covered))
-
-        if kept == [] or new_cells >= @min_new_cells,
-          do: {[line | kept], MapSet.union(covered, cells)},
-          else: {kept, covered}
-      end)
-
-    Enum.reverse(kept)
+      if acc.lines == [] or MapSet.size(MapSet.difference(cells, acc.covered)) >= @min_new_cells do
+        %{
+          acc
+          | lines: [packed_line | acc.lines],
+            covered: MapSet.union(acc.covered, cells),
+            scale: scale,
+            length_km: acc.length_km + Geometry.length_km([line]),
+            segments: acc.segments + length(line) - 1
+        }
+      else
+        acc
+      end
+    end)
+    |> Map.update!(:lines, &Enum.reverse/1)
   end
 
   defp station_rows(stations, route_rows) do
@@ -783,10 +796,14 @@ defmodule Transitmaps.Gtfs.Importer do
           Repo.delete_all(feed_scope(Transitmaps.Gtfs.Route, feed.id))
           Repo.delete_all(feed_scope(Transitmaps.Gtfs.Stop, feed.id))
 
-          insert_batched!(
-            Transitmaps.Gtfs.Route,
-            Stream.map(route_rows, &route_insert(&1, feed.id, now))
-          )
+          route_rows
+          |> batches_by_points()
+          |> Enum.each(fn batch ->
+            Repo.insert_all(
+              Transitmaps.Gtfs.Route,
+              Enum.map(batch, &route_insert(&1, feed.id, now))
+            )
+          end)
 
           insert_batched!(
             Transitmaps.Gtfs.Stop,
@@ -908,6 +925,28 @@ defmodule Transitmaps.Gtfs.Importer do
   end
 
   # Rows may be a stream, so a batch is only built just before it's inserted.
+  defp batches_by_points(route_rows) do
+    Stream.chunk_while(
+      route_rows,
+      {[], 0, 0},
+      fn route, {batch, count, points} ->
+        route_points = geometry_points(route.geometry)
+
+        if batch != [] and
+             (count >= @insert_batch or points + route_points > @insert_batch_points),
+           do: {:cont, Enum.reverse(batch), {[route], 1, route_points}},
+           else: {:cont, {[route | batch], count + 1, points + route_points}}
+      end,
+      fn
+        {[], _count, _points} -> {:cont, {[], 0, 0}}
+        {batch, _count, _points} -> {:cont, Enum.reverse(batch), {[], 0, 0}}
+      end
+    )
+  end
+
+  defp geometry_points(%{coordinates: lines}), do: lines |> Enum.map(&line_length/1) |> Enum.sum()
+  defp geometry_points(_geometry), do: 0
+
   defp insert_batched!(schema, rows) do
     rows
     |> Stream.chunk_every(@insert_batch)

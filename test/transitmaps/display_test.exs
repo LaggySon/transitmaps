@@ -105,6 +105,56 @@ defmodule Transitmaps.DisplayTest do
     end
   end
 
+  describe "Identity.lines/1 names" do
+    @track [[[-122.3, 37.8], [-122.2, 37.8]]]
+
+    defp name_of(routes), do: routes |> Identity.lines() |> Enum.map(& &1.name)
+
+    defp metro(id, agency, color, opts),
+      do: route(id, agency, @track, [category: "metro", color: color] ++ opts)
+
+    test "a line run as one route per direction takes its stem" do
+      assert name_of([
+               metro("1", nil, "#FFFF33", short_name: "Yellow-S", long_name: "Antioch to SFO"),
+               metro("2", nil, "#FFFF33", short_name: "Yellow-N", long_name: "SFO to Antioch")
+             ]) == ["Yellow"]
+    end
+
+    test "a line only named in full takes its long name" do
+      assert name_of([
+               metro("Red", "Chicago Transit Authority", "#C60C30", long_name: "Red Line")
+             ]) ==
+               ["Red Line"]
+    end
+
+    test "branches of one line take the line's name" do
+      assert name_of([
+               metro("Green-B", "MBTA", "#00843D", short_name: "B", long_name: "Green Line B"),
+               metro("Green-C", "MBTA", "#00843D", short_name: "C", long_name: "Green Line C")
+             ]) == ["Green Line"]
+    end
+
+    test "a few services sharing a colour list their names" do
+      assert name_of([
+               metro("A", "MTA", "#0062CF", short_name: "A", long_name: "8 Avenue Express"),
+               metro("E", "MTA", "#0062CF", short_name: "E", long_name: "8 Avenue Local"),
+               metro("C", "MTA", "#0062CF", short_name: "C", long_name: "8 Avenue Local")
+             ]) == ["A C E"]
+    end
+
+    test "an operator colouring every train alike draws each line on its own" do
+      routes =
+        for n <- [1, 1, 2, 5],
+            do: route("re#{n}", "DB Regio AG", @track, short_name: "RE#{n}", color: "#EC0016")
+
+      assert name_of(routes) == ["RE1", "RE2", "RE5"]
+    end
+
+    test "unnamed routes fall back to the agency" do
+      assert name_of([route("x", "Acme Rail", @track, color: "#123456")]) == ["Acme Rail"]
+    end
+  end
+
   describe "Display.drawn_lines/1" do
     test "names the lines and hands their source geometry through untouched" do
       corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]

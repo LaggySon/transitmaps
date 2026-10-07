@@ -22,8 +22,28 @@ defmodule Transitmaps.Display.Identity do
   def lines(routes) do
     routes
     |> Enum.group_by(fn route -> {route.category, route.agency_name, color(route)} end)
-    |> Enum.map(fn {{category, agency, color}, group} -> line(category, agency, color, group) end)
+    |> Enum.flat_map(fn {{category, agency, color}, group} ->
+      group
+      |> by_line_name(category, agency)
+      |> Enum.map(&line(category, agency, color, &1))
+    end)
     |> Enum.sort_by(&{&1.category, &1.agency, &1.name})
+  end
+
+  @split_categories ~w(rail metro tram)
+
+  # A regional operator that colours all its trains alike (VBB's DB Regio:
+  # RE1, RB23, …) would otherwise be one line named after the operator. When
+  # nothing its routes share names them, each line name is drawn on its own,
+  # the way riders know the network. Brand-coloured operators keep their one
+  # line: Britain's operators are known by name, not by route.
+  defp by_line_name(group, category, agency) do
+    if category in @split_categories and brand_color(agency, category) == nil and
+         line_name(category, agency, group) == agency do
+      group |> Enum.group_by(& &1.short_name) |> Map.values()
+    else
+      [group]
+    end
   end
 
   defp line(category, agency, color, group) do
@@ -112,15 +132,69 @@ defmodule Transitmaps.Display.Identity do
   end
 
   # A brand-coloured group is an operator's network and shows the operator
-  # name ("CrossCountry", not its route's headcode); everything else keeps
-  # its route name when all members share it (a TfL line called "Central").
+  # name ("CrossCountry", not its route's headcode). Everything else is
+  # named the way its riders know it, from what its routes have in common,
+  # and only falls back to the agency when they have nothing.
   defp line_name(category, agency, group) do
     if brand_color(agency, category) do
       agency
     else
-      shared(group, & &1.short_name) || agency
+      shorts = group |> Enum.map(& &1.short_name) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+      longs = group |> Enum.map(& &1.long_name) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+      shared_value(shorts) || direction_stem(shorts) || short_long_name(longs) ||
+        line_prefix(longs) || joined_shorts(category, shorts) || agency
     end
   end
+
+  defp shared_value([value]), do: value
+  defp shared_value(_values), do: nil
+
+  # One line run as a route per direction or branch: BART's "Yellow-N" and
+  # "Yellow-S" are the Yellow line.
+  defp direction_stem([_, _ | _] = shorts) do
+    shorts
+    |> Enum.map(&Regex.run(~r/^(.+?)[-_ ][A-Za-z0-9]{1,2}$/, &1, capture: :all_but_first))
+    |> Enum.uniq()
+    |> case do
+      [[stem]] -> stem
+      _stems -> nil
+    end
+  end
+
+  defp direction_stem(_shorts), do: nil
+
+  # A line its feed only names in full: CTA's and the MBTA's "Red Line".
+  # Long names that run to whole sentences or termini lists don't fit a
+  # label.
+  defp short_long_name([long]) when byte_size(long) <= 30, do: long
+  defp short_long_name(_longs), do: nil
+
+  # Branches of one line: the MBTA's "Green Line B" to "Green Line E".
+  @line_words ~w(line linie ligne línea linea lijn linja)
+
+  defp line_prefix([_, _ | _] = longs) do
+    shared_words =
+      longs
+      |> Enum.map(&String.split/1)
+      |> Enum.zip()
+      |> Enum.map(&Tuple.to_list/1)
+      |> Enum.take_while(&match?([_], Enum.uniq(&1)))
+      |> Enum.map(&hd/1)
+
+    if shared_words != [] and String.downcase(List.last(shared_words)) in @line_words,
+      do: Enum.join(shared_words, " ")
+  end
+
+  defp line_prefix(_longs), do: nil
+
+  # A few subway services sharing track and colour: New York's A, C and E.
+  defp joined_shorts("metro", [_, _ | _] = shorts) do
+    if length(shorts) <= 4 and Enum.all?(shorts, &(String.length(&1) <= 3)),
+      do: shorts |> Enum.sort() |> Enum.join(" ")
+  end
+
+  defp joined_shorts(_category, _shorts), do: nil
 
   # The single value every route in the group shares, or nil when members
   # disagree (the caller then falls back to something group-wide).

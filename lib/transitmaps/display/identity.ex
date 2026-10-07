@@ -102,7 +102,17 @@ defmodule Transitmaps.Display.Identity do
     {"eurostar", "#0B2343"},
     # Amtrak's feed colours every train a pale #CAE4F1 that all but vanishes
     # on the basemap; its brand blue reads clearly along every corridor.
-    {"amtrak", "#00539B"}
+    {"amtrak", "#00539B"},
+    # Continental operators whose feeds leave their trains uncoloured.
+    {"ns international", "#7D2A82"},
+    {"nederlandse spoorwegen", "#003082"},
+    {"dsb s-tog", nil},
+    {"dsb", "#B41730"},
+    {"staatsbahnen", "#EC0016"},
+    {"db fernverkehr", "#EC0016"},
+    {"arriva", "#00A3E0"},
+    {"iarnród éireann", "#00843D"},
+    {"irish rail", "#00843D"}
   ]
 
   # Only rail-family categories take brand colours, so bus operators with
@@ -119,16 +129,70 @@ defmodule Transitmaps.Display.Identity do
       when is_binary(agency_name) and category in @brand_categories do
     normalized = String.downcase(agency_name)
 
-    Enum.find_value(@brand_colors, fn {pattern, color} ->
-      if String.contains?(normalized, pattern), do: color
-    end)
+    # The first operator that matches decides; a nil colour (DSB's S-tog,
+    # whose lines have their own) means no brand colour.
+    case Enum.find(@brand_colors, fn {pattern, _color} ->
+           String.contains?(normalized, pattern)
+         end) do
+      {_pattern, color} -> color
+      nil -> exact_brand_color(normalized)
+    end
   end
 
   def brand_color(_agency_name, _category), do: nil
 
+  # Operators known by a name too short to search for inside others.
+  defp exact_brand_color("ns"), do: "#003082"
+  defp exact_brand_color(_agency), do: nil
+
+  # Lines with colours riders know, for feeds that don't ship them:
+  # {agency pattern, category, line name, colour}.
+  @line_colors [
+    # Berlin S-Bahn
+    {"s-bahn berlin", "rail", ~w(S1), "#DA6BA2"},
+    {"s-bahn berlin", "rail", ~w(S2 S25 S26), "#007734"},
+    {"s-bahn berlin", "rail", ~w(S3), "#0066AD"},
+    {"s-bahn berlin", "rail", ~w(S41), "#AD5937"},
+    {"s-bahn berlin", "rail", ~w(S42), "#CB6418"},
+    {"s-bahn berlin", "rail", ~w(S45 S46 S47), "#CD9C53"},
+    {"s-bahn berlin", "rail", ~w(S5), "#EB7405"},
+    {"s-bahn berlin", "rail", ~w(S7 S75), "#816DA6"},
+    {"s-bahn berlin", "rail", ~w(S8 S85), "#66AA22"},
+    {"s-bahn berlin", "rail", ~w(S9), "#992746"},
+    # Copenhagen S-tog and Metro
+    {"dsb s-tog", "rail", ~w(A), "#0098D4"},
+    {"dsb s-tog", "rail", ~w(B), "#4BAF4F"},
+    {"dsb s-tog", "rail", ~w(Bx), "#A5C93D"},
+    {"dsb s-tog", "rail", ~w(C), "#F39200"},
+    {"dsb s-tog", "rail", ~w(E), "#7C6FAB"},
+    {"dsb s-tog", "rail", ~w(F), "#FFC20E"},
+    {"dsb s-tog", "rail", ~w(H), "#E2001A"},
+    {"metroselskabet", "metro", ~w(M1), "#00845A"},
+    {"metroselskabet", "metro", ~w(M2), "#FFC20E"},
+    {"metroselskabet", "metro", ~w(M3), "#E2001A"},
+    {"metroselskabet", "metro", ~w(M4), "#0095DA"},
+    # Dublin's Luas
+    {"luas", "tram", ["Red", "Red Line"], "#E31B23"},
+    {"luas", "tram", ["Green", "Green Line"], "#00A651"}
+  ]
+
+  defp line_color(%{agency_name: agency, category: category} = route)
+       when is_binary(agency) do
+    agency = String.downcase(agency)
+    names = Enum.reject([route.short_name, route.long_name], &is_nil/1)
+
+    Enum.find_value(@line_colors, fn {pattern, line_category, lines, color} ->
+      if line_category == category and String.contains?(agency, pattern) and
+           Enum.any?(names, &(&1 in lines)),
+         do: color
+    end)
+  end
+
+  defp line_color(_route), do: nil
+
   defp color(route) do
     brand_color(route.agency_name, route.category) ||
-      route.color || RouteTypes.default_color(route.category)
+      route.color || line_color(route) || RouteTypes.default_color(route.category)
   end
 
   # A brand-coloured group is an operator's network and shows the operator

@@ -150,6 +150,18 @@ defmodule Transitmaps.DisplayTest do
       assert name_of(routes) == ["RE1", "RE2", "RE5"]
     end
 
+    test "lines riders know by colour get it when their feed has none" do
+      lines =
+        Identity.lines([
+          route("a", "DSB S-tog", @track, short_name: "A"),
+          route("b", "DSB S-tog", @track, short_name: "B"),
+          route("ic", "DSB", @track, short_name: "IC")
+        ])
+
+      assert lines |> Enum.map(&{&1.name, &1.color}) |> Enum.sort() ==
+               [{"A", "#0098D4"}, {"B", "#4BAF4F"}, {"DSB", "#B41730"}]
+    end
+
     test "unnamed routes fall back to the agency" do
       assert name_of([route("x", "Acme Rail", @track, color: "#123456")]) == ["Acme Rail"]
     end

@@ -7,7 +7,7 @@ defmodule Transitmaps.AgenciesTest do
   alias Transitmaps.Agencies
   alias Transitmaps.Agencies.FeedImport
   alias Transitmaps.Gtfs.{Feed, Importer}
-  alias Transitmaps.GtfsFixture
+  alias Transitmaps.{GtfsFixture, Zip64Fixture}
 
   # Where the fixture catalog points its agencies' downloads.
   @tiny_zip "tmp/fixtures/tiny-gtfs.zip"
@@ -16,6 +16,7 @@ defmodule Transitmaps.AgenciesTest do
   @stop_to_stop_zip "tmp/fixtures/stop-to-stop-gtfs.zip"
   @hop_zip "tmp/fixtures/hop-gtfs.zip"
   @padded_zip "tmp/fixtures/padded-gtfs.zip"
+  @zip64_zip "tmp/fixtures/zip64-gtfs.zip"
 
   setup do
     GtfsFixture.write!(@tiny_zip)
@@ -204,6 +205,14 @@ defmodule Transitmaps.AgenciesTest do
       [%{geometry: %{"coordinates" => lines}}] = Repo.all(Ecto.assoc(feed, :routes))
       assert length(lines) == 2
       assert lines |> List.flatten() |> Enum.drop(1) |> Enum.take_every(2) |> Enum.min() < 51.4
+    end
+
+    test "imports a feed packed with ZIP64 sizes" do
+      {:ok, files} = :zip.unzip(String.to_charlist(@tiny_zip), [:memory])
+      Zip64Fixture.write!(@zip64_zip, Enum.map(files, fn {name, data} -> {to_string(name), data} end))
+      on_exit(fn -> File.rm(@zip64_zip) end)
+
+      assert {:ok, _feed} = Importer.import_feed("zip64", @zip64_zip)
     end
 
     test "imports a zip with a web page appended after the archive" do

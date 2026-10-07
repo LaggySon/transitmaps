@@ -197,13 +197,23 @@ defmodule Transitmaps.Gtfs do
   defp line_value(line, key), do: Map.get(line, key) || Map.get(line, Atom.to_string(key))
 
   # The merged complex takes the name of whichever stop carries the most
-  # services, so Bank and Monument come out as "Bank". Preferring the longest
-  # name instead would answer "Monument", naming the interchange after its
-  # quieter half.
+  # train services, so Bank and Monument come out as "Bank" (preferring the
+  # longest name would answer "Monument", naming the interchange after its
+  # quieter half). Trains count first: a bus stop outside a station often
+  # has more routes than the station has lines, and would otherwise name it
+  # ("Main St @ Kendall Station - Red Line" for Kendall/MIT).
   defp preferred_station_name(stops) do
     stops
-    |> Enum.max_by(&{drawn_line_count(&1), String.length(&1.name || "")})
+    |> Enum.max_by(&{station_line_count(&1), drawn_line_count(&1), String.length(&1.name || "")})
     |> Map.get(:name)
+  end
+
+  defp station_line_count(stop) do
+    stop.lines
+    |> Enum.filter(&(line_value(&1, :category) in @station_categories))
+    |> Enum.map(&drawn_line_key/1)
+    |> Enum.uniq()
+    |> length()
   end
 
   defp line_feature(line) do

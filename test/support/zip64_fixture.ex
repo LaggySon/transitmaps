@@ -14,18 +14,23 @@ defmodule Transitmaps.Zip64Fixture do
       Enum.reduce(files, {[], [], 0}, fn {name, contents}, {locals, centrals, offset} ->
         compressed = deflate(contents)
         crc = :erlang.crc32(contents)
-        zip64 = <<1::little-16, 16::little-16, byte_size(contents)::little-64, byte_size(compressed)::little-64>>
+
+        zip64 =
+          <<1::little-16, 16::little-16, byte_size(contents)::little-64,
+            byte_size(compressed)::little-64>>
 
         local =
           <<0x04034B50::little-32, 45::little-16, 0::little-16, 8::little-16, 0::little-16,
             @dos_date::little-16, crc::little-32, 0xFFFFFFFF::little-32, 0xFFFFFFFF::little-32,
-            byte_size(name)::little-16, byte_size(zip64)::little-16>> <> name <> zip64 <> compressed
+            byte_size(name)::little-16, byte_size(zip64)::little-16>> <>
+            name <> zip64 <> compressed
 
         central =
           <<0x02014B50::little-32, 45::little-16, 45::little-16, 0::little-16, 8::little-16,
             0::little-16, @dos_date::little-16, crc::little-32, 0xFFFFFFFF::little-32,
             0xFFFFFFFF::little-32, byte_size(name)::little-16, byte_size(zip64)::little-16,
-            0::little-16, 0::little-16, 0::little-16, 0::little-32, offset::little-32>> <> name <> zip64
+            0::little-16, 0::little-16, 0::little-16, 0::little-32, offset::little-32>> <>
+            name <> zip64
 
         {[local | locals], [central | centrals], offset + byte_size(local)}
       end)

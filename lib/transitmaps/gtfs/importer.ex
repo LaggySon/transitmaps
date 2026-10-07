@@ -123,8 +123,10 @@ defmodule Transitmaps.Gtfs.Importer do
 
   # Amtrak files its long-distance trains as ordinary rail, in its own feed
   # and in the regional feeds that carry some of its services.
+  # Its Thruway buses stay buses: as intercity they drew no line but put
+  # their bus stops on the map as train stations.
   defp amtrak_as_intercity(route) do
-    if String.contains?(route.agency_name || "", "Amtrak"),
+    if route.category == "rail" and String.contains?(route.agency_name || "", "Amtrak"),
       do: Map.put(route, :category, "intercity"),
       else: route
   end

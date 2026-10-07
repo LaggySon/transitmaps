@@ -18,6 +18,11 @@ defmodule Transitmaps.Catalog do
   alias Transitmaps.Packages
 
   @default_source "https://files.mobilitydatabase.org/feeds_v2.csv"
+
+  # Agencies catalogued twice under different downloads of the same data,
+  # which would draw every line twice: AVV's feed with and without its stop
+  # poles (mdb-1224 is kept).
+  @duplicates ~w(mdb-1094)
   @refresh_ms :timer.hours(24)
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -57,6 +62,7 @@ defmodule Transitmaps.Catalog do
       |> Path.dirname()
       |> Csv.stream(Path.basename(path))
       |> Stream.filter(&downloadable?/1)
+      |> Stream.reject(&(&1["id"] in @duplicates))
       |> Enum.split_with(&MapSet.member?(pinned, &1["id"]))
 
     # A few agencies are catalogued twice under one download; a pack's

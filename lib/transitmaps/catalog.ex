@@ -28,9 +28,10 @@ defmodule Transitmaps.Catalog do
   # OpenStreetMap's railways (.github/workflows/shape-feeds.yml), downloaded
   # from its release instead of MobilityData's mirror: national rail feeds
   # that publish no shapes, Lyon's and Eurostar's, which leave some trains
-  # unshaped, Sweden's, whose train shapes only join stations, and
-  # Finland's trains, which the mirror doesn't carry.
-  @shaped ~w(mdb-768 mdb-1089 tdg-83582 mdb-1859 mdb-2898 mdb-2939 mdb-1102 tdg-82199 tdg-81943)
+  # unshaped, Sweden's and Norway's, whose trains hop straight between
+  # stations, Spain's Cercanías, whose one shape per line leaves out
+  # branches, and Finland's trains, which the mirror doesn't carry.
+  @shaped ~w(mdb-768 mdb-1089 tdg-83582 mdb-1859 mdb-2898 mdb-2939 mdb-1078 mdb-2653 mdb-1102 tdg-82199 tdg-81943)
   @shaped_url "https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/"
 
   # Names for national feeds whose catalog listing reads like a dataset

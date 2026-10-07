@@ -17,6 +17,9 @@ defmodule Transitmaps.Repo.Migrations.ImportShapedNationalRail do
     {"mdb-2898", "Switzerland · SBB and every Swiss operator"},
     {"mdb-2939", "Trafiklab · GTFS Sweden 3"},
     {"mdb-1102", "VR · Finland's passenger trains"},
+    {"mdb-1078", "Entur · Norway Aggregated"},
+    {"mdb-2653",
+     "Renfe commuter trains (Cercanias) · Commuter train schedules for Cercanías and Rodalies trains"},
     {"tdg-82199", "Eurostar International Ltd. · Réseau européen Eurostar"},
     {"tdg-81943", "SYTRAL Mobilités · Réseau urbain TCL"}
   ]

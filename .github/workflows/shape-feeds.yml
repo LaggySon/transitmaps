@@ -101,6 +101,9 @@ jobs:
           # Sweden: its trains' shapes only join their stations, so they
           # are dropped and traced again
           - {id: mdb-2939, mot: "rail", unshape: true}
+          # Finland's passenger trains (Fintraffic), which MobilityData doesn't
+          # mirror: already shaped, published here for a stable download
+          - {id: mdb-1102, mot: "rail", url: "https://rata.digitraffic.fi/api/v1/trains/gtfs-passenger.zip"}
           # Great Britain's national rail (hand-curated, not in the catalog):
           # the North Wales coast trains have no shapes
           - {id: gb-rail, mot: "rail", url: "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"}
@@ -112,7 +115,8 @@ jobs:
           name: europe-rail
 
       - name: Download feed
-        run: curl -sSfL --retry 3 -o feed.zip "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
+        # Fintraffic refuses requests that don't accept gzip or name themselves.
+        run: curl -sSfL --retry 3 --compressed -H "Digitraffic-User: transitmaps" -o feed.zip "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
 
       - name: Drop station-to-station train shapes
         if: matrix.feed.unshape

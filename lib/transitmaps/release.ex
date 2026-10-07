@@ -18,8 +18,6 @@ defmodule Transitmaps.Release do
     {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
   end
 
-  @gb_rail_url "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"
-
   @doc """
   Re-imports the Great Britain data set (national rail GTFS plus TfL)
   from the deployed release, e.g.:
@@ -30,7 +28,7 @@ defmodule Transitmaps.Release do
   the hourly cache age-out fires, or immediately after a restart.
   """
   def import_gb do
-    import_gtfs("gb-rail", @gb_rail_url)
+    with_import_repo(&Transitmaps.Gtfs.Importer.import_gb_rail/0)
     import_tfl()
   end
 

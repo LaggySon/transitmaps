@@ -6,7 +6,6 @@ defmodule Transitmaps.Application do
   use Application
   require Logger
 
-  @gb_rail_url "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"
   @gb_refresh_delay :timer.minutes(10)
   @tfl_refresh_delay :timer.minutes(15)
 
@@ -56,7 +55,7 @@ defmodule Transitmaps.Application do
       Logger.info("Refreshing Great Britain rail data after Railway startup")
 
       try do
-        Transitmaps.Gtfs.Importer.import_feed("gb-rail", @gb_rail_url)
+        Transitmaps.Gtfs.Importer.import_gb_rail()
       rescue
         error ->
           Logger.error(

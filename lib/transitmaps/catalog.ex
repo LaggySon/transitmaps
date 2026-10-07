@@ -23,6 +23,26 @@ defmodule Transitmaps.Catalog do
   # which would draw every line twice: AVV's feed with and without its stop
   # poles (mdb-1224 is kept).
   @duplicates ~w(mdb-1094)
+
+  # Feeds whose trains the "Shape rail feeds" workflow traces along
+  # OpenStreetMap's railways (.github/workflows/shape-feeds.yml), downloaded
+  # from its release instead of MobilityData's mirror: national rail feeds
+  # that publish no shapes, Lyon's and Eurostar's, which leave some trains
+  # unshaped, Sweden's, whose train shapes only join stations, and
+  # Finland's trains, which the mirror doesn't carry.
+  @shaped ~w(mdb-768 mdb-1089 tdg-83582 mdb-1859 mdb-2898 mdb-2939 mdb-1102 tdg-82199 tdg-81943)
+  @shaped_url "https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/"
+
+  # Names for national feeds whose catalog listing reads like a dataset
+  # title ("Systemaufgaben Kundeninformation SKI+ · Switzerland Aggregate").
+  @labels %{
+    "mdb-768" => "Deutsche Bahn · Long-distance trains",
+    "mdb-1089" => "Germany · Regional trains",
+    "tdg-83582" => "SNCF · TGV, Intercités and TER",
+    "mdb-1859" => "SNCB / NMBS · Belgian railways",
+    "mdb-2898" => "Switzerland · SBB and every Swiss operator",
+    "mdb-1102" => "VR · Finland's passenger trains"
+  }
   @refresh_ms :timer.hours(24)
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -72,9 +92,9 @@ defmodule Transitmaps.Catalog do
     |> Enum.uniq_by(&(&1.source_url || &1.id))
   end
 
-  # Static GTFS with a copy on MobilityData's mirror.
+  # Static GTFS with a copy on MobilityData's mirror, or on our own release.
   defp downloadable?(row) do
-    row["data_type"] == "gtfs" and present?(row["urls.latest"]) and
+    row["data_type"] == "gtfs" and (present?(row["urls.latest"]) or row["id"] in @shaped) and
       String.match?(row["location.country_code"] || "", ~r/^[A-Z]{2}$/)
   end
 
@@ -97,7 +117,13 @@ defmodule Transitmaps.Catalog do
 
   defp feed(row) do
     provider = presence(row["provider"]) || row["id"]
-    label = if presence(row["name"]), do: "#{provider} · #{row["name"]}", else: provider
+
+    label =
+      cond do
+        label = @labels[row["id"]] -> label
+        presence(row["name"]) -> "#{provider} · #{row["name"]}"
+        true -> provider
+      end
 
     place =
       [
@@ -113,7 +139,8 @@ defmodule Transitmaps.Catalog do
       id: row["id"],
       label: label,
       place: place,
-      url: row["urls.latest"],
+      url:
+        if(row["id"] in @shaped, do: @shaped_url <> row["id"] <> ".zip", else: row["urls.latest"]),
       source_url: presence(row["urls.direct_download"]),
       search_text: String.downcase(label <> " " <> place)
     }

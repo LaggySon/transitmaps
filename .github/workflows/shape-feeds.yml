@@ -96,13 +96,20 @@ jobs:
           - {id: mdb-2898, mot: "rail,tram,subway,funicular"}
           # Eurostar: its London trains have no shapes
           - {id: tdg-82199, mot: "rail"}
+          # Lyon: its metro, trams and funiculars have no shapes
+          - {id: tdg-81943, mot: "subway,tram,funicular"}
+          # Great Britain's national rail (hand-curated, not in the catalog):
+          # the North Wales coast trains have no shapes
+          - {id: gb-rail, mot: "rail", url: "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: europe-rail
 
       - name: Download feed
-        run: curl -sSfL --retry 3 -o feed.zip "https://files.mobilitydatabase.org/${{ matrix.feed.id }}/latest.zip"
+        run: curl -sSfL --retry 3 -o feed.zip "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
 
       # Only trips without a shape are traced, so a feed's own shapes stay.
       - name: Trace trains along OpenStreetMap
@@ -113,7 +120,10 @@ jobs:
           ls -la out
 
       - name: Package
-        run: cd out && zip -q -r "../${{ matrix.feed.id }}.zip" . && cd .. && du -h "${{ matrix.feed.id }}.zip"
+        run: |
+          cd out && zip -q -r ../traced.zip . && cd ..
+          python3 .github/scripts/simplify_shapes.py traced.zip "${{ matrix.feed.id }}.zip"
+          du -h traced.zip "${{ matrix.feed.id }}.zip"
 
       - name: Publish
         env:

@@ -18,22 +18,6 @@ defmodule Transitmaps.Catalog do
   alias Transitmaps.Packages
 
   @default_source "https://files.mobilitydatabase.org/feeds_v2.csv"
-<<<<<<< Updated upstream
-=======
-
-  # Agencies catalogued twice under different downloads of the same data,
-  # which would draw every line twice: AVV's feed with and without its stop
-  # poles (mdb-1224 is kept).
-  @duplicates ~w(mdb-1094)
-
-  # Feeds whose trains the "Shape rail feeds" workflow traces along
-  # OpenStreetMap's railways (.github/workflows/shape-feeds.yml), downloaded
-  # from its release instead of MobilityData's mirror: national rail feeds
-  # that publish no shapes, and Lyon's and Eurostar's, which leave some
-  # trains unshaped.
-  @shaped ~w(mdb-768 mdb-1089 tdg-83582 mdb-1859 mdb-2898 tdg-82199 tdg-81943)
-  @shaped_url "https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/"
->>>>>>> Stashed changes
   @refresh_ms :timer.hours(24)
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -123,7 +107,7 @@ defmodule Transitmaps.Catalog do
       id: row["id"],
       label: label,
       place: place,
-      url: if(row["id"] in @shaped, do: @shaped_url <> row["id"] <> ".zip", else: row["urls.latest"]),
+      url: row["urls.latest"],
       source_url: presence(row["urls.direct_download"]),
       search_text: String.downcase(label <> " " <> place)
     }

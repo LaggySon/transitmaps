@@ -116,6 +116,24 @@ defmodule Transitmaps.Gtfs.Importer do
     end
   end
 
+  # Great Britain's national rail, which isn't in the catalog. The copy the
+  # "Shape rail feeds" workflow publishes fills in the trains its source
+  # leaves unshaped (the North Wales coast); the source is the fallback.
+  @gb_rail_shaped "https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/gb-rail.zip"
+  @gb_rail_source "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"
+
+  @doc "Imports Great Britain's national rail, preferring the shaped copy."
+  def import_gb_rail do
+    import_feed("gb-rail", @gb_rail_shaped)
+  rescue
+    error ->
+      Logger.warning(
+        "Shaped GB rail import failed, using the source: " <> Exception.message(error)
+      )
+
+      import_feed("gb-rail", @gb_rail_source)
+  end
+
   # A feed is drawn when shapes that follow the track outweigh shapes that
   # only join stops. Where most of its shapes are straight hops, the few
   # that pass the test are short or straight hops too (Germany's

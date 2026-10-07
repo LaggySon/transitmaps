@@ -13,9 +13,10 @@ defmodule Transitmaps.Packages do
   `bounds` is where the map flies to show the pack, not every member's
   reach: Amtrak alone spans the continent.
 
-  Some obvious regions are missing because no feed for them can be drawn:
-  Switzerland's, SNCF's and SNCB's feeds have no shapes, and Germany's
-  national rail (gtfs.de), SNCF Transilien's and Metrolink's shapes only
+  National rail feeds that publish no shapes (Germany's, SNCF's, SNCB's,
+  Switzerland's) are drawn from copies whose trains are traced along
+  OpenStreetMap's railways (see `Transitmaps.Catalog`). Some obvious
+  regions are still missing: SNCF Transilien's and Metrolink's shapes only
   join their stops with straight lines; Melbourne's feed nests one feed per mode in folders, which the
   importer doesn't read; Sydney, Brisbane and Tokyo's railways aren't in the
   catalog.
@@ -165,10 +166,9 @@ defmodule Transitmaps.Packages do
       place: "Paris and major cities",
       keywords: "paris lyon toulouse bordeaux nantes nice rennes montpellier eurostar",
       bounds: [[-4.9, 42.2], [8.4, 51.2]],
-      # SNCF's national TGV, Intercités and TER feed has no shapes, and
-      # BreizhGo's TER shapes only join their stations, so the mainline
-      # network can't be drawn; the regions and cities can.
       catalog_ids: [
+        # SNCF TGV, Intercités and TER (traced along OpenStreetMap)
+        "tdg-83582",
         # Île-de-France Mobilités (Métro, RER, Transilien, tram, bus), Eurostar
         "tdg-80921",
         "tdg-82199",
@@ -186,13 +186,15 @@ defmodule Transitmaps.Packages do
     %{
       id: "germany",
       region: "Europe",
-      label: "German cities",
-      place: "Berlin, Hamburg, Munich and Cologne",
-      keywords: "deutschland germany berlin brandenburg hamburg munich münchen cologne köln bonn",
+      label: "Germany",
+      place: "Deutsche Bahn, Berlin, Hamburg, Munich and Cologne",
+      keywords:
+        "deutschland germany db deutsche bahn ice intercity regional berlin brandenburg hamburg munich münchen cologne köln bonn",
       bounds: [[5.8, 47.3], [15.1, 55.0]],
-      # Germany's national rail feeds (gtfs.de) only join their stations
-      # with straight lines.
       catalog_ids: [
+        # Long-distance and regional rail (gtfs.de, traced along OpenStreetMap)
+        "mdb-768",
+        "mdb-1089",
         # VBB Berlin-Brandenburg, HVV Hamburg, MVG Munich, VRS Cologne/Bonn
         "mdb-782",
         "mdb-3362",
@@ -259,8 +261,9 @@ defmodule Transitmaps.Packages do
       keywords:
         "nederland netherlands holland amsterdam rotterdam utrecht den haag hague ns belgium belgië belgique brussels bruxelles brussel antwerp antwerpen ghent gent flanders wallonia liège",
       bounds: [[2.5, 49.5], [7.3, 53.6]],
-      # Belgian rail (SNCB) publishes no shapes, so its trains can't be drawn.
       catalog_ids: [
+        # SNCB (traced along OpenStreetMap)
+        "mdb-1859",
         # OVapi (every Dutch operator, NS trains included), De Lijn, TEC, STIB
         "mdb-1077",
         "mdb-684",
@@ -272,7 +275,7 @@ defmodule Transitmaps.Packages do
       id: "nordics",
       region: "Europe",
       label: "Nordic countries",
-      place: "Denmark, Norway, Sweden and Helsinki",
+      place: "Denmark, Norway, Sweden and Finland",
       keywords:
         "nordic scandinavia denmark danmark copenhagen københavn norway norge oslo bergen trondheim sweden sverige stockholm gothenburg göteborg malmö skåne finland helsinki",
       bounds: [[4.5, 54.5], [25.5, 64.0]],
@@ -281,8 +284,23 @@ defmodule Transitmaps.Packages do
         "mdb-1292",
         "mdb-1078",
         "mdb-2939",
+        # Finland's passenger trains
+        "mdb-1102",
         # HSL Helsinki
         "mdb-865"
+      ]
+    },
+    %{
+      id: "switzerland",
+      region: "Europe",
+      label: "Switzerland",
+      place: "SBB and every Swiss operator",
+      keywords:
+        "schweiz suisse svizzera swiss switzerland sbb cff ffs zürich zurich genève geneva basel bern lausanne luzern",
+      bounds: [[5.9, 45.8], [10.5, 47.9]],
+      catalog_ids: [
+        # Switzerland's national feed (traced along OpenStreetMap)
+        "mdb-2898"
       ]
     },
     %{

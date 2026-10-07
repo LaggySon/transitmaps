@@ -110,6 +110,7 @@ defmodule Transitmaps.Display.Identity do
     {"dsb", "#B41730"},
     {"staatsbahnen", "#EC0016"},
     {"db fernverkehr", "#EC0016"},
+    {"schweizerische bundesbahnen", "#EB0000"},
     {"arriva", "#00A3E0"},
     {"iarnród éireann", "#00843D"},
     {"irish rail", "#00843D"}

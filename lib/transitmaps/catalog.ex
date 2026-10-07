@@ -45,6 +45,9 @@ defmodule Transitmaps.Catalog do
   @doc "All usable catalog feeds; empty until the first load completes."
   def feeds, do: :persistent_term.get(__MODULE__, [])
 
+  @doc "Whether the catalog has loaded, so its agencies can be looked up."
+  def loaded?, do: :persistent_term.get(__MODULE__, nil) != nil
+
   @doc false
   def parse(path) do
     pinned = Packages.catalog_ids()
@@ -156,6 +159,7 @@ defmodule Transitmaps.Catalog do
       feeds = parse(path)
       :persistent_term.put(__MODULE__, feeds)
       Logger.info("Feed catalog loaded: #{length(feeds)} feeds")
+      Transitmaps.Agencies.Worker.poke()
     end
 
     if String.starts_with?(source, "http"), do: Process.send_after(self(), :refresh, @refresh_ms)

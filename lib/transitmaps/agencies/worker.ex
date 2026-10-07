@@ -12,7 +12,7 @@ defmodule Transitmaps.Agencies.Worker do
   use GenServer
   require Logger
 
-  alias Transitmaps.Agencies
+  alias Transitmaps.{Agencies, Catalog}
 
   @refresh_check_ms :timer.hours(6)
 
@@ -55,14 +55,16 @@ defmodule Transitmaps.Agencies.Worker do
 
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
+  # Downloads wait for the catalog, which loads in the background at boot
+  # and pokes the worker when it's ready: an agency looked up before then
+  # would be failed as no longer in the catalog.
   defp run_next(%{running: nil} = state) do
-    case Agencies.next_queued() do
-      nil ->
-        state
-
-      feed_import ->
-        {_pid, ref} = spawn_monitor(fn -> Agencies.run_import(feed_import.catalog_id) end)
-        %{state | running: {feed_import.catalog_id, ref}}
+    with true <- Catalog.loaded?(),
+         %{catalog_id: catalog_id} <- Agencies.next_queued() do
+      {_pid, ref} = spawn_monitor(fn -> Agencies.run_import(catalog_id) end)
+      %{state | running: {catalog_id, ref}}
+    else
+      _ -> state
     end
   end
 

@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           regions="germany france switzerland austria belgium netherlands luxembourg liechtenstein
                    poland czech-republic slovakia hungary slovenia croatia denmark italy spain
-                   portugal great-britain sweden"
+                   portugal great-britain sweden norway finland"
           for region in $regions; do
             curl -sSfL --retry 3 -o region.osm.pbf "https://download.geofabrik.de/europe/${region}-latest.osm.pbf"
             osmium tags-filter region.osm.pbf \
@@ -101,6 +101,10 @@ jobs:
           # Sweden: its trains' shapes only join their stations, so they
           # are dropped and traced again
           - {id: mdb-2939, mot: "rail", unshape: true}
+          # Norway: its cross-border trains hop straight between stations
+          - {id: mdb-1078, mot: "rail", unshape: true}
+          # Spain's Cercanías: one shape per line, which leaves out branches
+          - {id: mdb-2653, mot: "rail", unshape: true}
           # Finland's passenger trains (Fintraffic), which MobilityData doesn't
           # mirror: already shaped, published here for a stable download
           - {id: mdb-1102, mot: "rail", url: "https://rata.digitraffic.fi/api/v1/trains/gtfs-passenger.zip"}

@@ -209,7 +209,12 @@ defmodule Transitmaps.AgenciesTest do
 
     test "imports a feed packed with ZIP64 sizes" do
       {:ok, files} = :zip.unzip(String.to_charlist(@tiny_zip), [:memory])
-      Zip64Fixture.write!(@zip64_zip, Enum.map(files, fn {name, data} -> {to_string(name), data} end))
+
+      Zip64Fixture.write!(
+        @zip64_zip,
+        Enum.map(files, fn {name, data} -> {to_string(name), data} end)
+      )
+
       on_exit(fn -> File.rm(@zip64_zip) end)
 
       assert {:ok, _feed} = Importer.import_feed("zip64", @zip64_zip)

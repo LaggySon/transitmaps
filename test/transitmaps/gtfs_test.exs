@@ -185,6 +185,30 @@ defmodule Transitmaps.GtfsTest do
       assert length(station.lines) == 2
     end
 
+    test "names a station after itself, not the busier bus stop outside it" do
+      station = %Stop{
+        name: "Kendall/MIT",
+        lat: 42.36249,
+        lon: -71.08617,
+        categories: ["metro"],
+        lines: [%{name: "Red Line", agency: "MBTA", category: "metro", color: "#DA291C"}]
+      }
+
+      bus_stop = %Stop{
+        name: "Main St @ Kendall Station - Red Line",
+        lat: 42.36252,
+        lon: -71.08620,
+        categories: ["bus"],
+        lines:
+          for(
+            n <- ~w(64 68 85 CT2),
+            do: %{name: n, agency: "MBTA", category: "bus", color: "#FFC72C"}
+          )
+      }
+
+      assert [%{name: "Kendall/MIT"}] = Gtfs.merge_colocated_stops([bus_stop, station])
+    end
+
     test "does not combine stations that are genuinely apart" do
       first = %Stop{name: "First", lat: 40.0, lon: -74.0, categories: ["rail"], lines: []}
       second = %Stop{name: "Second", lat: 40.01, lon: -74.01, categories: ["rail"], lines: []}

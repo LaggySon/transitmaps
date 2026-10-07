@@ -6,6 +6,9 @@
     <meta name="csrf-token" content={get_csrf_token()} />
     <meta name="theme-color" content="#f2f1ed" />
     <meta name="color-scheme" content="light" />
+    <link rel="icon" href={~p"/favicon.ico"} sizes="48x48" />
+    <link rel="icon" href={~p"/favicon.svg"} type="image/svg+xml" />
+    <link rel="apple-touch-icon" href={~p"/apple-touch-icon.png"} />
     <.live_title default="Transit Maps" suffix=" · Explore public transport">
       {assigns[:page_title]}
     </.live_title>

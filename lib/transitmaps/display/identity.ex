@@ -207,7 +207,12 @@ defmodule Transitmaps.Display.Identity do
       # Short names only name a group when every route has one.
       all_shorts = Enum.map(group, &display_short_name/1)
       shorts = if nil in all_shorts, do: [], else: Enum.uniq(all_shorts)
-      longs = group |> Enum.map(& &1.long_name) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+      # A long name with nothing to read (SNCF's " -") names nothing.
+      longs =
+        group
+        |> Enum.map(& &1.long_name)
+        |> Enum.filter(&(is_binary(&1) and Regex.match?(~r/[\p{L}\p{N}]/u, &1)))
+        |> Enum.uniq()
 
       shared_value(shorts) || direction_stem(shorts) || short_long_name(longs) ||
         line_prefix(longs) || joined_shorts(category, shorts) || agency

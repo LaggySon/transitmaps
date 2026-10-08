@@ -166,10 +166,12 @@ defmodule Transitmaps.DisplayTest do
       routes = [
         route("tgv", "SNCF VOYAGEURS", @track, short_name: "601A", long_name: "Paris - Lyon TGV"),
         route("ter", "SNCF VOYAGEURS", @track, short_name: "K5", long_name: "Toulouse - Pau"),
-        route("x", "SNCF VOYAGEURS", @track, short_name: "INCONNU", long_name: "Nancy - Metz")
+        route("x", "SNCF VOYAGEURS", @track, short_name: "INCONNU", long_name: "Nancy - Metz"),
+        route("y", "SNCF VOYAGEURS", @track, short_name: "INCONNU", long_name: " -")
       ]
 
-      assert name_of(routes) |> Enum.sort() == ["K5", "Nancy - Metz", "Paris - Lyon TGV"]
+      assert name_of(routes) |> Enum.sort() ==
+               ["K5", "Nancy - Metz", "Paris - Lyon TGV", "SNCF VOYAGEURS"]
     end
 
     test "unnamed routes fall back to the agency" do

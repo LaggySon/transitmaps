@@ -31,7 +31,7 @@ defmodule Transitmaps.Catalog do
   # unshaped, Sweden's and Norway's, whose trains hop straight between
   # stations, Spain's Cercanías, whose one shape per line leaves out
   # branches, and Finland's trains, which the mirror doesn't carry.
-  @shaped ~w(mdb-768 mdb-1089 tdg-83582 mdb-1859 mdb-2898 mdb-2939 mdb-1078 mdb-2653 mdb-1102 tdg-82199 tdg-81943)
+  @shaped ~w(mdb-768 mdb-1089 tdg-83582 mdb-1859 mdb-2898 mdb-2939 mdb-1078 mdb-2653 mdb-2620 mdb-1102 tdg-82199 tdg-81943)
   @shaped_url "https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/"
 
   # Names for national feeds whose catalog listing reads like a dataset
@@ -42,7 +42,9 @@ defmodule Transitmaps.Catalog do
     "tdg-83582" => "SNCF · TGV, Intercités and TER",
     "mdb-1859" => "SNCB / NMBS · Belgian railways",
     "mdb-2898" => "Switzerland · SBB and every Swiss operator",
-    "mdb-1102" => "VR · Finland's passenger trains"
+    "mdb-1102" => "VR · Finland's passenger trains",
+    "mdb-2620" => "Renfe · High-speed, long and medium-distance trains",
+    "mdb-3191" => "Poland · Every train operator"
   }
   @refresh_ms :timer.hours(24)
 

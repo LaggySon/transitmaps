@@ -222,7 +222,9 @@ defmodule Transitmaps.Packages do
         "mdb-1856",
         "mdb-1003",
         "mdb-1004",
+        # Renfe high-speed and long-distance trains (traced along OpenStreetMap),
         # Renfe Cercanías, Metrovalencia, Metro Bilbao
+        "mdb-2620",
         "mdb-2653",
         "mdb-2830",
         "mdb-3052",
@@ -323,18 +325,19 @@ defmodule Transitmaps.Packages do
       id: "central-europe",
       region: "Europe",
       label: "Central Europe",
-      place: "Prague, Vienna, Budapest, Warsaw and Kraków",
+      place: "Prague, Vienna, Budapest, Warsaw, Kraków and Poland's trains",
       keywords:
-        "praha prague wien vienna budapest warszawa warsaw kraków krakow czechia austria hungary poland",
+        "praha prague wien vienna budapest warszawa warsaw kraków krakow czechia austria hungary poland polska pkp intercity",
       bounds: [[12.0, 46.9], [22.0, 53.0]],
       catalog_ids: [
         # PID Prague, Wiener Linien, BKK Budapest
         "mdb-767",
         "mdb-648",
         "mdb-990",
-        # ZTM Warsaw, Koleje Mazowieckie, WKD, Kraków trams
+        # ZTM Warsaw, every Polish train operator (Koleje Mazowieckie
+        # included), WKD, Kraków trams
         "mdb-2092",
-        "mdb-1011",
+        "mdb-3191",
         "mdb-2091",
         "mdb-1270"
       ]

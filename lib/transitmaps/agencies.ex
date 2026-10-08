@@ -51,7 +51,9 @@ defmodule Transitmaps.Agencies do
     "mdb-470" => ~w(baltimore-metro),
     "mdb-509" => ~w(nj-transit-rail),
     "mdb-516" => ~w(nyc-subway),
-    "mdb-524" => ~w(metro-north)
+    "mdb-524" => ~w(metro-north),
+    # Poland's every-operator feed carries Koleje Mazowieckie's trains.
+    "mdb-3191" => ~w(catalog-mdb-1011)
   }
 
   @doc """

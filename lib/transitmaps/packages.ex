@@ -210,7 +210,7 @@ defmodule Transitmaps.Packages do
       label: "Spain & Portugal",
       place: "Madrid, Barcelona, Lisbon and more",
       keywords:
-        "españa spain portugal madrid barcelona catalunya lisbon lisboa valencia bilbao renfe cercanías",
+        "españa spain portugal madrid barcelona catalunya lisbon lisboa porto valencia bilbao renfe cercanías ave cp comboios",
       bounds: [[-9.6, 36.0], [3.4, 43.8]],
       catalog_ids: [
         # Metro de Madrid, Madrid Metro Ligero, Madrid city buses
@@ -222,11 +222,15 @@ defmodule Transitmaps.Packages do
         "mdb-1856",
         "mdb-1003",
         "mdb-1004",
+        # Renfe high-speed and long-distance trains (traced along OpenStreetMap),
         # Renfe Cercanías, Metrovalencia, Metro Bilbao
+        "mdb-2620",
         "mdb-2653",
         "mdb-2830",
         "mdb-3052",
-        # Metro de Lisboa, Carris, Fertagus, Transtejo Soflusa, Metro Sul do Tejo
+        # CP (Portugal's trains, traced along OpenStreetMap), Metro de
+        # Lisboa, Carris, Fertagus, Transtejo Soflusa, Metro Sul do Tejo
+        "mdb-2057",
         "tld-716",
         "mdb-2929",
         "tld-715",
@@ -240,10 +244,12 @@ defmodule Transitmaps.Packages do
       label: "Italian cities",
       place: "Milan, Rome, Turin, Naples and Venice",
       keywords:
-        "italia italy milano milan roma rome torino turin napoli naples venezia venice bologna",
+        "italia italy milano milan lombardia lombardy trenord roma rome torino turin napoli naples venezia venice bologna",
       bounds: [[6.6, 40.6], [16.0, 46.6]],
       catalog_ids: [
-        # ATM Milan, Roma Mobilità, GTT Turin, ANM Naples, ACTV Venice ferries
+        # Trenord (Lombardy's trains, traced along OpenStreetMap), ATM Milan,
+        # Roma Mobilità, GTT Turin, ANM Naples, ACTV Venice ferries
+        "mdb-855",
         "mdb-2666",
         "mdb-1294",
         "mdb-2687",
@@ -323,18 +329,19 @@ defmodule Transitmaps.Packages do
       id: "central-europe",
       region: "Europe",
       label: "Central Europe",
-      place: "Prague, Vienna, Budapest, Warsaw and Kraków",
+      place: "Prague, Vienna, Budapest, Warsaw, Kraków and Poland's trains",
       keywords:
-        "praha prague wien vienna budapest warszawa warsaw kraków krakow czechia austria hungary poland",
+        "praha prague wien vienna budapest warszawa warsaw kraków krakow czechia austria hungary poland polska pkp intercity",
       bounds: [[12.0, 46.9], [22.0, 53.0]],
       catalog_ids: [
         # PID Prague, Wiener Linien, BKK Budapest
         "mdb-767",
         "mdb-648",
         "mdb-990",
-        # ZTM Warsaw, Koleje Mazowieckie, WKD, Kraków trams
+        # ZTM Warsaw, every Polish train operator (Koleje Mazowieckie
+        # included), WKD, Kraków trams
         "mdb-2092",
-        "mdb-1011",
+        "mdb-3191",
         "mdb-2091",
         "mdb-1270"
       ]

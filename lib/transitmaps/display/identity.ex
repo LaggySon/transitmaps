@@ -32,6 +32,9 @@ defmodule Transitmaps.Display.Identity do
 
   @split_categories ~w(rail metro tram)
 
+  # Words that end a line's own name ("Green Line", "Linie 3").
+  @line_words ~w(line linie ligne línea linea lijn linja)
+
   # A regional operator that colours all its trains alike (VBB's DB Regio:
   # RE1, RB23, …) would otherwise be one line named after the operator. When
   # nothing its routes share names them, each line name is drawn on its own,
@@ -40,7 +43,8 @@ defmodule Transitmaps.Display.Identity do
   defp by_line_name(group, category, agency) do
     if category in @split_categories and brand_color(agency, category) == nil and
          line_name(category, agency, group) == agency do
-      group |> Enum.group_by(&split_key/1) |> Map.values()
+      key = if named_lines?(group), do: & &1.long_name, else: &split_key/1
+      group |> Enum.group_by(key) |> Map.values()
     else
       [group]
     end
@@ -242,6 +246,21 @@ defmodule Transitmaps.Display.Identity do
   # The name a route is drawn under when an operator's routes are drawn one
   # line per name: its short name, or its long name when the short one is a
   # code.
+  # Commuter rail filed without short names, under long names that are its
+  # lines (the MBTA's "Fairmount Line", the LIRR's "Port Jefferson
+  # Branch"): each is drawn on its own. Long names that describe a route
+  # instead ("Romford - Upminster") don't count.
+  defp named_lines?(group) do
+    Enum.all?(group, fn route ->
+      is_nil(route.short_name) and is_binary(route.long_name) and
+        route.long_name
+        |> String.split()
+        |> List.last()
+        |> String.downcase()
+        |> then(&(&1 in @line_words or &1 == "branch"))
+    end)
+  end
+
   defp split_key(route) do
     if code_name?(route), do: route.long_name, else: route.short_name
   end
@@ -270,8 +289,6 @@ defmodule Transitmaps.Display.Identity do
   defp short_long_name(_longs), do: nil
 
   # Branches of one line: the MBTA's "Green Line B" to "Green Line E".
-  @line_words ~w(line linie ligne línea linea lijn linja)
-
   defp line_prefix([_, _ | _] = longs) do
     shared_words =
       longs

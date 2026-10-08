@@ -3,11 +3,10 @@ defmodule Transitmaps.Repo.Migrations.ImportSpainAndPolandTrains do
 
   # Renfe's high-speed and long-distance trains, Portugal's (CP) and
   # Lombardy's (Trenord), all traced along OpenStreetMap, and Poland's
-  # every-operator train feed join their packs, and Norway's and Spain's
-  # Cercanías trains, traced again now that the rail map has Norway and
-  # Renfe's padded ids are read, are imported again. Norway's
-  # trains, traced on a rail map that lacked Norway, are imported again.
-  # Only a database that already serves a map is queued.
+  # every-operator train feed join their packs. Norway's and Spain's
+  # Cercanías trains are imported again from copies traced on a rail map
+  # that now has Norway, and with Renfe's space-padded ids read. Only a
+  # database that already serves a map is queued.
   @queue [
     {"mdb-2620", "Renfe · High-speed, long and medium-distance trains"},
     {"mdb-3191", "Poland · Every train operator"},

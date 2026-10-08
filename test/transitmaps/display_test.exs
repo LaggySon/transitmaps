@@ -162,6 +162,16 @@ defmodule Transitmaps.DisplayTest do
                [{"A", "#0098D4"}, {"B", "#4BAF4F"}, {"DSB", "#B41730"}]
     end
 
+    test "trains filed under number codes take their long names" do
+      routes = [
+        route("tgv", "SNCF VOYAGEURS", @track, short_name: "601A", long_name: "Paris - Lyon TGV"),
+        route("ter", "SNCF VOYAGEURS", @track, short_name: "K5", long_name: "Toulouse - Pau"),
+        route("x", "SNCF VOYAGEURS", @track, short_name: "INCONNU", long_name: "Nancy - Metz")
+      ]
+
+      assert name_of(routes) |> Enum.sort() == ["K5", "Nancy - Metz", "Paris - Lyon TGV"]
+    end
+
     test "unnamed routes fall back to the agency" do
       assert name_of([route("x", "Acme Rail", @track, color: "#123456")]) == ["Acme Rail"]
     end

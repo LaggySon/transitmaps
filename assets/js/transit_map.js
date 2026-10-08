@@ -186,6 +186,7 @@ const stopOpacity = [
 ]
 
 const layerIds = (cat) => ({
+  casing: `${cat}-line-casing`,
   line: `${cat}-line`,
   lineLabels: `${cat}-line-labels`,
   stops: `${cat}-stops`,
@@ -202,7 +203,7 @@ const UNFOCUSED_OPACITY = 0.16
 // Lines first (a focused line above the rest), then their names, then stops
 // and station names on top.
 const desiredLayerOrder = () =>
-  MODE_ORDER.map((cat) => layerIds(cat).line).concat(
+  MODE_ORDER.flatMap((cat) => [layerIds(cat).casing, layerIds(cat).line]).concat(
     [FOCUS_CASING_ID, FOCUS_LINE_ID],
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
@@ -801,6 +802,7 @@ const TransitMap = {
     this.loaded.forEach((cat) => {
       const ids = layerIds(cat)
       if (this.map.getLayer(ids.line)) this.map.setPaintProperty(ids.line, "line-opacity", opacity)
+      if (this.map.getLayer(ids.casing)) this.map.setPaintProperty(ids.casing, "line-opacity", opacity)
       if (this.map.getLayer(ids.lineLabels)) {
         // The focused line keeps its name; the rest fade with their lines.
         this.map.setPaintProperty(
@@ -853,6 +855,7 @@ const TransitMap = {
     const ids = layerIds(cat)
     const visible = this.enabled.has(cat)
 
+    this.setVisibility(ids.casing, visible ? "visible" : "none")
     this.setVisibility(ids.line, visible ? "visible" : "none")
     this.setVisibility(ids.lineLabels, visible && this.details.has("labels") ? "visible" : "none")
     this.setVisibility(ids.stops, visible && this.details.has("stops") ? "visible" : "none")
@@ -869,6 +872,20 @@ const TransitMap = {
 
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
+
+    // Bright lines (yellows) sit on a thin dark outline, as Apple draws them,
+    // so they read against the pale basemap.
+    this.addLayerInOrder({
+      id: ids.casing,
+      type: "line",
+      source: `${cat}-routes`,
+      filter: ["==", ["get", "light"], true],
+      layout: {"line-join": "round", "line-cap": "round"},
+      paint: {
+        "line-color": "rgba(60, 60, 67, 0.45)",
+        "line-width": LINE_WIDTH + 1.5,
+      },
+    })
 
     // Every line on its own centreline, one flat colour, one flat width.
     // Lines sharing track draw on top of one another; nothing separates them.

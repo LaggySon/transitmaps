@@ -195,9 +195,34 @@ defmodule Transitmaps.Display.Identity do
   defp line_color(_route), do: nil
 
   defp color(route) do
+    feed_color = if route.color && not near_white?(route.color), do: route.color
+
     brand_color(route.agency_name, route.category) ||
-      route.color || line_color(route) || RouteTypes.default_color(route.category)
+      feed_color || line_color(route) || RouteTypes.default_color(route.category)
   end
+
+  # Some feeds colour lines white or nearly so (Hamburg's AKN, Madrid's R,
+  # Naples' trams, Caltrain's locals), which vanishes on the light basemap;
+  # those lines take their mode's colour instead.
+  defp near_white?(color), do: luminance(color) > 0.8
+
+  @doc """
+  Relative luminance (0 black to 1 white) of a `#RRGGBB` colour, or 0 for
+  anything else. Lines brighter than about 0.5 (yellows) need an outline
+  to read on the basemap.
+  """
+  def luminance("#" <> <<r::binary-size(2), g::binary-size(2), b::binary-size(2)>>) do
+    [r, g, b]
+    |> Enum.map(&(String.to_integer(&1, 16) / 255))
+    |> Enum.map(fn v ->
+      if v <= 0.03928, do: v / 12.92, else: :math.pow((v + 0.055) / 1.055, 2.4)
+    end)
+    |> then(fn [r, g, b] -> 0.2126 * r + 0.7152 * g + 0.0722 * b end)
+  rescue
+    ArgumentError -> 0.0
+  end
+
+  def luminance(_color), do: 0.0
 
   # A brand-coloured group is an operator's network and shows the operator
   # name ("CrossCountry", not its route's headcode). Everything else is

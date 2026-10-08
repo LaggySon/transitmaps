@@ -226,7 +226,9 @@ defmodule Transitmaps.Gtfs do
         agency: line.agency,
         category: line.category,
         color: line.color,
-        text_color: line.text_color
+        text_color: line.text_color,
+        # Bright lines (yellows) get a dark outline on the map.
+        light: Identity.luminance(line.color) > 0.5
       }
     }
   end

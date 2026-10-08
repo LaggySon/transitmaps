@@ -9,8 +9,9 @@ defmodule Transitmaps.Gtfs.Feed do
     field :label, :string
     # Mobility Database id, for agencies downloaded from the catalog.
     field :catalog_id, :string
-    # The service area — its stops' 1st–99th percentile box — which decides
-    # whether the map loads the feed for what is on screen.
+    # The service area — its stops' 1st–99th percentile box, widened to
+    # every line it draws — which decides whether the map loads the feed
+    # for what is on screen.
     field :min_lon, :float
     field :min_lat, :float
     field :max_lon, :float

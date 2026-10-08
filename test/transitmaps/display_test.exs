@@ -178,10 +178,12 @@ defmodule Transitmaps.DisplayTest do
       routes = [
         route("cr-f", "MBTA", @track, long_name: "Fairmount Line", color: "#80276C"),
         route("cr-w", "MBTA", @track, long_name: "Framingham/Worcester Line", color: "#80276C"),
-        route("cr-w2", "MBTA", @track, long_name: "Framingham/Worcester Line", color: "#80276C")
+        route("cr-w2", "MBTA", @track, long_name: "Framingham/Worcester Line", color: "#80276C"),
+        route("cr-fx", "MBTA", @track, long_name: "Foxboro Event Service", color: "#80276C")
       ]
 
-      assert name_of(routes) == ["Fairmount Line", "Framingham/Worcester Line"]
+      assert name_of(routes) |> Enum.sort() ==
+               ["Fairmount Line", "Foxboro Event Service", "Framingham/Worcester Line"]
     end
 
     test "unnamed routes fall back to the agency" do

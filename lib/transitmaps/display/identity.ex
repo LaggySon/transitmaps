@@ -43,8 +43,7 @@ defmodule Transitmaps.Display.Identity do
   defp by_line_name(group, category, agency) do
     if category in @split_categories and brand_color(agency, category) == nil and
          line_name(category, agency, group) == agency do
-      key = if named_lines?(group), do: & &1.long_name, else: &split_key/1
-      group |> Enum.group_by(key) |> Map.values()
+      group |> Enum.group_by(&split_key/1) |> Map.values()
     else
       [group]
     end
@@ -249,20 +248,18 @@ defmodule Transitmaps.Display.Identity do
   # Commuter rail filed without short names, under long names that are its
   # lines (the MBTA's "Fairmount Line", the LIRR's "Port Jefferson
   # Branch"): each is drawn on its own. Long names that describe a route
-  # instead ("Romford - Upminster") don't count.
-  defp named_lines?(group) do
-    Enum.all?(group, fn route ->
-      is_nil(route.short_name) and is_binary(route.long_name) and
-        route.long_name
-        |> String.split()
-        |> List.last()
-        |> String.downcase()
-        |> then(&(&1 in @line_words or &1 == "branch"))
-    end)
+  # instead ("Romford - Upminster", "Foxboro Event Service") stay together.
+  defp named_line?(%{short_name: nil, long_name: long}) when is_binary(long) do
+    case String.split(long) do
+      [] -> false
+      words -> String.downcase(List.last(words)) in @line_words or List.last(words) == "Branch"
+    end
   end
 
+  defp named_line?(_route), do: false
+
   defp split_key(route) do
-    if code_name?(route), do: route.long_name, else: route.short_name
+    if code_name?(route) or named_line?(route), do: route.long_name, else: route.short_name
   end
 
   defp shared_value([value]), do: value

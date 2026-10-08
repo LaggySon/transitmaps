@@ -174,6 +174,16 @@ defmodule Transitmaps.DisplayTest do
                ["K5", "Nancy - Metz", "Paris - Lyon TGV", "SNCF VOYAGEURS"]
     end
 
+    test "commuter rail named only by its lines is drawn line by line" do
+      routes = [
+        route("cr-f", "MBTA", @track, long_name: "Fairmount Line", color: "#80276C"),
+        route("cr-w", "MBTA", @track, long_name: "Framingham/Worcester Line", color: "#80276C"),
+        route("cr-w2", "MBTA", @track, long_name: "Framingham/Worcester Line", color: "#80276C")
+      ]
+
+      assert name_of(routes) == ["Fairmount Line", "Framingham/Worcester Line"]
+    end
+
     test "unnamed routes fall back to the agency" do
       assert name_of([route("x", "Acme Rail", @track, color: "#123456")]) == ["Acme Rail"]
     end

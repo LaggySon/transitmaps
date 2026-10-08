@@ -210,7 +210,7 @@ defmodule Transitmaps.Packages do
       label: "Spain & Portugal",
       place: "Madrid, Barcelona, Lisbon and more",
       keywords:
-        "españa spain portugal madrid barcelona catalunya lisbon lisboa valencia bilbao renfe cercanías",
+        "españa spain portugal madrid barcelona catalunya lisbon lisboa porto valencia bilbao renfe cercanías ave cp comboios",
       bounds: [[-9.6, 36.0], [3.4, 43.8]],
       catalog_ids: [
         # Metro de Madrid, Madrid Metro Ligero, Madrid city buses
@@ -244,7 +244,7 @@ defmodule Transitmaps.Packages do
       label: "Italian cities",
       place: "Milan, Rome, Turin, Naples and Venice",
       keywords:
-        "italia italy milano milan roma rome torino turin napoli naples venezia venice bologna",
+        "italia italy milano milan lombardia lombardy trenord roma rome torino turin napoli naples venezia venice bologna",
       bounds: [[6.6, 40.6], [16.0, 46.6]],
       catalog_ids: [
         # Trenord (Lombardy's trains, traced along OpenStreetMap), ATM Milan,

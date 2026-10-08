@@ -112,6 +112,9 @@ jobs:
           - {id: mdb-1078, mot: "rail", unshape: true}
           # Renfe's high-speed, long- and medium-distance trains: no shapes
           - {id: mdb-2620, mot: "rail"}
+          # Portugal's trains (CP) and Lombardy's (Trenord): no shapes
+          - {id: mdb-2057, mot: "rail"}
+          - {id: mdb-855, mot: "rail"}
           # Spain's Cercanías: one shape per line, which leaves out branches
           - {id: mdb-2653, mot: "rail", unshape: true}
           # Finland's passenger trains (Fintraffic), which MobilityData doesn't

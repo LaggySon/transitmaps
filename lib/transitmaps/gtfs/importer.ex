@@ -807,7 +807,7 @@ defmodule Transitmaps.Gtfs.Importer do
           attrs =
             opts
             |> Keyword.get(:feed, %{})
-            |> Map.merge(service_area(station_rows))
+            |> Map.merge(service_area(station_rows, route_rows))
 
           feed = upsert_feed!(name, source, now, attrs)
 
@@ -846,12 +846,56 @@ defmodule Transitmaps.Gtfs.Importer do
     from(r in schema, where: r.feed_id == ^feed_id)
   end
 
-  # The box the map tests against what is on screen. Percentiles rather
-  # than extremes, so one stop geocoded to 0,0 can't stretch the feed over
-  # half the planet.
-  defp service_area([]), do: %{}
+  # The box the map tests against what is on screen: the feed is loaded
+  # whenever the view overlaps it. It covers the stops' 1st–99th percentile
+  # box (percentiles, so one stop geocoded to 0,0 can't stretch the feed
+  # over half the planet) and every line drawn, so a line running far from
+  # the feed's centre (NS International's trains to Berlin) still loads
+  # when the view is on its far end.
+  defp service_area(stations, route_rows) do
+    [stations_box(stations), lines_box(route_rows)]
+    |> Enum.reject(&(&1 == %{}))
+    |> Enum.reduce(%{}, fn
+      box, acc when acc == %{} ->
+        box
 
-  defp service_area(stations) do
+      box, acc ->
+        %{
+          min_lon: min(acc.min_lon, box.min_lon),
+          min_lat: min(acc.min_lat, box.min_lat),
+          max_lon: max(acc.max_lon, box.max_lon),
+          max_lat: max(acc.max_lat, box.max_lat)
+        }
+    end)
+  end
+
+  # Points at 0,0 are junk, not Null Island.
+  defp lines_box(route_rows) do
+    route_rows
+    |> Enum.flat_map(fn
+      %{geometry: %{coordinates: lines}} -> lines
+      _route -> []
+    end)
+    |> Enum.reduce(%{}, fn packed, box ->
+      packed
+      |> unpack_line()
+      |> Enum.reject(fn [lon, lat] -> abs(lon) < 1 and abs(lat) < 1 end)
+      |> Enum.reduce(box, fn [lon, lat], box ->
+        if box == %{},
+          do: %{min_lon: lon, min_lat: lat, max_lon: lon, max_lat: lat},
+          else: %{
+            min_lon: min(box.min_lon, lon),
+            min_lat: min(box.min_lat, lat),
+            max_lon: max(box.max_lon, lon),
+            max_lat: max(box.max_lat, lat)
+          }
+      end)
+    end)
+  end
+
+  defp stations_box([]), do: %{}
+
+  defp stations_box(stations) do
     lons = stations |> Enum.map(& &1.lon) |> Enum.sort() |> List.to_tuple()
     lats = stations |> Enum.map(& &1.lat) |> Enum.sort() |> List.to_tuple()
     low = div(tuple_size(lons), 100)

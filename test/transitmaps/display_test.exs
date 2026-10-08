@@ -186,6 +186,17 @@ defmodule Transitmaps.DisplayTest do
                ["Fairmount Line", "Foxboro Event Service", "Framingham/Worcester Line"]
     end
 
+    test "a white line takes its mode's colour, so it shows on the map" do
+      [line] = Identity.lines([route("a1", "AKN", @track, short_name: "A1", color: "#FFFFFF")])
+      assert line.color == "#1D4ED8"
+    end
+
+    test "yellows count as light, dark lines don't" do
+      assert Identity.luminance("#FFD800") > 0.5
+      assert Identity.luminance("#0062CF") < 0.5
+      assert Identity.luminance(nil) == 0.0
+    end
+
     test "unnamed routes fall back to the agency" do
       assert name_of([route("x", "Acme Rail", @track, color: "#123456")]) == ["Acme Rail"]
     end

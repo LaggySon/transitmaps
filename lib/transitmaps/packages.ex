@@ -228,7 +228,9 @@ defmodule Transitmaps.Packages do
         "mdb-2653",
         "mdb-2830",
         "mdb-3052",
-        # Metro de Lisboa, Carris, Fertagus, Transtejo Soflusa, Metro Sul do Tejo
+        # CP (Portugal's trains, traced along OpenStreetMap), Metro de
+        # Lisboa, Carris, Fertagus, Transtejo Soflusa, Metro Sul do Tejo
+        "mdb-2057",
         "tld-716",
         "mdb-2929",
         "tld-715",
@@ -245,7 +247,9 @@ defmodule Transitmaps.Packages do
         "italia italy milano milan roma rome torino turin napoli naples venezia venice bologna",
       bounds: [[6.6, 40.6], [16.0, 46.6]],
       catalog_ids: [
-        # ATM Milan, Roma Mobilità, GTT Turin, ANM Naples, ACTV Venice ferries
+        # Trenord (Lombardy's trains, traced along OpenStreetMap), ATM Milan,
+        # Roma Mobilità, GTT Turin, ANM Naples, ACTV Venice ferries
+        "mdb-855",
         "mdb-2666",
         "mdb-1294",
         "mdb-2687",

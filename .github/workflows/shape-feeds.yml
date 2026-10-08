@@ -25,22 +25,34 @@ concurrency:
   group: shape-feeds
   cancel-in-progress: false
 
+# The countries whose railways the trains are traced along.
+env:
+  REGIONS: >-
+    germany france switzerland austria belgium netherlands luxembourg liechtenstein
+    poland czech-republic slovakia hungary slovenia croatia denmark italy spain
+    portugal great-britain sweden norway finland
+
 jobs:
   rail-map:
     name: Europe rail map
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Week
+      # The map is rebuilt weekly, and whenever the countries change: a map
+      # cached before Norway was added once traced Norway's trains in
+      # straight lines.
+      - name: Cache key
         id: week
-        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "regions=$(echo "$REGIONS" | sha1sum | cut -c1-10)" >> "$GITHUB_OUTPUT"
 
       - name: Cached rail map
         id: cache
         uses: actions/cache@v4
         with:
           path: europe-rail.osm.pbf
-          key: europe-rail-${{ steps.week.outputs.week }}
+          key: europe-rail-${{ steps.week.outputs.week }}-${{ steps.week.outputs.regions }}
 
       - name: Install osmium
         if: steps.cache.outputs.cache-hit != 'true'
@@ -52,10 +64,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          regions="germany france switzerland austria belgium netherlands luxembourg liechtenstein
-                   poland czech-republic slovakia hungary slovenia croatia denmark italy spain
-                   portugal great-britain sweden norway finland"
-          for region in $regions; do
+          for region in $REGIONS; do
             curl -sSfL --retry 3 -o region.osm.pbf "https://download.geofabrik.de/europe/${region}-latest.osm.pbf"
             osmium tags-filter region.osm.pbf \
               nwr/railway nwr/public_transport \
@@ -101,6 +110,8 @@ jobs:
           - {id: mdb-2939, mot: "rail", unshape: true}
           # Norway: its cross-border trains hop straight between stations
           - {id: mdb-1078, mot: "rail", unshape: true}
+          # Renfe's high-speed, long- and medium-distance trains: no shapes
+          - {id: mdb-2620, mot: "rail"}
           # Spain's Cercanías: one shape per line, which leaves out branches
           - {id: mdb-2653, mot: "rail", unshape: true}
           # Finland's passenger trains (Fintraffic), which MobilityData doesn't

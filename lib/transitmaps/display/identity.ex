@@ -40,7 +40,7 @@ defmodule Transitmaps.Display.Identity do
   defp by_line_name(group, category, agency) do
     if category in @split_categories and brand_color(agency, category) == nil and
          line_name(category, agency, group) == agency do
-      group |> Enum.group_by(& &1.short_name) |> Map.values()
+      group |> Enum.group_by(&split_key/1) |> Map.values()
     else
       [group]
     end
@@ -204,12 +204,41 @@ defmodule Transitmaps.Display.Identity do
     if brand_color(agency, category) do
       agency
     else
-      shorts = group |> Enum.map(& &1.short_name) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+      # Short names only name a group when every route has one.
+      all_shorts = Enum.map(group, &display_short_name/1)
+      shorts = if nil in all_shorts, do: [], else: Enum.uniq(all_shorts)
       longs = group |> Enum.map(& &1.long_name) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
       shared_value(shorts) || direction_stem(shorts) || short_long_name(longs) ||
         line_prefix(longs) || joined_shorts(category, shorts) || agency
     end
+  end
+
+  # A short name riders never see: SNCF files its TGV and Intercités routes
+  # under codes like "601A" (and some under "INCONNU", unknown), where the
+  # long name reads "Paris - Lyon TGV". Its TER line numbers ("K5", "P53")
+  # stay, and so do other operators' numbers (Lokaltog's "110R" is a line).
+  @placeholder_names ~w(inconnu unknown)
+
+  defp display_short_name(%{short_name: short} = route) when is_binary(short) do
+    if code_name?(route), do: nil, else: short
+  end
+
+  defp display_short_name(_route), do: nil
+
+  defp code_name?(%{short_name: short, agency_name: agency}) when is_binary(short) do
+    String.downcase(short) in @placeholder_names or
+      (String.contains?(String.downcase(agency || ""), "sncf") and
+         Regex.match?(~r/^\d{3,}[A-Z]?$/, short))
+  end
+
+  defp code_name?(_route), do: false
+
+  # The name a route is drawn under when an operator's routes are drawn one
+  # line per name: its short name, or its long name when the short one is a
+  # code.
+  defp split_key(route) do
+    if code_name?(route), do: route.long_name, else: route.short_name
   end
 
   defp shared_value([value]), do: value

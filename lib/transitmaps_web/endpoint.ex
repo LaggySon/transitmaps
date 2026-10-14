@@ -25,6 +25,9 @@ defmodule TransitmapsWeb.Endpoint do
     from: :transitmaps,
     gzip: not code_reloading?,
     only: TransitmapsWeb.static_paths(),
+    # The root layout links the digested icons (favicon-<hash>.svg), whose
+    # names `only` can't list ahead of time; this lets them through too.
+    only_matching: ~w(favicon apple-touch-icon),
     raise_on_missing_only: code_reloading?
 
   # Code reloading can be explicitly enabled under the

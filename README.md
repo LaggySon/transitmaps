@@ -1,8 +1,13 @@
 # Transitmaps
 
-An Apple Maps-style transit view built with Phoenix LiveView and MapLibre GL:
-a muted basemap with bold, color-coded transit lines and station markers,
-with per-mode toggles (metro, tram, rail, intercity, ferry, bus, coach).
+A transit map built with Phoenix LiveView and MapLibre GL: a grayscale
+basemap with bold, color-coded transit lines and station markers, with
+per-mode toggles (metro, tram, rail, intercity, ferry, bus, coach). It
+follows the system's light or dark mode.
+
+The interface follows the Laggish design guide in [DESIGN.md](DESIGN.md):
+`assets/css/tokens.css` and `assets/css/components.css` are unedited copies
+from the guide, and the app's own rules live in `assets/css/ui-local.css`.
 
 [![Railway deployment](https://github.com/LaggySon/transitmaps/actions/workflows/railway-deployment.yml/badge.svg?branch=main)](https://github.com/LaggySon/transitmaps/actions/workflows/railway-deployment.yml)
 [Live production map](https://transitmaps.laggi.sh)

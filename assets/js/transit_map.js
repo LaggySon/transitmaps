@@ -3,11 +3,13 @@ import {
   PLACES_LAYER_ID,
   groupForClass,
   placeFilter,
+  placeLabelPaint,
   placeLayer,
   placePinId,
   placeSubtitle,
   renderPlacePin,
 } from "./map_places"
+import {DARK_LINE, readPalette, watchColorScheme, withAlpha} from "./map_palette"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
 const tileProxyUrl = (path) => `${location.origin}/tiles${path}`
@@ -15,6 +17,9 @@ const BASEMAP_STYLE = tileProxyUrl("/styles/positron")
 
 const routeThroughProxy = (url) =>
   url.startsWith(TILE_UPSTREAM) ? {url: tileProxyUrl(url.slice(TILE_UPSTREAM.length))} : {url}
+
+// The query parameters MapLive reads the menu's state from.
+const URL_STATE_KEYS = ["modes", "details", "places", "hide"]
 
 // Where the map opens, unless the URL hash already names a view. The server
 // warms its cache for the agencies here (GeoJsonCache's @opening_view).
@@ -230,6 +235,7 @@ const TransitMap = {
     this.details = new Set(this.parseData("details", ["labels", "stops"]))
     this.places = new Set(this.parseData("places", []))
     this.placeCatalog = this.parseData("placeCatalog", [])
+    this.palette = readPalette()
 
     try {
       this.map = new maplibregl.Map({
@@ -257,7 +263,7 @@ const TransitMap = {
 
     this.map.on("error", (event) => console.error("MapLibre error:", event.error))
     this.map.on("style.load", () => {
-      this.applyAppleBasemap()
+      this.applyBasemap()
       // Places are added before any transit layer exists, which leaves every
       // pin below the lines and stations the map is actually about.
       this.addPlaceLayers()
@@ -293,8 +299,18 @@ const TransitMap = {
       this.hidden = new Set(hidden)
       this.render()
     })
+    // What the map shows, kept in the query string so a refresh or a shared
+    // link keeps it. Replaced rather than pushed: a toggle is not a page to go
+    // back to. Other parameters and the map's #hash stay as they are.
+    this.handleEvent("url-state", ({query}) => {
+      const params = new URLSearchParams(location.search)
+      URL_STATE_KEYS.forEach((key) => params.delete(key))
+      new URLSearchParams(query).forEach((value, key) => params.set(key, value))
+      const search = params.toString().replaceAll("%2C", ",")
+      history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}${location.hash}`)
+    })
     this.handleEvent("fly-to", ({bounds}) => {
-      this.map.fitBounds(bounds, {padding: this.mapPadding(), duration: 900, essential: true})
+      this.map.fitBounds(bounds, {padding: this.mapPadding(), duration: 900})
     })
 
     this.zoomInHandler = () => this.map.easeTo({zoom: this.map.getZoom() + 1, duration: 300})
@@ -318,6 +334,14 @@ const TransitMap = {
     this.el.addEventListener("map:zoom-out", this.zoomOutHandler)
     this.el.addEventListener("map:locate", this.locateHandler)
     this.el.addEventListener("map:set-zoom", this.setZoomHandler)
+
+    this.stopWatchingScheme = watchColorScheme(() => this.applyPalette())
+
+    this.el.querySelector("[data-map-notice-dismiss]")?.addEventListener("click", () => this.hideMapNotice())
+    this.el.querySelector("[data-map-notice-retry]")?.addEventListener("click", () => {
+      this.hideMapNotice()
+      this.syncLayers()
+    })
   },
 
   parseData(key, fallback) {
@@ -332,9 +356,10 @@ const TransitMap = {
     console.error("Map failed to initialize:", error)
     this.el.dataset.mapReady = "error"
     this.el.innerHTML =
-      `<div class="grid h-full place-items-center bg-[#f3f2ee] p-8 text-center">` +
-      `<div class="max-w-sm min-w-0"><strong class="text-sm text-[#3a3a3c]">The map could not be loaded</strong>` +
-      `<p class="mt-1 text-xs wrap-anywhere text-[#77777c]">${this.escapeHtml(error.message)}</p></div></div>`
+      `<div class="ui-page-state tm-map-error" data-status="failure" role="alert">` +
+      `<h2 class="ui-page-state-title">Map failed to load</h2>` +
+      `<p>${this.escapeHtml(error.message)}</p>` +
+      `<p>Reload the page to try again. A browser without WebGL cannot draw the map.</p></div>`
   },
 
   markMapReady() {
@@ -350,23 +375,17 @@ const TransitMap = {
     const labelEl = loading.querySelector("[data-loading-label]")
     const detailEl = loading.querySelector("[data-loading-detail]")
     const progressEl = loading.querySelector("[data-loading-progress]")
-    const barEl = loading.querySelector("[data-loading-bar]")
 
     loading.hidden = false
     if (labelEl) labelEl.textContent = label
     if (detailEl) detailEl.textContent = detail
 
-    if (progressEl && barEl) {
-      if (progress === null) {
-        progressEl.removeAttribute("aria-valuenow")
-        barEl.classList.add("map-loading__bar--indeterminate")
-        barEl.style.width = ""
-      } else {
-        const value = Math.max(0, Math.min(100, Math.round(progress)))
-        progressEl.setAttribute("aria-valuenow", String(value))
-        barEl.classList.remove("map-loading__bar--indeterminate")
-        barEl.style.width = `${value}%`
-      }
+    // The bar jumps to its value; it never animates (DESIGN.md section 8).
+    if (progressEl) {
+      const value = progress === null ? 0 : Math.max(0, Math.min(100, Math.round(progress)))
+      progressEl.style.setProperty("--value", `${value}%`)
+      if (progress === null) progressEl.removeAttribute("aria-valuenow")
+      else progressEl.setAttribute("aria-valuenow", String(value))
     }
   },
 
@@ -375,16 +394,24 @@ const TransitMap = {
     if (loading) loading.hidden = true
   },
 
+  showMapNotice(text) {
+    const notice = this.el.querySelector("[data-map-notice]")
+    if (!notice) return
+    notice.querySelector("[data-map-notice-text]").textContent = text
+    notice.hidden = false
+  },
+
+  hideMapNotice() {
+    const notice = this.el.querySelector("[data-map-notice]")
+    if (notice) notice.hidden = true
+  },
+
   startDataLoading(batch, categories) {
     this.dataLoading = categories.length > 0
     this.dataLoadProgress = {batch, categories: new Set(categories), complete: new Set()}
 
     if (this.dataLoading && !this.firstLoadShown) {
-      this.showLoading(
-        "Loading transit data",
-        `Preparing 0 of ${categories.length} layers`,
-        0
-      )
+      this.showLoading("Loading transit data…", `0 of ${categories.length} layers ready`, 0)
     }
   },
 
@@ -399,7 +426,7 @@ const TransitMap = {
     const category = key.split(":")[1]
     const label = MODE_LABEL[category] || category
     this.showLoading(
-      "Loading transit data",
+      "Loading transit data…",
       `${label} ready · ${complete} of ${total} layers`,
       (complete / total) * 100
     )
@@ -420,18 +447,16 @@ const TransitMap = {
     if (readout) readout.textContent = `z${zoom.toFixed(1)}`
   },
 
-  // Room for what sits over the map. From tablet width that's the floating
-  // menu and the controls; on a phone it's the bottom sheet, so a place flown
-  // to lands above it. An opened sheet covers most of the screen, so it
-  // claims at most 60% of the height and the map keeps the rest.
+  // Room for what sits over the map: the filter button (and its menu when
+  // it is open beside a wide map) at the top-left, the controls on the right.
   mapPadding() {
-    if (window.matchMedia("(min-width: 48rem)").matches) {
-      return {top: 84, right: 72, bottom: 40, left: 40}
+    if (window.matchMedia("(max-width: 640px)").matches) {
+      return {top: 56, right: 24, bottom: 72, left: 24}
     }
 
-    const sheet = document.getElementById("map-menu-root")
-    const covered = sheet ? Math.min(sheet.offsetHeight, window.innerHeight * 0.6) : 96
-    return {top: 28, right: 28, bottom: Math.round(covered) + 20, left: 28}
+    const menu = document.getElementById("map-menu")
+    const left = menu ? Math.round(menu.getBoundingClientRect().right) + 24 : 32
+    return {top: 56, right: 64, bottom: 32, left}
   },
 
   destroyed() {
@@ -440,44 +465,48 @@ const TransitMap = {
     this.el.removeEventListener("map:zoom-out", this.zoomOutHandler)
     this.el.removeEventListener("map:locate", this.locateHandler)
     this.el.removeEventListener("map:set-zoom", this.setZoomHandler)
+    if (this.stopWatchingScheme) this.stopWatchingScheme()
     if (this.map) this.map.remove()
   },
 
-  applyAppleBasemap() {
+  // The basemap in the page's grays (the --map-* tokens), so the transit
+  // lines carry the only hues on the map. Labels sit on a halo of the land.
+  applyBasemap() {
+    const p = this.palette
     const fills = {
-      background: "#f3f2ee",
-      park: "#dcebd4",
-      water: "#b9ddf3",
-      landcover_ice_shelf: "#edf5f7",
-      landcover_glacier: "#e8f3f5",
-      landuse_residential: "#ebeae6",
-      landcover_wood: "#d7e7d0",
-      building: "#dddcd7",
-      aeroway_area: "#e6e4df",
-      road_area_pier: "#e4e2dc",
+      background: p.land,
+      park: p.park,
+      water: p.water,
+      landcover_ice_shelf: p.land,
+      landcover_glacier: p.land,
+      landuse_residential: p.land,
+      landcover_wood: p.park,
+      building: p.building,
+      aeroway_area: p.building,
+      road_area_pier: p.building,
     }
 
     const lines = {
-      waterway: "#a8d2ec",
-      aeroway_taxiway: "#d3d1cb",
-      aeroway_runway_casing: "#d3d1cb",
-      aeroway_runway: "#f7f6f3",
-      road_pier: "#d0cec8",
-      highway_path: "#ffffff",
-      highway_minor: "#ffffff",
-      highway_major_casing: "#d5d2ca",
-      highway_major_inner: "#fffdf9",
-      highway_major_subtle: "#fff4ce",
-      highway_motorway_casing: "#d7c986",
-      highway_motorway_inner: "#ffe89a",
-      highway_motorway_subtle: "#fff0b8",
-      highway_motorway_bridge_casing: "#d7c986",
-      highway_motorway_bridge_inner: "#ffe89a",
-      tunnel_motorway_casing: "#ddd4ad",
-      tunnel_motorway_inner: "#fff1bd",
-      boundary_3: "#b9b8b3",
-      boundary_2: "#aaa9a4",
-      boundary_disputed: "#aaa9a4",
+      waterway: p.water,
+      aeroway_taxiway: p.roadCasing,
+      aeroway_runway_casing: p.roadCasing,
+      aeroway_runway: p.road,
+      road_pier: p.roadCasing,
+      highway_path: p.road,
+      highway_minor: p.road,
+      highway_major_casing: p.roadCasing,
+      highway_major_inner: p.road,
+      highway_major_subtle: p.road,
+      highway_motorway_casing: p.motorwayCasing,
+      highway_motorway_inner: p.motorway,
+      highway_motorway_subtle: p.motorway,
+      highway_motorway_bridge_casing: p.motorwayCasing,
+      highway_motorway_bridge_inner: p.motorway,
+      tunnel_motorway_casing: p.roadCasing,
+      tunnel_motorway_inner: p.road,
+      boundary_3: p.boundary,
+      boundary_2: p.boundary,
+      boundary_disputed: p.boundary,
     }
 
     this.map.getStyle().layers.forEach((layer) => {
@@ -490,13 +519,29 @@ const TransitMap = {
       } else if (layer.type === "line" && lines[key]) {
         this.setPaint(layer.id, "line-color", lines[key])
       } else if (layer.type === "symbol") {
-        this.setPaint(layer.id, "text-color", layer.id.includes("water") ? "#4f86a6" : "#656569")
-        this.setPaint(layer.id, "text-halo-color", "rgba(255,255,255,0.9)")
+        this.setPaint(layer.id, "text-color", layer.id.includes("water") ? p.waterLabel : p.label)
+        this.setPaint(layer.id, "text-halo-color", withAlpha(p.land, 0.9))
         this.setPaint(layer.id, "text-halo-width", 1.2)
       }
 
-      if (layer.id.startsWith("railway")) this.map.setLayoutProperty(layer.id, "visibility", "none")
+      // The app draws its own railways, and road shields are colour the map
+      // doesn't need.
+      if (layer.id.startsWith("railway") || key.includes("shield")) {
+        this.map.setLayoutProperty(layer.id, "visibility", "none")
+      }
     })
+  },
+
+  // The light or dark mode changed: read the tokens again and repaint
+  // everything the map drew from them.
+  applyPalette() {
+    this.palette = readPalette()
+    if (!this.map?.isStyleLoaded()) return
+
+    this.applyBasemap()
+    this.loaded.forEach((cat) => this.paintCategory(cat))
+    this.setPaint(FOCUS_CASING_ID, "line-color", this.palette.background)
+    this.paintPlaces()
   },
 
   setPaint(layerId, property, value) {
@@ -508,17 +553,29 @@ const TransitMap = {
   },
 
   addPlaceLayers() {
-    const pixelRatio = window.devicePixelRatio || 1
-
-    this.placeCatalog.forEach(({id, color}) => {
-      if (!this.map.hasImage(placePinId(id))) {
-        this.map.addImage(placePinId(id), renderPlacePin(color, id, pixelRatio), {pixelRatio})
-      }
-    })
-
-    this.map.addLayer(placeLayer())
+    this.placePins()
+    this.map.addLayer(placeLayer(this.palette))
     this.bindPlacePopup()
     this.syncPlaces()
+  },
+
+  // One pin image per group, ringed in the current background colour.
+  placePins() {
+    const pixelRatio = window.devicePixelRatio || 1
+    const ring = withAlpha(this.palette.background, 0.95)
+
+    this.placeCatalog.forEach(({id, color}) => {
+      const pin = renderPlacePin(color, id, pixelRatio, ring)
+      if (this.map.hasImage(placePinId(id))) this.map.updateImage(placePinId(id), pin)
+      else this.map.addImage(placePinId(id), pin, {pixelRatio})
+    })
+  },
+
+  paintPlaces() {
+    this.placePins()
+    Object.entries(placeLabelPaint(this.palette)).forEach(([property, value]) =>
+      this.setPaint(PLACES_LAYER_ID, property, value)
+    )
   },
 
   // Categories are switched by narrowing the shared layer's filter rather than
@@ -546,9 +603,10 @@ const TransitMap = {
 
       this.openPopup(
         event.lngLat,
-        `<div class="place-popup"><div class="place-popup__name">${this.escapeHtml(props.name)}</div>` +
-          `<div class="place-popup__meta"><span class="place-popup__dot" style="background:${this.safeColor(group?.color)}"></span>` +
-          `${this.escapeHtml(meta)}</div></div>`
+        `<div class="tm-popup"><div class="tm-popup-header">` +
+          `<div class="tm-popup-title">${this.escapeHtml(props.name)}</div>` +
+          `<div class="tm-popup-meta">${this.swatchHtml(group?.color, "dot")}<span>${this.escapeHtml(meta)}</span></div>` +
+          `</div></div>`
       )
     })
 
@@ -624,19 +682,18 @@ const TransitMap = {
       this.el.dataset.mapIdle = "false"
       this.el.dataset.transitReady = failures.length === 0 ? "true" : "error"
 
-      if (quiet) {
-        if (this.map.loaded()) this.announceIdle()
-      } else if (failures.length > 0) {
-        const total = Math.max(1, this.dataLoadProgress.categories.size)
-        this.showLoading(
-          "Some transit data could not be loaded",
-          "Reload the page to try again",
-          (this.dataLoadProgress.complete.size / total) * 100
+      // What did load stays on the map; what didn't is named in a notice
+      // over it, with a retry that asks only for the missing layers.
+      if (failures.length > 0) {
+        this.hideLoading()
+        this.showMapNotice(
+          `${failures.length} of ${loads.length} transit ${loads.length === 1 ? "layer" : "layers"} failed to load.`
         )
       } else {
-        if (missing.length > 0) this.showLoading("Transit data ready", "All visible layers loaded", 100)
-        if (this.map.loaded()) this.announceIdle()
+        this.hideMapNotice()
+        if (!quiet && missing.length > 0) this.showLoading("Transit data ready", "Every layer in view loaded", 100)
       }
+      if (this.map.loaded()) this.announceIdle()
     })
   },
 
@@ -747,7 +804,7 @@ const TransitMap = {
     )
 
     if (!bounds.isEmpty()) {
-      this.map.fitBounds(bounds, {padding: this.mapPadding(), maxZoom: 15, duration: 900, essential: true})
+      this.map.fitBounds(bounds, {padding: this.mapPadding(), maxZoom: 15, duration: 900})
     }
     return true
   },
@@ -787,7 +844,7 @@ const TransitMap = {
         type: "line",
         source: FOCUS_SOURCE_ID,
         layout: {"line-join": "round", "line-cap": "round"},
-        paint: {"line-color": "#ffffff", "line-width": LINE_WIDTH + 5},
+        paint: {"line-color": this.palette.background, "line-width": LINE_WIDTH + 5},
       })
       this.addLayerInOrder({
         id: FOCUS_LINE_ID,
@@ -873,16 +930,16 @@ const TransitMap = {
   addCategoryLayers(cat) {
     const ids = layerIds(cat)
 
-    // Bright lines (yellows) sit on a thin dark outline, as Apple draws them,
-    // so they read against the pale basemap.
+    // Lines that would fade into the basemap sit on a thin outline: bright
+    // ones (yellows) on the light map, dark ones on the dark map.
     this.addLayerInOrder({
       id: ids.casing,
       type: "line",
       source: `${cat}-routes`,
-      filter: ["==", ["get", "light"], true],
+      filter: this.casingFilter(),
       layout: {"line-join": "round", "line-cap": "round"},
       paint: {
-        "line-color": "rgba(60, 60, 67, 0.45)",
+        "line-color": this.casingColor(),
         "line-width": LINE_WIDTH + 1.5,
       },
     })
@@ -916,8 +973,8 @@ const TransitMap = {
         "text-optional": true,
       },
       paint: {
-        "text-color": ["get", "color"],
-        "text-halo-color": "rgba(255,255,255,0.96)",
+        "text-color": this.lineLabelColor(),
+        "text-halo-color": withAlpha(this.palette.background, 0.96),
         "text-halo-width": 1.8,
         "text-halo-blur": 0.3,
       },
@@ -931,8 +988,8 @@ const TransitMap = {
       // 11); further out they only crowd the lines. Other stops wait for 13.
       minzoom: 10.5,
       paint: {
-        "circle-color": "#ffffff",
-        "circle-stroke-color": "#4a4a4f",
+        "circle-color": this.palette.background,
+        "circle-stroke-color": this.palette.muted,
         // Scaled by how many services meet at the stop, so a six-line
         // interchange reads as a landmark and a single-line halt stays a dot.
         // Below zoom 13 stations sit only a few pixels apart, so the markers
@@ -990,14 +1047,43 @@ const TransitMap = {
         "symbol-sort-key": ["-", 0, ["coalesce", ["get", "interchange"], 1]],
       },
       paint: {
-        "text-color": "#414145",
-        "text-halo-color": "rgba(255,255,255,0.96)",
+        "text-color": this.palette.muted,
+        "text-halo-color": withAlpha(this.palette.background, 0.96),
         "text-halo-width": 1.7,
         "text-halo-blur": 0.35,
       },
     })
 
     this.bindPopups(cat)
+  },
+
+  casingFilter() {
+    return this.palette.dark ? DARK_LINE : ["==", ["get", "light"], true]
+  },
+
+  casingColor() {
+    return withAlpha(this.palette.foreground, 0.45)
+  },
+
+  // A line's name is written in its colour, unless that colour would vanish
+  // on the dark map; then it is written in the foreground colour.
+  lineLabelColor() {
+    return this.palette.dark ? ["case", DARK_LINE, this.palette.foreground, ["get", "color"]] : ["get", "color"]
+  },
+
+  // Repaints a mode's layers from the current palette.
+  paintCategory(cat) {
+    const ids = layerIds(cat)
+    const halo = withAlpha(this.palette.background, 0.96)
+
+    if (this.map.getLayer(ids.casing)) this.map.setFilter(ids.casing, this.casingFilter())
+    this.setPaint(ids.casing, "line-color", this.casingColor())
+    this.setPaint(ids.lineLabels, "text-color", this.lineLabelColor())
+    this.setPaint(ids.lineLabels, "text-halo-color", halo)
+    this.setPaint(ids.stops, "circle-color", this.palette.background)
+    this.setPaint(ids.stops, "circle-stroke-color", this.palette.muted)
+    this.setPaint(ids.labels, "text-color", this.palette.muted)
+    this.setPaint(ids.labels, "text-halo-color", halo)
   },
 
   addLayerInOrder(layer) {
@@ -1020,13 +1106,16 @@ const TransitMap = {
 
       const props = event.features[0].properties
       const title = props.long_name || props.name || "Transit route"
-      const agency = props.agency && props.agency !== title
-        ? `<div class="map-route-popup__agency">${this.escapeHtml(props.agency)}</div>`
-        : ""
+      const meta = [MODE_LABEL[cat] || titleCase(cat), props.agency !== title && props.agency]
+        .filter(Boolean)
+        .map((part) => this.escapeHtml(part))
+        .join(`<span class="ui-sep">·</span>`)
       this.openPopup(
         event.lngLat,
-        `<div class="map-route-popup"><div class="map-route-popup__name" style="color:${this.safeColor(props.color)}">` +
-          `${this.escapeHtml(title)}</div>${agency}</div>`,
+        `<div class="tm-popup"><div class="tm-popup-header">` +
+          `<div class="tm-popup-title">${this.escapeHtml(title)}</div>` +
+          `<div class="tm-popup-meta">${this.swatchHtml(props.color)}<span>${meta}</span></div>` +
+          `</div></div>`,
         // Closing the line's popup (or clicking away, which closes it) lets
         // the line go.
         () => this.clearFocus()
@@ -1065,48 +1154,59 @@ const TransitMap = {
     const fallback = this.stationFallbackCategory(props)
     const groups = this.stationModeGroups(lines, fallback)
     const lineTotal = groups.reduce((sum, group) => sum + group.lines.length, 0)
+    const sep = `<span class="ui-sep">·</span>`
 
     const meta = groups.length
-      ? `<div class="station-popup__meta">${lineTotal} ${lineTotal === 1 ? "line" : "lines"}` +
-        ` · ${groups.length} ${groups.length === 1 ? "mode" : "modes"}</div>`
+      ? `<div class="tm-popup-meta"><span>${lineTotal} ${lineTotal === 1 ? "line" : "lines"}` +
+        `${sep}${groups.length} ${groups.length === 1 ? "mode" : "modes"}</span></div>`
       : ""
 
     const body = groups.length
-      ? `<div class="station-popup__modes">${groups
+      ? `<div class="tm-popup-body">${groups
           .map((group) => {
             const operator = this.sharedOperator(group.lines)
             const operatorHtml = operator
-              ? `<span class="station-popup__operator">${this.escapeHtml(operator)}</span>`
+              ? `<span class="tm-popup-operator ui-truncate" title="${this.escapeHtml(operator)}">` +
+                `${this.escapeHtml(operator)}</span>`
               : ""
             return (
-              `<section class="station-popup__mode">` +
-              `<header class="station-popup__mode-head">` +
-              `<span class="station-popup__dot" style="background:${this.safeColor(group.color)}"></span>` +
-              `<span class="station-popup__mode-name">${this.escapeHtml(group.label)}</span>` +
+              `<section class="tm-popup-mode">` +
+              `<header class="tm-popup-mode-head">` +
+              this.swatchHtml(group.color) +
+              `<span class="ui-label">${this.escapeHtml(group.label)}</span>` +
               operatorHtml +
-              `<span class="station-popup__count">${group.lines.length}</span>` +
+              `<span class="tm-popup-count ui-mono">${group.lines.length}</span>` +
               `</header>` +
-              `<div class="station-popup__badges">${group.lines
+              `<div class="tm-popup-lines">${group.lines
                 .map(
                   (line) =>
-                    `<button type="button" class="station-popup__badge" style="--line-color:${this.safeColor(line.color)}"` +
-                    ` data-focus-route="${this.escapeHtml(JSON.stringify(line.route))}" title="Show this line">` +
-                    `${this.escapeHtml(line.label)}</button>`
+                    `<button type="button" class="ui-chip" aria-pressed="false"` +
+                    ` data-focus-route="${this.escapeHtml(JSON.stringify(line.route))}"` +
+                    ` title="Show the ${this.escapeHtml(line.label)} line on the map">` +
+                    `${this.swatchHtml(line.color)}<span class="ui-truncate">${this.escapeHtml(line.label)}</span></button>`
                 )
                 .join("")}</div>` +
               `</section>`
             )
           })
           .join("")}</div>`
-      : `<div class="station-popup__empty">No service information available</div>`
+      : `<p class="tm-popup-empty">No lines listed for this stop.</p>`
 
     return (
-      `<div class="station-popup">` +
-      `<div class="station-popup__header">` +
-      `<div class="station-popup__title">${this.escapeHtml(props.name || "Stop")}</div>` +
+      `<div class="tm-popup">` +
+      `<div class="tm-popup-header">` +
+      `<div class="tm-popup-title">${this.escapeHtml(props.name || "Stop")}</div>` +
       meta +
       `</div>${body}</div>`
     )
+  },
+
+  // A colour from the data, shown as a swatch beside its name (DESIGN.md
+  // section 3.6). It never colours text or chrome.
+  // A short stroke for a line or a mode, a dot for a place: the marks the
+  // menu's legend uses.
+  swatchHtml(color, mark = "line") {
+    return `<span class="tm-swatch-${mark}" style="--swatch: ${this.safeColor(color)}" aria-hidden="true"></span>`
   },
 
   locateUser() {
@@ -1125,7 +1225,7 @@ const TransitMap = {
           this.userMarker.setLngLat(lngLat)
         }
 
-        this.map.flyTo({center: lngLat, zoom: Math.max(this.map.getZoom(), 13), duration: 850, essential: true})
+        this.map.flyTo({center: lngLat, zoom: Math.max(this.map.getZoom(), 13), duration: 850})
       },
       (error) => console.warn("Location unavailable:", error.message),
       {enableHighAccuracy: true, timeout: 8000, maximumAge: 60000}

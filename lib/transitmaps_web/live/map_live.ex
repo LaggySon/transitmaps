@@ -7,19 +7,19 @@ defmodule TransitmapsWeb.MapLive do
   alias Transitmaps.Packages
 
   @mode_groups [
-    {"rail", "Rail", "hero-building-library",
+    {"rail", "Rail",
      [
        {"metro", "Metro", "Underground and subway"},
        {"tram", "Tram", "Light rail and streetcar"},
        {"rail", "National Rail", "Regional and commuter rail"},
        {"intercity", "Intercity", "Long-distance and high-speed"}
      ]},
-    {"road", "Road", "hero-truck",
+    {"road", "Road",
      [
        {"bus", "Bus", "Local bus services"},
        {"coach", "Coach", "Intercity road services"}
      ]},
-    {"water", "Water", "hero-globe-alt",
+    {"water", "Water",
      [
        {"ferry", "Ferry", "Passenger boat services"}
      ]}
@@ -34,7 +34,7 @@ defmodule TransitmapsWeb.MapLive do
   # `RouteTypes.default_color/1` — places should read as basemap detail and
   # never compete with a line colour.
   @place_groups [
-    {"food", "Food & Drink", "#C2571A"},
+    {"food", "Food & drink", "#C2571A"},
     {"shopping", "Shopping", "#9C4A93"},
     {"culture", "Culture", "#2F6F9F"},
     {"outdoors", "Outdoors", "#3F7D4E"},
@@ -45,6 +45,9 @@ defmodule TransitmapsWeb.MapLive do
   @default_details ~w(labels stops)
   @details ~w(labels stops)
   @place_ids for {id, _label, _color} <- @place_groups, do: id
+  @mode_ids for {_group, _label, modes} <- @mode_groups,
+                {id, _label, _description} <- modes,
+                do: id
   @visual_counts %{
     "metro" => 62,
     "tram" => 18,
@@ -87,10 +90,10 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:page_title, "Transit Maps")
      |> assign(:visual_test?, visual_test?)
      |> assign(:menu_open?, false)
-     |> assign(:enabled, MapSet.new(@default_enabled))
-     |> assign(:details, MapSet.new(@default_details))
-     |> assign(:places, MapSet.new(@place_ids))
-     |> assign(:hidden, MapSet.new())
+     |> assign(:enabled, list_param(params["modes"], @mode_ids, @default_enabled))
+     |> assign(:details, list_param(params["details"], @details, @default_details))
+     |> assign(:places, list_param(params["places"], @place_ids, @place_ids))
+     |> assign(:hidden, id_param(params["hide"]))
      |> assign(:agency_form, to_form(%{"query" => ""}, as: :agency))
      |> assign(:results, [])
      |> assign(:packages, packages)
@@ -140,7 +143,8 @@ defmodule TransitmapsWeb.MapLive do
     {:noreply,
      socket
      |> assign(:details, details)
-     |> push_event("details-changed", %{enabled: MapSet.to_list(details)})}
+     |> push_event("details-changed", %{enabled: MapSet.to_list(details)})
+     |> push_url_state()}
   end
 
   # The map reports which agencies overlap what is on screen; the menu's
@@ -175,10 +179,10 @@ defmodule TransitmapsWeb.MapLive do
 
       {:error, :busy} ->
         {:noreply,
-         assign(socket, :agency_error, "Lots of agencies are downloading. Try again shortly.")}
+         assign(socket, :agency_error, "The download queue is full. Try again in a few minutes.")}
 
       {:error, _reason} ->
-        {:noreply, assign(socket, :agency_error, "That pack isn't available to download.")}
+        {:noreply, assign(socket, :agency_error, "This pack cannot be downloaded.")}
     end
   end
 
@@ -201,10 +205,10 @@ defmodule TransitmapsWeb.MapLive do
 
       {:error, :busy} ->
         {:noreply,
-         assign(socket, :agency_error, "Lots of agencies are downloading. Try again shortly.")}
+         assign(socket, :agency_error, "The download queue is full. Try again in a few minutes.")}
 
       {:error, _reason} ->
-        {:noreply, assign(socket, :agency_error, "That agency isn't available to download.")}
+        {:noreply, assign(socket, :agency_error, "This agency cannot be downloaded.")}
     end
   end
 
@@ -230,7 +234,8 @@ defmodule TransitmapsWeb.MapLive do
         {:noreply,
          socket
          |> assign(:hidden, hidden)
-         |> push_event("agencies-hidden", %{hidden: MapSet.to_list(hidden)})}
+         |> push_event("agencies-hidden", %{hidden: MapSet.to_list(hidden)})
+         |> push_url_state()}
 
       _ ->
         {:noreply, socket}
@@ -351,13 +356,61 @@ defmodule TransitmapsWeb.MapLive do
     socket
     |> assign(:enabled, enabled)
     |> push_event("categories-changed", %{enabled: MapSet.to_list(enabled)})
+    |> push_url_state()
   end
 
   defp put_places(socket, places) do
     socket
     |> assign(:places, places)
     |> push_event("places-changed", %{enabled: MapSet.to_list(places)})
+    |> push_url_state()
   end
+
+  # What the map shows lives in the query string, so a refresh or a shared
+  # link keeps it (DESIGN.md section 12.2). Only what differs from the
+  # defaults is written, and the map's own view stays in the URL hash.
+  defp push_url_state(socket) do
+    push_event(socket, "url-state", %{query: url_query(socket.assigns)})
+  end
+
+  defp url_query(assigns) do
+    lists = [
+      {"modes", assigns.enabled, @default_enabled},
+      {"details", assigns.details, @default_details},
+      {"places", assigns.places, @place_ids}
+    ]
+
+    params =
+      for {key, set, default} <- lists, set != MapSet.new(default) do
+        {key, set |> Enum.sort() |> Enum.join(",")}
+      end
+
+    hidden =
+      if MapSet.size(assigns.hidden) > 0,
+        do: [{"hide", assigns.hidden |> Enum.sort() |> Enum.join(",")}],
+        else: []
+
+    Enum.map_join(params ++ hidden, "&", fn {key, value} -> "#{key}=#{value}" end)
+  end
+
+  # A comma-separated list from the URL, keeping only the ids it may name.
+  # No parameter means the defaults; an empty one means none.
+  defp list_param(nil, _allowed, default), do: MapSet.new(default)
+
+  defp list_param(value, allowed, _default) when is_binary(value) do
+    value |> String.split(",", trim: true) |> Enum.filter(&(&1 in allowed)) |> MapSet.new()
+  end
+
+  defp list_param(_value, _allowed, default), do: MapSet.new(default)
+
+  defp id_param(value) when is_binary(value) do
+    for part <- String.split(value, ",", trim: true),
+        {id, ""} <- [Integer.parse(part)],
+        into: MapSet.new(),
+        do: id
+  end
+
+  defp id_param(_value), do: MapSet.new()
 
   defp toggle_member(set, member) do
     if MapSet.member?(set, member), do: MapSet.delete(set, member), else: MapSet.put(set, member)
@@ -381,7 +434,7 @@ defmodule TransitmapsWeb.MapLive do
 
   defp group_categories(group, counts) do
     case List.keyfind(@mode_groups, group, 0) do
-      {_id, _label, _icon, modes} ->
+      {_id, _label, modes} ->
         for {cat, _label, _description} <- modes, Map.get(counts, cat, 0) > 0, do: cat
 
       nil ->
@@ -400,10 +453,17 @@ defmodule TransitmapsWeb.MapLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
-      <div
-        id="transit-explorer"
-        class="relative h-dvh min-h-[32rem] w-screen overflow-hidden bg-[#e9ece8] text-[#1d1d1f]"
-      >
+      <:aside>
+        <span id="view-summary" class="ui-num">
+          {agencies_label(length(@visible_feeds))}<span class="ui-sep">·</span>{routes_label(
+            total_routes(@counts)
+          )} in view
+        </span>
+      </:aside>
+
+      <h1 class="ui-sr-only">Transit map</h1>
+
+      <div id="transit-explorer" class="tm-explorer">
         <div
           id="transit-map"
           phx-hook="TransitMap"
@@ -415,389 +475,299 @@ defmodule TransitmapsWeb.MapLive do
           data-feeds={Jason.encode!(map_feeds(@feeds))}
           data-hidden={Jason.encode!(MapSet.to_list(@hidden))}
           aria-label="Interactive transit map"
-          class="!absolute inset-0"
+          class="tm-map"
         >
-          <div class="map-loading pointer-events-none absolute inset-0 z-10 grid place-items-center bg-[#f3f2ee] transition-opacity duration-500">
-            <div
-              role="status"
-              aria-live="polite"
-              class="flex min-w-64 items-start gap-3 rounded-2xl border border-white/80 bg-white/88 px-4 py-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.12)] backdrop-blur-xl"
-            >
-              <span class="map-loading__spinner size-5 rounded-full border-2 border-[#007aff]/20 border-t-[#007aff]">
-              </span>
-              <div class="min-w-0 flex-1">
-                <p
-                  data-loading-label
-                  class="text-[13px] font-semibold tracking-[-0.01em] text-[#3a3a3c]"
-                >
-                  Loading map
-                </p>
-                <p data-loading-detail class="mt-0.5 text-[11px] font-medium text-[#77777c]">
-                  Preparing basemap
-                </p>
-                <div
-                  data-loading-progress
-                  role="progressbar"
-                  aria-label="Transit data loading progress"
-                  aria-valuemin="0"
-                  aria-valuemax="100"
-                  class="map-loading__progress mt-2"
-                >
-                  <span
-                    data-loading-bar
-                    class="map-loading__bar map-loading__bar--indeterminate"
-                  >
-                  </span>
-                </div>
+          <div class="map-loading tm-loading">
+            <div role="status" aria-live="polite" class="ui-panel tm-loading-panel">
+              <p data-loading-label class="tm-loading-title">Loading map…</p>
+              <p data-loading-detail class="ui-hint">Preparing the basemap</p>
+              <div
+                data-loading-progress
+                role="progressbar"
+                aria-label="Transit data loading progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                class="ui-progress"
+                data-status="progress"
+              >
+                <div class="ui-progress-fill"></div>
               </div>
             </div>
+          </div>
+          <div
+            data-map-notice
+            class="ui-notice tm-map-notice"
+            data-status="failure"
+            role="alert"
+            hidden
+          >
+            <span data-map-notice-text></span>
+            <span class="ui-button-group ui-notice-end">
+              <button type="button" data-map-notice-retry class="ui-button ui-button--small">
+                Retry
+              </button>
+              <button
+                type="button"
+                data-map-notice-dismiss
+                class="ui-button ui-button--ghost ui-button--small"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </span>
           </div>
         </div>
 
         <%!--
-          The one menu: everything in it filters what the map shows. On a
-          phone it's a bottom sheet whose header always peeks above the
-          bottom edge; from tablet width it floats top-left (see .map-sheet).
+          The one menu: everything in it filters what the map shows. It opens
+          under its button at the map's top-left corner, and closes on Escape
+          or a click anywhere else.
         --%>
         <div
           id="map-menu-root"
           phx-click-away={@menu_open? && "close-menu"}
           phx-window-keydown={@menu_open? && "close-menu"}
           phx-key="Escape"
-          class="map-sheet"
+          class="tm-menu-root"
         >
-          <span class="map-sheet__handle" aria-hidden="true"></span>
           <button
             id="map-menu-button"
             type="button"
             phx-click="toggle-menu"
             aria-expanded={to_string(@menu_open?)}
             aria-controls="map-menu"
-            class="map-sheet__header"
+            class="ui-button ui-button--compact tm-on-map"
           >
-            <span class="transit-mark transit-mark--small" aria-hidden="true">
-              <span></span><span></span><span></span>
+            Filters
+            <span :if={hidden_count(assigns) > 0} class="tm-menu-count">
+              · {hidden_count(assigns)} off
             </span>
-            <span class="min-w-0 flex-1 text-left md:flex-none">
-              <span class="block truncate text-[16px] font-bold tracking-[-0.01em] text-[#1d1d1f] pointer-fine:text-[12px]">
-                Transit Maps
-              </span>
-              <span class="block truncate text-[13px] font-medium text-[#8a8a8e] pointer-fine:text-[10px]">
-                {agencies_label(length(@visible_feeds))} · {total_routes(@counts) |> format_count()} routes
-              </span>
-            </span>
-            <.icon
-              name="hero-adjustments-horizontal"
-              class={[
-                "size-6 shrink-0 transition-colors md:ml-1 pointer-fine:size-[18px]",
-                if(@menu_open?, do: "text-[#007aff]", else: "text-[#8a8a8e]")
-              ]}
-            />
           </button>
 
-          <section
-            :if={@menu_open?}
-            id="map-menu"
-            aria-label="Map filters"
-            class="map-sheet__body flex flex-col overflow-hidden"
-          >
-            <div class="apple-scrollbar min-h-0 flex-1 overflow-y-auto p-1.5 pb-3 md:pb-1.5">
-              <div id="agency-menu" class="px-1 pb-1">
-                <.menu_heading label="Agencies" />
-                <.form
-                  for={@agency_form}
-                  id="agency-search"
-                  phx-change="search-agencies"
-                  phx-submit="search-agencies"
-                  class="px-1.5"
-                >
-                  <.input
-                    field={@agency_form[:query]}
-                    type="search"
-                    aria-label="Find an agency"
-                    placeholder="Find an agency — MBTA, Amtrak…"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    spellcheck="false"
-                    enterkeyhint="search"
-                    phx-debounce="250"
-                    class="agency-search"
-                  />
-                </.form>
-
-                <p
-                  :if={@agency_error}
-                  id="agency-error"
-                  class="px-2.5 pb-1 text-[13px] pointer-fine:text-[11px] font-semibold text-[#b3261e]"
-                >
-                  {@agency_error}
-                </p>
-
-                <%= if @agency_form[:query].value not in [nil, ""] do %>
-                  <ul :if={@package_results != []} id="package-results">
-                    <.package_row
-                      :for={package <- @package_results}
-                      id={"package-result-#{package.id}"}
-                      package={package}
-                      progress={package_progress(package, @feeds, @imports)}
-                    />
-                  </ul>
-                  <ul id="agency-results">
-                    <li
-                      :for={entry <- @results}
-                      id={"agency-result-#{dom_key(entry.id)}"}
-                      class="flex min-h-14 items-center gap-2 rounded-lg px-2.5 py-1.5 pointer-fine:min-h-0"
-                    >
-                      <span class="min-w-0 flex-1">
-                        <span class="block truncate text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-                          {entry.label}
-                        </span>
-                        <span class="block truncate text-[12px] pointer-fine:text-[10px] font-medium text-[#a4a4a8]">
-                          {entry.place}
-                        </span>
-                      </span>
-                      <.agency_action
-                        entry={entry}
-                        feed={result_feed(entry, @feeds)}
-                        feed_import={@imports[entry.id]}
-                      />
-                    </li>
-                    <li
-                      :if={@results == []}
-                      class="px-2.5 py-2 text-[13px] pointer-fine:text-[11px] font-medium text-[#8a8a8e]"
-                    >
-                      No agencies match.
-                    </li>
-                  </ul>
-                <% else %>
-                  <div id="package-menu" class="pt-1">
-                    <button
-                      id="packages-toggle"
-                      type="button"
-                      phx-click="toggle-packages"
-                      aria-expanded={to_string(@packages_open?)}
-                      aria-controls="packages"
-                      class="flex w-full items-center gap-2.5 min-h-14 rounded-lg px-2.5 py-1.5 text-left transition hover:bg-black/[0.035] active:bg-black/[0.06] pointer-fine:min-h-0"
-                    >
-                      <span class="grid size-9 shrink-0 place-items-center rounded-[10px] pointer-fine:size-7 pointer-fine:rounded-[9px] bg-[#007aff]/[0.09] text-[#007aff]">
-                        <.icon name="hero-globe-europe-africa" class="size-5 pointer-fine:size-4" />
-                      </span>
-                      <span class="min-w-0 flex-1">
-                        <span class="block truncate text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-                          Regional packs
-                        </span>
-                        <span class="block truncate text-[12px] pointer-fine:text-[10px] font-medium text-[#a4a4a8]">
-                          {length(@packages)} regions, every agency in one tap
-                        </span>
-                      </span>
-                      <.icon
-                        name="hero-chevron-right-mini"
-                        class={[
-                          "size-4 shrink-0 text-[#a4a4a8] transition-transform duration-200",
-                          @packages_open? && "rotate-90"
-                        ]}
-                      />
-                    </button>
-                    <div :if={@packages_open?} id="packages" class="pl-2">
-                      <div
-                        :for={{region, packages} <- packages_by_region(@packages)}
-                        id={"packages-#{dom_key(region)}"}
-                      >
-                        <h4 class="px-2.5 pt-1.5 pb-0.5 text-[11px] pointer-fine:text-[9px] font-bold tracking-[0.06em] text-[#a4a4a8] uppercase">
-                          {region}
-                        </h4>
-                        <ul>
-                          <.package_row
-                            :for={package <- packages}
-                            id={"package-#{package.id}"}
-                            package={package}
-                            progress={package_progress(package, @feeds, @imports)}
-                          />
-                        </ul>
-                      </div>
-                    </div>
-                    <h4
-                      :if={@visible_feeds != []}
-                      class="px-2.5 pt-2 pb-0.5 text-[12px] pointer-fine:text-[10px] font-semibold text-[#8a8a8e]"
-                    >
-                      In view
-                    </h4>
-                  </div>
-                  <ul id="agencies-in-view">
-                    <li :for={feed <- @visible_feeds}>
-                      <button
-                        id={"agency-toggle-#{feed.id}"}
-                        type="button"
-                        role="switch"
-                        aria-checked={to_string(not MapSet.member?(@hidden, feed.id))}
-                        phx-click="toggle-agency"
-                        phx-value-id={feed.id}
-                        class="flex w-full items-center gap-2.5 min-h-12 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035] active:bg-black/[0.06] pointer-fine:min-h-0"
-                      >
-                        <span class="flex-1 truncate text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-                          {feed.label}
-                        </span>
-                        <.switch on={not MapSet.member?(@hidden, feed.id)} />
-                      </button>
-                    </li>
-                    <li
-                      :if={@visible_feeds == []}
-                      class="px-2.5 py-2 text-[13px] pointer-fine:text-[11px] font-medium text-[#8a8a8e]"
-                    >
-                      No agencies downloaded here yet. Search to add one.
-                    </li>
-                  </ul>
-                <% end %>
-              </div>
-
-              <div :for={{group, group_label, _icon, modes} <- mode_groups()} id={"layers-#{group}"}>
-                <div class="my-1.5 h-px bg-black/[0.06]"></div>
-
-                <div class="flex h-11 items-center gap-2 px-2.5 pointer-fine:h-6">
-                  <h3 class="flex-1 text-[11px] pointer-fine:text-[9px] font-bold tracking-[0.06em] text-[#9a9a9f] uppercase">
-                    {group_label}
-                  </h3>
-                  <button
-                    :if={length(group_categories(group, @counts)) > 1}
-                    id={"group-toggle-#{group}"}
-                    type="button"
-                    phx-click="toggle-group"
-                    phx-value-group={group}
-                    class="-mr-1 min-h-11 rounded-md px-2.5 text-[14px] font-semibold text-[#007aff] transition hover:bg-[#007aff]/[0.08] active:scale-95 pointer-fine:mr-0 pointer-fine:min-h-0 pointer-fine:px-1.5 pointer-fine:py-0.5 pointer-fine:text-[10px]"
-                  >
-                    {if group_all_enabled?(group, @counts, @enabled), do: "Hide all", else: "Show all"}
-                  </button>
-                </div>
-
-                <button
-                  :for={{cat, label, _description} <- modes}
-                  id={"layer-toggle-#{cat}"}
-                  type="button"
-                  role="switch"
-                  aria-checked={to_string(MapSet.member?(@enabled, cat))}
-                  phx-click="toggle"
-                  phx-value-cat={cat}
-                  disabled={route_count(@counts, cat) == 0}
-                  class="flex w-full items-center gap-2.5 min-h-12 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035] active:bg-black/[0.06] pointer-fine:min-h-0 disabled:cursor-not-allowed disabled:opacity-35"
-                >
-                  <span
-                    class="size-2.5 shrink-0 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]"
-                    style={"background: #{RouteTypes.default_color(cat)}"}
-                  >
-                  </span>
-                  <span class="flex-1 truncate text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-                    {label}
-                  </span>
-                  <span class="shrink-0 text-[12px] pointer-fine:text-[10px] font-medium tabular-nums text-[#a4a4a8]">
-                    {route_count(@counts, cat) |> format_count()}
-                  </span>
-                  <.switch on={MapSet.member?(@enabled, cat)} />
-                </button>
-              </div>
-
-              <div id="details-menu">
-                <div class="my-1.5 h-px bg-black/[0.06]"></div>
-                <.menu_heading label="Map details" />
-                <button
-                  :for={
-                    {detail, label, icon} <- [
-                      {"labels", "Station names", "hero-tag"},
-                      {"stops", "Stop markers", "hero-map-pin"}
-                    ]
-                  }
-                  id={"map-detail-#{detail}"}
-                  type="button"
-                  role="switch"
-                  aria-checked={to_string(MapSet.member?(@details, detail))}
-                  phx-click="toggle-detail"
-                  phx-value-detail={detail}
-                  class="flex w-full items-center gap-2.5 min-h-12 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035] active:bg-black/[0.06] pointer-fine:min-h-0"
-                >
-                  <.icon name={icon} class="size-5 shrink-0 text-[#8a8a8e] pointer-fine:size-4" />
-                  <span class="flex-1 text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-                    {label}
-                  </span>
-                  <.switch on={MapSet.member?(@details, detail)} />
-                </button>
-              </div>
-
-              <div id="places-menu">
-                <div class="my-1.5 h-px bg-black/[0.06]"></div>
-
-                <div class="flex h-11 items-center gap-2 px-2.5 pointer-fine:h-6">
-                  <h3 class="flex-1 text-[11px] pointer-fine:text-[9px] font-bold tracking-[0.06em] text-[#9a9a9f] uppercase">
-                    Places
-                  </h3>
-                  <button
-                    id="group-toggle-places"
-                    type="button"
-                    phx-click="toggle-place-group"
-                    class="-mr-1 min-h-11 rounded-md px-2.5 text-[14px] font-semibold text-[#007aff] transition hover:bg-[#007aff]/[0.08] active:scale-95 pointer-fine:mr-0 pointer-fine:min-h-0 pointer-fine:px-1.5 pointer-fine:py-0.5 pointer-fine:text-[10px]"
-                  >
-                    {if all_places_enabled?(@places), do: "Hide all", else: "Show all"}
-                  </button>
-                </div>
-
-                <button
-                  :for={{place, label, color} <- place_groups()}
-                  id={"place-toggle-#{place}"}
-                  type="button"
-                  role="switch"
-                  aria-checked={to_string(MapSet.member?(@places, place))}
-                  phx-click="toggle-place"
-                  phx-value-place={place}
-                  class="flex w-full items-center gap-2.5 min-h-12 rounded-lg px-2.5 py-2 text-left transition hover:bg-black/[0.035] active:bg-black/[0.06] pointer-fine:min-h-0"
-                >
-                  <span
-                    class="size-2.5 shrink-0 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.12)]"
-                    style={"background: #{color}"}
-                  >
-                  </span>
-                  <span class="flex-1 truncate text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-                    {label}
-                  </span>
-                  <.switch on={MapSet.member?(@places, place)} />
-                </button>
-
-                <p class="px-2.5 pt-1 pb-0.5 text-[11px] pointer-fine:text-[9px] font-medium text-[#a4a4a8]">
-                  Places appear from zoom 14 · © OpenStreetMap
-                </p>
-              </div>
+          <section :if={@menu_open?} id="map-menu" aria-label="Map filters" class="tm-menu">
+            <section id="agency-menu" class="tm-menu-section" aria-labelledby="agency-menu-title">
+              <h2 id="agency-menu-title" class="ui-panel-title">Agencies</h2>
+              <.form
+                for={@agency_form}
+                id="agency-search"
+                phx-change="search-agencies"
+                phx-submit="search-agencies"
+              >
+                <.input
+                  field={@agency_form[:query]}
+                  type="search"
+                  aria-label="Find an agency"
+                  placeholder="MBTA, Amtrak, Trenitalia"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  enterkeyhint="search"
+                  phx-debounce="250"
+                  class="tm-search"
+                />
+              </.form>
 
               <div
-                :if={@counts == %{}}
-                id="empty-feed-notice"
-                class="mt-1.5 rounded-lg bg-[#fff7df] p-2.5"
+                :if={@agency_error}
+                id="agency-error"
+                class="ui-notice"
+                data-status="failure"
+                role="alert"
               >
-                <p class="text-[13px] pointer-fine:text-[11px] font-semibold leading-4 text-[#6f5813]">
-                  No feeds have been imported yet. Add a GTFS feed to start drawing routes.
+                {@agency_error}
+              </div>
+
+              <%= if searching?(@agency_form) do %>
+                <ul :if={@package_results != []} id="package-results" class="tm-list">
+                  <.package_row
+                    :for={package <- @package_results}
+                    id={"package-result-#{package.id}"}
+                    package={package}
+                    progress={package_progress(package, @feeds, @imports)}
+                  />
+                </ul>
+                <ul id="agency-results" class="tm-list" aria-live="polite">
+                  <li
+                    :for={entry <- @results}
+                    id={"agency-result-#{dom_key(entry.id)}"}
+                    class="tm-row"
+                  >
+                    <span class="tm-row-text">
+                      <span class="ui-row-name ui-truncate" title={entry.label}>{entry.label}</span>
+                      <.agency_meta entry={entry} feed_import={@imports[entry.id]} />
+                    </span>
+                    <.agency_action
+                      entry={entry}
+                      feed={result_feed(entry, @feeds)}
+                      feed_import={@imports[entry.id]}
+                    />
+                  </li>
+                </ul>
+                <p
+                  :if={@results == [] and @package_results == []}
+                  id="agency-results-empty"
+                  class="ui-empty"
+                >
+                  No agencies match “{@agency_form[:query].value}”. Try an operator or a city.
                 </p>
+              <% else %>
+                <div id="package-menu">
+                  <button
+                    id="packages-toggle"
+                    type="button"
+                    phx-click="toggle-packages"
+                    aria-expanded={to_string(@packages_open?)}
+                    aria-controls="packages"
+                    class="tm-disclosure"
+                  >
+                    Regional packs
+                    <span class="ui-panel-title-aside">{length(@packages)} regions</span>
+                  </button>
+                  <div :if={@packages_open?} id="packages">
+                    <p class="ui-hint">Every agency of a region in one go.</p>
+                    <div
+                      :for={{region, packages} <- packages_by_region(@packages)}
+                      id={"packages-#{dom_key(region)}"}
+                    >
+                      <h3 class="ui-label tm-region">{region}</h3>
+                      <ul class="tm-list">
+                        <.package_row
+                          :for={package <- packages}
+                          id={"package-#{package.id}"}
+                          package={package}
+                          progress={package_progress(package, @feeds, @imports)}
+                        />
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                <h3 class="ui-label tm-subhead">
+                  In view <span class="ui-panel-title-aside ui-num">{length(@visible_feeds)}</span>
+                </h3>
+                <ul :if={@visible_feeds != []} id="agencies-in-view" class="tm-list">
+                  <li :for={feed <- @visible_feeds}>
+                    <.toggle
+                      id={"agency-toggle-#{feed.id}"}
+                      on={not MapSet.member?(@hidden, feed.id)}
+                      phx-click="toggle-agency"
+                      phx-value-id={feed.id}
+                      label={feed.label}
+                    />
+                  </li>
+                </ul>
+                <p :if={@visible_feeds == []} id="agencies-in-view" class="ui-empty">
+                  No agencies downloaded here yet. Search to add one.
+                </p>
+              <% end %>
+            </section>
+
+            <section
+              :for={{group, group_label, modes} <- mode_groups()}
+              id={"layers-#{group}"}
+              class="tm-menu-section"
+              aria-labelledby={"layers-#{group}-title"}
+            >
+              <h2 id={"layers-#{group}-title"} class="ui-panel-title">
+                {group_label}
+                <button
+                  :if={length(group_categories(group, @counts)) > 1}
+                  id={"group-toggle-#{group}"}
+                  type="button"
+                  phx-click="toggle-group"
+                  phx-value-group={group}
+                  class="ui-button ui-button--ghost ui-button--small"
+                >
+                  {if group_all_enabled?(group, @counts, @enabled), do: "Hide all", else: "Show all"}
+                </button>
+              </h2>
+              <ul class="tm-list">
+                <li :for={{cat, label, _description} <- modes}>
+                  <.toggle
+                    id={"layer-toggle-#{cat}"}
+                    on={MapSet.member?(@enabled, cat)}
+                    phx-click="toggle"
+                    phx-value-cat={cat}
+                    disabled={route_count(@counts, cat) == 0}
+                    title={route_count(@counts, cat) == 0 && "No #{label} routes in view"}
+                    label={label}
+                    swatch={RouteTypes.default_color(cat)}
+                    count={route_count(@counts, cat)}
+                  />
+                </li>
+              </ul>
+            </section>
+
+            <section id="details-menu" class="tm-menu-section" aria-labelledby="details-menu-title">
+              <h2 id="details-menu-title" class="ui-panel-title">Map details</h2>
+              <ul class="tm-list">
+                <li :for={{detail, label} <- [{"labels", "Station names"}, {"stops", "Stop markers"}]}>
+                  <.toggle
+                    id={"map-detail-#{detail}"}
+                    on={MapSet.member?(@details, detail)}
+                    phx-click="toggle-detail"
+                    phx-value-detail={detail}
+                    label={label}
+                  />
+                </li>
+              </ul>
+            </section>
+
+            <section id="places-menu" class="tm-menu-section" aria-labelledby="places-menu-title">
+              <h2 id="places-menu-title" class="ui-panel-title">
+                Places
+                <button
+                  id="group-toggle-places"
+                  type="button"
+                  phx-click="toggle-place-group"
+                  class="ui-button ui-button--ghost ui-button--small"
+                >
+                  {if all_places_enabled?(@places), do: "Hide all", else: "Show all"}
+                </button>
+              </h2>
+              <ul class="tm-list">
+                <li :for={{place, label, color} <- place_groups()}>
+                  <.toggle
+                    id={"place-toggle-#{place}"}
+                    on={MapSet.member?(@places, place)}
+                    phx-click="toggle-place"
+                    phx-value-place={place}
+                    label={label}
+                    swatch={color}
+                    mark="dot"
+                  />
+                </li>
+              </ul>
+              <p class="ui-hint">Places appear from zoom 14 · © OpenStreetMap</p>
+            </section>
+
+            <div :if={@feeds == []} id="empty-feed-notice" class="tm-menu-section">
+              <div class="ui-notice" data-status="progress" role="status">
+                No agencies downloaded yet. Search for one to start drawing routes.
               </div>
             </div>
           </section>
         </div>
 
-        <%!-- Thumb-high above the sheet on a phone, top-right from tablet width. --%>
-        <div id="map-control-stack" class="map-controls">
-          <%!-- Phones pinch to zoom, so the buttons only appear beside a pointer. --%>
-          <div class="map-control-group hidden overflow-hidden md:flex">
+        <div id="map-control-stack" class="tm-controls">
+          <div class="tm-control-group" role="group" aria-label="Zoom">
             <button
               id="map-zoom-in"
               type="button"
               phx-click={JS.dispatch("map:zoom-in", to: "#transit-map")}
               aria-label="Zoom in"
-              class="map-control-button border-b border-black/[0.08]"
+              class="ui-button tm-on-map tm-map-button"
             >
-              <.icon name="hero-plus" class="size-[18px]" />
+              +
             </button>
             <button
               id="map-zoom-out"
               type="button"
               phx-click={JS.dispatch("map:zoom-out", to: "#transit-map")}
               aria-label="Zoom out"
-              class="map-control-button"
+              class="ui-button tm-on-map tm-map-button"
             >
-              <.icon name="hero-minus" class="size-[18px]" />
+              −
             </button>
           </div>
 
@@ -806,18 +776,27 @@ defmodule TransitmapsWeb.MapLive do
             type="button"
             phx-click={JS.dispatch("map:locate", to: "#transit-map")}
             aria-label="Go to my location"
-            class="map-fab grid size-12 place-items-center text-[#007aff] pointer-fine:size-10"
+            title="Go to my location"
+            class="ui-button tm-on-map tm-map-button"
           >
-            <.icon name="hero-paper-airplane-solid" class="size-[17px] -rotate-45" />
+            <svg
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <circle cx="6" cy="6" r="3.2" />
+              <path d="M6 0.5v2.3M6 9.2v2.3M0.5 6h2.3M9.2 6h2.3" />
+            </svg>
           </button>
         </div>
 
         <div
           id="map-zoom-readout"
-          class={[
-            "pointer-events-none absolute top-[max(0.75rem,env(safe-area-inset-top))] right-3 z-20 rounded-lg bg-white/75 px-2 py-1 font-mono text-[9px] font-semibold text-[#6e6e73] shadow-sm backdrop-blur-md md:top-auto md:right-4 md:bottom-7",
-            if(zoom_readout?(), do: "block", else: "hidden [body.playwright-visuals_&]:block")
-          ]}
+          class="tm-zoom-readout"
+          data-shown={zoom_readout?()}
           aria-hidden="true"
         >
           z5.5
@@ -828,10 +807,87 @@ defmodule TransitmapsWeb.MapLive do
   end
 
   defp agencies_label(1), do: "1 agency"
-  defp agencies_label(count), do: "#{count} agencies"
+  defp agencies_label(count), do: "#{format_count(count)} agencies"
+
+  defp routes_label(1), do: "1 route"
+  defp routes_label(count), do: "#{format_count(count)} routes"
+
+  defp searching?(form), do: form[:query].value not in [nil, ""]
+
+  # How many of the things the menu switches are off right now, so a closed
+  # menu still says the map isn't showing everything.
+  defp hidden_count(assigns) do
+    modes_off =
+      Enum.count(assigns.counts, fn {cat, count} ->
+        count > 0 and not MapSet.member?(assigns.enabled, cat)
+      end)
+
+    agencies_off = Enum.count(assigns.visible_feeds, &MapSet.member?(assigns.hidden, &1.id))
+
+    modes_off + agencies_off
+  end
 
   # Catalog ids are free text; DOM ids keep only the safe characters.
   defp dom_key(id), do: String.replace(id, ~r/[^A-Za-z0-9_-]/, "_")
+
+  # The one place a download's state becomes a word and a state role
+  # (DESIGN.md section 3.1).
+  defp import_state(%{status: "queued"}), do: {"Waiting", "neutral"}
+  defp import_state(%{status: "importing"}), do: {"Downloading", "progress"}
+  defp import_state(%{status: "failed"}), do: {"Failed", "failure"}
+  defp import_state(_feed_import), do: nil
+
+  defp in_flight?(feed_import),
+    do: match?(%{status: s} when s in ~w(queued importing), feed_import)
+
+  attr :id, :string, required: true
+  attr :on, :boolean, required: true
+  attr :label, :string, required: true
+  attr :swatch, :string, default: nil, doc: "a colour from the data, shown as a legend mark"
+  attr :mark, :string, values: ~w(line dot), default: "line"
+  attr :count, :integer, default: nil
+  attr :rest, :global, include: ~w(disabled title)
+
+  # A row that switches one thing on the map, drawn as a checkbox.
+  defp toggle(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      role="checkbox"
+      aria-checked={to_string(@on)}
+      class="tm-toggle"
+      {@rest}
+    >
+      <span class="tm-check" aria-hidden="true"></span>
+      <span
+        :if={@swatch}
+        class={"tm-swatch-#{@mark}"}
+        style={"--swatch: #{@swatch}"}
+        aria-hidden="true"
+      >
+      </span>
+      <span class="tm-toggle-label ui-truncate">{@label}</span>
+      <span :if={@count} class="tm-toggle-count ui-mono">{format_count(@count)}</span>
+    </button>
+    """
+  end
+
+  attr :entry, :map, required: true
+  attr :feed_import, :any, default: nil
+
+  # Where a result serves, or why its last download failed.
+  defp agency_meta(assigns) do
+    ~H"""
+    <%= if match?(%{status: "failed"}, @feed_import) do %>
+      <span class="tm-row-meta ui-hint--error ui-truncate" title={@feed_import.error}>
+        Download failed{if @feed_import.error, do: ": #{@feed_import.error}", else: "."}
+      </span>
+    <% else %>
+      <span class="tm-row-meta ui-truncate" title={@entry.place}>{@entry.place}</span>
+    <% end %>
+    """
+  end
 
   attr :entry, :map, required: true
   attr :feed, :map, default: nil
@@ -841,32 +897,51 @@ defmodule TransitmapsWeb.MapLive do
   defp agency_action(assigns) do
     ~H"""
     <%= cond do %>
-      <% @feed_import && @feed_import.status in ~w(queued importing) -> %>
-        <span class="flex shrink-0 items-center gap-1.5 text-[12px] pointer-fine:text-[10px] font-semibold text-[#8a8a8e]">
-          <span class="map-loading__spinner size-3 rounded-full border-2 border-[#007aff]/20 border-t-[#007aff]">
-          </span>
-          {if @feed_import.status == "queued", do: "Waiting", else: "Downloading"}
-        </span>
+      <% in_flight?(@feed_import) -> %>
+        <.import_badge feed_import={@feed_import} />
       <% @feed -> %>
         <button
           type="button"
           phx-click="show-agency"
           phx-value-id={@feed.id}
-          class="agency-action"
+          class="ui-button ui-button--quiet ui-button--small tm-row-action"
         >
           Show
+        </button>
+      <% match?(%{status: "failed"}, @feed_import) -> %>
+        <button
+          type="button"
+          phx-click="add-agency"
+          phx-value-id={@entry.id}
+          phx-disable-with="Retrying…"
+          class="ui-button ui-button--small tm-row-action"
+        >
+          Retry
         </button>
       <% true -> %>
         <button
           type="button"
           phx-click="add-agency"
           phx-value-id={@entry.id}
-          title={@feed_import && @feed_import.status == "failed" && @feed_import.error}
-          class="agency-action agency-action--primary"
+          phx-disable-with="Adding…"
+          class="ui-button ui-button--small tm-row-action"
         >
-          {if @feed_import && @feed_import.status == "failed", do: "Retry", else: "Add"}
+          + Add
         </button>
     <% end %>
+    """
+  end
+
+  attr :feed_import, :map, required: true
+
+  defp import_badge(assigns) do
+    {word, role} = import_state(assigns.feed_import)
+    assigns = assign(assigns, word: word, role: role)
+
+    ~H"""
+    <span class="ui-badge tm-row-action" data-status={@role}>
+      <span :if={@role == "progress"} class="ui-dot"></span>{@word}
+    </span>
     """
   end
 
@@ -876,19 +951,11 @@ defmodule TransitmapsWeb.MapLive do
 
   defp package_row(assigns) do
     ~H"""
-    <li
-      id={@id}
-      class="flex min-h-14 items-center gap-2.5 rounded-lg px-2.5 py-1.5 pointer-fine:min-h-0"
-    >
-      <span class="grid size-9 shrink-0 place-items-center rounded-[10px] pointer-fine:size-7 pointer-fine:rounded-[9px] bg-[#007aff]/[0.09] text-[#007aff]">
-        <.icon name="hero-square-3-stack-3d" class="size-5 pointer-fine:size-4" />
-      </span>
-      <span class="min-w-0 flex-1">
-        <span class="block truncate text-[15px] pointer-fine:text-[12px] font-medium text-[#2c2c2e]">
-          {@package.label}
-        </span>
-        <span class="block truncate text-[12px] pointer-fine:text-[10px] font-medium text-[#a4a4a8]">
-          {agencies_label(@progress.total)} · {@package.place}
+    <li id={@id} class="tm-row">
+      <span class="tm-row-text">
+        <span class="ui-row-name ui-truncate" title={@package.label}>{@package.label}</span>
+        <span class="tm-row-meta ui-truncate" title={@package.place}>
+          {agencies_label(@progress.total)}<span class="ui-sep">·</span>{@package.place}
         </span>
       </span>
       <.package_action package={@package} progress={@progress} />
@@ -905,17 +972,28 @@ defmodule TransitmapsWeb.MapLive do
     ~H"""
     <%= cond do %>
       <% @progress.pending > 0 -> %>
-        <span class="flex shrink-0 items-center gap-1.5 text-[12px] pointer-fine:text-[10px] font-semibold tabular-nums text-[#8a8a8e]">
-          <span class="map-loading__spinner size-3 rounded-full border-2 border-[#007aff]/20 border-t-[#007aff]">
+        <div
+          class="ui-progress ui-progress--labeled tm-pack-progress tm-row-action"
+          data-status="progress"
+          style={"--value: #{percent(@progress.ready, @progress.total)}%"}
+          role="progressbar"
+          aria-valuenow={percent(@progress.ready, @progress.total)}
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-label={"Downloading: #{@progress.ready} of #{@progress.total} agencies"}
+        >
+          <div class="ui-progress-fill"></div>
+          <span class="ui-progress-label">{@progress.ready}/{@progress.total}</span>
+          <span class="ui-progress-label ui-progress-label--on-fill" aria-hidden="true">
+            {@progress.ready}/{@progress.total}
           </span>
-          {@progress.ready}/{@progress.total}
-        </span>
+        </div>
       <% @progress.ready > 0 and @progress.ready + @progress.failed == @progress.total -> %>
         <button
           type="button"
           phx-click="show-package"
           phx-value-id={@package.id}
-          class="agency-action"
+          class="ui-button ui-button--quiet ui-button--small tm-row-action"
         >
           Show
         </button>
@@ -924,48 +1002,23 @@ defmodule TransitmapsWeb.MapLive do
           type="button"
           phx-click="add-package"
           phx-value-id={@package.id}
-          class="agency-action agency-action--primary"
+          phx-disable-with="Adding…"
+          class="ui-button ui-button--small tm-row-action"
         >
-          {if @progress.ready > 0, do: "Add rest", else: "Add"}
+          {if @progress.ready > 0, do: "+ Add rest", else: "+ Add"}
         </button>
     <% end %>
     """
   end
 
-  attr :label, :string, required: true
-
-  defp menu_heading(assigns) do
-    ~H"""
-    <h3 class="flex h-9 items-center px-2.5 text-[11px] pointer-fine:h-6 pointer-fine:text-[9px] font-bold tracking-[0.06em] text-[#9a9a9f] uppercase">
-      {@label}
-    </h3>
-    """
-  end
-
-  attr :on, :boolean, required: true
-
-  defp switch(assigns) do
-    ~H"""
-    <span
-      class={[
-        "apple-switch relative h-[28px] w-[46px] shrink-0 rounded-full p-0.5 transition-colors duration-200 pointer-fine:h-[20px] pointer-fine:w-[34px]",
-        if(@on, do: "bg-[#34c759]", else: "bg-[#d1d1d6]")
-      ]}
-      aria-hidden="true"
-    >
-      <span class={[
-        "block size-[24px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200 pointer-fine:size-[16px]",
-        @on && "translate-x-[18px] pointer-fine:translate-x-3.5"
-      ]}>
-      </span>
-    </span>
-    """
-  end
+  defp percent(_part, 0), do: 0
+  defp percent(part, total), do: round(part * 100 / total)
 
   defp route_count(counts, cat), do: Map.get(counts, cat, 0)
   defp total_routes(counts), do: counts |> Map.values() |> Enum.sum()
 
-  defp format_count(count) when count >= 1_000 do
+  # Thousands are grouped from 10,000 up (DESIGN.md section 11).
+  defp format_count(count) when count >= 10_000 do
     count
     |> Integer.to_string()
     |> String.reverse()

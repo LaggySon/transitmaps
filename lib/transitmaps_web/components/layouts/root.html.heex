@@ -4,11 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <meta name="theme-color" content="#f2f1ed" />
-    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href={~p"/favicon.ico"} sizes="48x48" />
     <link rel="icon" href={~p"/favicon.svg"} type="image/svg+xml" />
     <link rel="apple-touch-icon" href={~p"/apple-touch-icon.png"} />
+    <link
+      rel="preload"
+      href={~p"/fonts/Geist-Variable.woff2"}
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <.live_title default="Transit Maps" suffix=" · Explore public transport">
       {assigns[:page_title]}
     </.live_title>
@@ -16,7 +24,7 @@
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
   </head>
-  <body class="m-0 overflow-hidden bg-[#f2f1ed]">
+  <body>
     {@inner_content}
   </body>
 </html>

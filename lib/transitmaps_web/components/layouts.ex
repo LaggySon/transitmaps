@@ -12,15 +12,14 @@ defmodule TransitmapsWeb.Layouts do
   embed_templates "layouts/*"
 
   @doc """
-  Renders your app layout.
-
-  This function is typically invoked from every template,
-  and it often contains your application menu, sidebar,
-  or similar.
+  Renders the page shell from DESIGN.md section 5.2: a skip link, the top bar
+  with the brand and an aside, then `main`. The page fills the window and
+  each page lays out its own content inside `main`.
 
   ## Examples
 
       <Layouts.app flash={@flash}>
+        <:aside>3 agencies</:aside>
         <h1>Content</h1>
       </Layouts.app>
 
@@ -31,19 +30,38 @@ defmodule TransitmapsWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
 
+  slot :aside, doc: "global readouts on the right of the top bar"
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    <div id="app-shell" class="min-h-dvh bg-[#f2f1ed] text-[#1d1d1f] antialiased">
-      {render_slot(@inner_block)}
+    <a class="ui-skip-link" href="#main">Skip to the map</a>
+    <div id="app-shell" class="ui-shell ui-shell--fill">
+      <header class="ui-topbar">
+        <span class="ui-brand">
+          <span class="ui-brand-mark" aria-hidden="true"></span>Transit Maps
+        </span>
+        <div class="ui-topbar-aside">
+          {render_slot(@aside)}
+          <span id="connection-live" class="ui-badge tm-live" data-status="progress">
+            <span class="ui-dot"></span>Live
+          </span>
+        </div>
+      </header>
+      <div id="connection-lost" class="ui-notice tm-connection" data-status="warning" role="alert">
+        Connection lost. Reconnecting…
+      </div>
+      <.flash_group flash={@flash} />
+      <main id="main" class="ui-main tm-main">
+        {render_slot(@inner_block)}
+      </main>
     </div>
-    <.flash_group flash={@flash} />
     """
   end
 
   @doc """
-  Shows the flash group with standard titles and content.
+  Shows the flash messages as notices at the top of the page, under the top
+  bar. They stay until the visitor dismisses them.
 
   ## Examples
 
@@ -54,33 +72,9 @@ defmodule TransitmapsWeb.Layouts do
 
   def flash_group(assigns) do
     ~H"""
-    <div id={@id} aria-live="polite">
+    <div id={@id}>
       <.flash kind={:info} flash={@flash} />
       <.flash kind={:error} flash={@flash} />
-
-      <.flash
-        id="client-error"
-        kind={:error}
-        title={gettext("We can't find the internet")}
-        phx-disconnected={show(".phx-client-error #client-error") |> JS.remove_attribute("hidden")}
-        phx-connected={hide("#client-error") |> JS.set_attribute({"hidden", ""})}
-        hidden
-      >
-        {gettext("Attempting to reconnect")}
-        <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
-      </.flash>
-
-      <.flash
-        id="server-error"
-        kind={:error}
-        title={gettext("Something went wrong!")}
-        phx-disconnected={show(".phx-server-error #server-error") |> JS.remove_attribute("hidden")}
-        phx-connected={hide("#server-error") |> JS.set_attribute({"hidden", ""})}
-        hidden
-      >
-        {gettext("Attempting to reconnect")}
-        <.icon name="hero-arrow-path" class="ml-1 size-3 motion-safe:animate-spin" />
-      </.flash>
     </div>
     """
   end

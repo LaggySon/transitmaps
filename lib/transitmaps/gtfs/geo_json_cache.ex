@@ -22,6 +22,10 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   # The categories the map loads by default (see MapLive).
   @warm_categories ~w(rail metro tram intercity ferry)
 
+  # The map opens zoomed out, where it asks for low-detail lines and no
+  # stations yet (see `detailForZoom` and `STOPS_MIN_ZOOM` in transit_map.js).
+  @opening_detail :low
+
   # Imports usually run in their own VM against the shared database, where
   # this process's invalidation can't be reached, so entries also age out.
   @ttl_ms :timer.hours(1)
@@ -44,12 +48,8 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
             Transitmaps.Agencies.list_feeds(),
           min_lon <= east and max_lon >= west and min_lat <= north and max_lat >= south,
           category <- @warm_categories do
-        fetch({:routes, feed_id, [category]}, fn ->
-          Transitmaps.Gtfs.route_feature_collection([category], feed_id)
-        end)
-
-        fetch({:stops, feed_id, [category]}, fn ->
-          Transitmaps.Gtfs.stop_feature_collection([category], feed_id)
+        fetch({{:routes, @opening_detail}, feed_id, [category]}, fn ->
+          Transitmaps.Gtfs.route_feature_collection([category], feed_id, @opening_detail)
         end)
       end
     end

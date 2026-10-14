@@ -10,7 +10,13 @@ defmodule TransitmapsWeb.GeoController do
   @empty %{type: "FeatureCollection", features: []}
 
   def routes(conn, params) do
-    send_cached_geojson(conn, :routes, params, &Gtfs.route_feature_collection/2)
+    detail = Gtfs.sanitize_detail(params["detail"])
+
+    # The detail rides in the kind, so a cache key keeps its {kind, feed,
+    # categories} shape for invalidation.
+    kind = if detail == :full, do: :routes, else: {:routes, detail}
+
+    send_cached_geojson(conn, kind, params, &Gtfs.route_feature_collection(&1, &2, detail))
   end
 
   def stops(conn, params) do

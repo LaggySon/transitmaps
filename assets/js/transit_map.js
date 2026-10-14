@@ -29,6 +29,16 @@ const DEFAULT_VIEW = {center: [-2.0, 53.8], zoom: 5.5}
 // lines are already there when a pan brings them on screen.
 const LOAD_PADDING = 0.5
 
+// How much of each line's detail the server sends (Gtfs.sanitize_detail/1).
+// A zoomed-out view spans dozens of national networks, and their full track
+// would not fit in a phone's memory: Belgium at zoom 5 is over 100 MB of it.
+const DETAILS = ["low", "mid", "full"]
+const detailForZoom = (zoom) => (zoom < 8 ? "low" : zoom < 11 ? "mid" : "full")
+
+// Stations are drawn from zoom 10.5 (the stops layers' minzoom), so they
+// load from 10 and not before.
+const STOPS_MIN_ZOOM = 10
+
 // Stations of different agencies this close together are one interchange —
 // the same rule `Transitmaps.Gtfs.merge_colocated_stops/1` applies within an
 // agency. Bus stops only merge when practically on top of one another.
@@ -219,7 +229,8 @@ const TransitMap = {
   mounted() {
     // Categories whose sources and layers exist on the map.
     this.loaded = new Set()
-    // Per agency and mode, keyed "feedId:category".
+    // Per agency, mode and part, keyed "feedId:category:part": a part is a
+    // line detail (low, mid, full) or "stops".
     this.pending = new Map()
     this.feedData = new Map()
     this.feeds = this.parseData("feeds", [])
@@ -657,11 +668,7 @@ const TransitMap = {
       this.pushEvent("view", {feeds: inView})
     }
 
-    const missing = this.activeFeeds().flatMap((id) =>
-      MODE_ORDER.filter((cat) => this.enabled.has(cat) && !this.feedData.has(`${id}:${cat}`)).map(
-        (cat) => `${id}:${cat}`
-      )
-    )
+    const missing = this.wantedKeys().filter((key) => !this.feedData.has(key))
 
     this.el.dataset.transitReady = "false"
     this.el.dataset.mapIdle = "false"
@@ -697,22 +704,60 @@ const TransitMap = {
     })
   },
 
+  // What the view needs: each drawn agency's enabled modes, as lines at the
+  // zoom's detail, and their stations once they can be drawn.
+  wantedKeys() {
+    const zoom = this.map.getZoom()
+    const parts = [detailForZoom(zoom), ...(zoom >= STOPS_MIN_ZOOM ? ["stops"] : [])]
+
+    return this.activeFeeds().flatMap((id) =>
+      MODE_ORDER.filter((cat) => this.enabled.has(cat)).flatMap((cat) => parts.map((part) => `${id}:${cat}:${part}`))
+    )
+  },
+
+  // The key of the lines to draw for an agency's mode: the zoom's detail
+  // once it has loaded, until then whichever detail is already here, so a
+  // line never blinks out while a sharper copy arrives.
+  linesKey(id, cat) {
+    const detail = detailForZoom(this.map.getZoom())
+    return [detail, ...[...DETAILS].reverse()]
+      .map((part) => `${id}:${cat}:${part}`)
+      .find((key) => this.feedData.has(key))
+  },
+
+  lines(id, cat) {
+    const key = this.linesKey(id, cat)
+    return key ? this.feedData.get(key).features : []
+  },
+
+  // Lets go of data the view no longer draws: agencies out of range or
+  // hidden, modes switched off, stations below their zoom, and a detail once
+  // the zoom's own detail has replaced it. Panning across a continent would
+  // otherwise keep every network it passed in memory.
+  pruneFeedData() {
+    const active = new Set(this.activeFeeds().map(String))
+    const zoom = this.map.getZoom()
+
+    for (const key of this.feedData.keys()) {
+      const [id, cat, part] = key.split(":")
+      const drawn = active.has(id) && this.enabled.has(cat)
+      const needed = part === "stops" ? zoom >= STOPS_MIN_ZOOM : this.linesKey(id, cat) === key
+
+      if (!drawn || !needed) this.feedData.delete(key)
+    }
+  },
+
   async loadFeed(key) {
     if (this.pending.has(key)) return this.pending.get(key)
 
-    const [feedId, cat] = key.split(":")
+    const [feedId, cat, part] = key.split(":")
     const query = `feed=${feedId}&cats=${encodeURIComponent(cat)}`
+    const url = part === "stops" ? `/api/stops.geojson?${query}` : `/api/routes.geojson?${query}&detail=${part}`
 
     const request = (async () => {
-      const [routeResponse, stopResponse] = await Promise.all([
-        fetch(`/api/routes.geojson?${query}`),
-        fetch(`/api/stops.geojson?${query}`),
-      ])
-
-      if (!routeResponse.ok || !stopResponse.ok) throw new Error(`Could not load ${key}`)
-
-      const [routes, stops] = await Promise.all([routeResponse.json(), stopResponse.json()])
-      this.feedData.set(key, {routes, stops})
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`Could not load ${key}`)
+      this.feedData.set(key, await response.json())
     })()
 
     this.pending.set(key, request)
@@ -734,22 +779,22 @@ const TransitMap = {
   render() {
     if (!this.map?.isStyleLoaded()) return
 
+    this.pruneFeedData()
+
     const active = this.activeFeeds()
-    const loadedKeys = active.flatMap((id) =>
-      MODE_ORDER.filter((cat) => this.enabled.has(cat) && this.feedData.has(`${id}:${cat}`)).map(
-        (cat) => `${id}:${cat}`
-      )
-    )
-    const renderKey = loadedKeys.join(",")
+    const drawn = active.flatMap((id) => MODE_ORDER.filter((cat) => this.enabled.has(cat)).map((cat) => [id, cat]))
+    const lineKeys = drawn.map(([id, cat]) => this.linesKey(id, cat)).filter(Boolean)
+    const stopKeys = drawn.map(([id, cat]) => `${id}:${cat}:stops`).filter((key) => this.feedData.has(key))
+    const renderKey = [...lineKeys, ...stopKeys].join(",")
 
     if (renderKey !== this.renderedKey) {
       this.renderedKey = renderKey
-      const stopsByCategory = this.mergedStops(loadedKeys)
+      const stopsByCategory = this.mergedStops(stopKeys)
 
       MODE_ORDER.filter((cat) => this.enabled.has(cat)).forEach((cat) => {
         const routes = {
           type: "FeatureCollection",
-          features: active.flatMap((id) => this.feedData.get(`${id}:${cat}`)?.routes.features || []),
+          features: active.flatMap((id) => this.lines(id, cat)),
         }
         const stops = {type: "FeatureCollection", features: stopsByCategory.get(cat) || []}
 
@@ -824,7 +869,7 @@ const TransitMap = {
     const entries = Object.entries(fields)
 
     return this.activeFeeds()
-      .flatMap((id) => this.feedData.get(`${id}:${category}`)?.routes.features || [])
+      .flatMap((id) => this.lines(id, category))
       .filter(({properties}) => entries.every(([key, value]) => (properties[key] ?? null) === (value ?? null)))
   },
 
@@ -886,7 +931,7 @@ const TransitMap = {
 
     keys.forEach((key) => {
       const feedId = key.split(":")[0]
-      ;(this.feedData.get(key)?.stops.features || []).forEach((feature) => {
+      ;(this.feedData.get(key)?.features || []).forEach((feature) => {
         const id = `${feedId}|${feature.geometry.coordinates.join(",")}|${feature.properties.name}`
         if (!unique.has(id)) unique.set(id, feature)
       })

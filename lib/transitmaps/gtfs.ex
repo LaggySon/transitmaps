@@ -28,15 +28,34 @@ defmodule Transitmaps.Gtfs do
 
   def sanitize_categories(_), do: []
 
-  @doc "Feed `feed_id`'s drawn lines in `categories`, as GeoJSON."
-  def route_feature_collection(categories, feed_id) do
+  @doc """
+  Parses the `detail` a map asks its lines in: `"low"` or `"mid"` for a
+  zoomed-out map, anything else for full detail.
+  """
+  def sanitize_detail("low"), do: :low
+  def sanitize_detail("mid"), do: :mid
+  def sanitize_detail(_), do: :full
+
+  # A zoomed-out map can't show a national network's every curve, and a phone
+  # runs out of memory holding them: a view of Belgium at country zoom spans
+  # forty agencies and well over 100 MB of full-detail track. Below zoom 8
+  # (`:low`) and 11 (`:mid`) the lines are simplified to under half a pixel
+  # at the band's closest zoom, and their coordinates rounded to match.
+  # Tolerances are in degrees; zoom bands are in transit_map.js.
+  @detail %{low: {0.0015, 4}, mid: {0.0002, 5}}
+
+  @doc """
+  Feed `feed_id`'s drawn lines in `categories`, as GeoJSON, at `detail`
+  (see `sanitize_detail/1`).
+  """
+  def route_feature_collection(categories, feed_id, detail \\ :full) do
     Route
     |> where([r], r.feed_id == ^feed_id)
     |> where([r], r.category in ^categories)
     |> where([r], not is_nil(r.geometry))
     |> Repo.all()
     |> Display.drawn_lines()
-    |> Enum.map(&line_feature/1)
+    |> Enum.map(&line_feature(&1, detail))
     |> feature_collection()
   end
 
@@ -216,10 +235,10 @@ defmodule Transitmaps.Gtfs do
     |> length()
   end
 
-  defp line_feature(line) do
+  defp line_feature(line, detail) do
     %{
       type: "Feature",
-      geometry: line.geometry,
+      geometry: line_geometry(line.geometry, detail),
       properties: %{
         name: line.name,
         long_name: line.long_name,
@@ -231,6 +250,27 @@ defmodule Transitmaps.Gtfs do
         light: Identity.luminance(line.color) > 0.5
       }
     }
+  end
+
+  defp line_geometry(geometry, :full), do: geometry
+
+  defp line_geometry(geometry, detail) do
+    {tolerance, places} = Map.fetch!(@detail, detail)
+
+    # A strand shorter than the rounding collapses to one point and is dropped.
+    update_in(geometry.coordinates, fn strands ->
+      for strand <- strands,
+          simplified = simplify_strand(strand, tolerance, places),
+          length(simplified) >= 2,
+          do: simplified
+    end)
+  end
+
+  defp simplify_strand(strand, tolerance, places) do
+    strand
+    |> Geometry.simplify(tolerance)
+    |> Enum.map(fn [lon, lat] -> [Float.round(lon / 1, places), Float.round(lat / 1, places)] end)
+    |> Enum.dedup()
   end
 
   defp stop_feature(%Stop{} = stop) do

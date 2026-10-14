@@ -2,6 +2,7 @@ This is a web application written using the Phoenix web framework.
 
 ## Project guidelines
 
+- Follow [DESIGN.md](DESIGN.md) for all UI work. It replaces any other design instructions in this file. `assets/css/tokens.css` and `assets/css/components.css` are copies from the design guide: never edit them; app-specific CSS goes in `assets/css/ui-local.css`
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
@@ -13,14 +14,12 @@ This is a web application written using the Phoenix web framework.
   - You failed to follow the Authenticated Routes guidelines, or you failed to pass `current_scope` to `<Layouts.app>`
   - **Always** fix the `current_scope` error by moving your routes to the proper `live_session` and ensure you pass `current_scope` as needed
 - Phoenix v1.8 moved the `<.flash_group>` component to the `Layouts` module. You are **forbidden** from calling `<.flash_group>` outside of the `layouts.ex` module
-- Out of the box, `core_components.ex` imports an `<.icon name="hero-x-mark" class="w-5 h-5"/>` component for for hero icons. **Always** use the `<.icon>` component for icons, **never** use `Heroicons` modules or similar
+- There is no icon library. `<.icon name="close" />` renders one of the Unicode glyphs from DESIGN.md section 9; a glyph that is a button's only content needs an `aria-label` on the button
 - **Always** use the imported `<.input>` component for form inputs from `core_components.ex` when available. `<.input>` is imported and using it will save steps and prevent errors
-- If you override the default input classes (`<.input class="myclass px-2 py-1 rounded-lg">)`) class with your own values, no default classes are inherited, so your
-custom classes must fully style the input
+- A `class` given to `<.input>` is added to the `ui-input` (or `ui-select`, `ui-textarea`) class, so the input keeps the design guide's styling
 
 ### JS and CSS guidelines
 
-- **Use Tailwind CSS classes and custom CSS rules** to create polished, responsive, and visually stunning interfaces.
 - Tailwindcss v4 **no longer needs a tailwind.config.js** and uses a new import syntax in `app.css`:
 
       @import "tailwindcss" source(none);
@@ -30,7 +29,7 @@ custom classes must fully style the input
 
 - **Always use and maintain this import syntax** in the app.css file for projects generated with `phx.new`
 - **Never** use `@apply` when writing raw css
-- **Always** manually write your own tailwind-based components instead of using daisyUI for a unique, world-class design
+- Build from the `ui-*` classes in `components.css`; Tailwind is for layout only. Do not add daisyUI or another component library
 - Out of the box **only the app.js and app.css bundles are supported**
   - You cannot reference an external vendor'd script `src` or link `href` in the layouts
   - You must import the vendor deps into app.js and app.css to use them
@@ -38,10 +37,7 @@ custom classes must fully style the input
 
 ### UI/UX & design guidelines
 
-- **Produce world-class UI designs** with a focus on usability, aesthetics, and modern design principles
-- Implement **subtle micro-interactions** (e.g., button hover effects, and smooth transitions)
-- Ensure **clean typography, spacing, and layout balance** for a refined, premium look
-- Focus on **delightful details** like hover effects, loading states, and smooth page transitions
+- See [DESIGN.md](DESIGN.md). Before reporting UI work as done, go through its checklist (section 16) and run its contrast audit (appendix B) in light and dark mode
 
 
 <!-- usage-rules-start -->

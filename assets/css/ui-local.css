@@ -1,0 +1,731 @@
+/* Transit Maps' own UI, built from tokens.css and components.css (DESIGN.md).
+   Unlayered, so it also wins over maplibre-gl.css, which is unlayered too. */
+
+/* ---------- Density ---------- */
+
+/* Touch-first screens: 44px targets.
+   Reason: most visits are on phones, so every target is a thumb's size there
+   (DESIGN.md section 5.1). A mouse or trackpad keeps the default density. */
+@media (pointer: coarse) {
+  :root {
+    --control-h: 2.75rem;
+    --control-h-compact: 2.75rem;
+    --control-h-sm: 2.75rem;
+    --row-h: 2.75rem;
+  }
+}
+
+/* ---------- Basemap palette (section 3.7) ---------- */
+
+/* The map hook reads these and paints the basemap with them, so the map
+   follows light and dark mode like the rest of the page. Grayscale, so the
+   transit lines carry the only hues on the map. */
+:root {
+  --map-land: light-dark(#f4f4f4, #141414);
+  --map-water: light-dark(#d9d9d9, #050505);
+  --map-park: light-dark(#ececec, #181818);
+  --map-building: light-dark(#e5e5e5, #1e1e1e);
+  --map-road: light-dark(#ffffff, #262626);
+  --map-road-casing: light-dark(#dcdcdc, #1c1c1c);
+  --map-motorway: light-dark(#ffffff, #333333);
+  --map-motorway-casing: light-dark(#c4c4c4, #242424);
+  --map-boundary: light-dark(#b3b3b3, #4d4d4d);
+  --map-label: light-dark(#6b6b6b, #8f8f8f);
+  --map-water-label: light-dark(#8c8c8c, #6b6b6b);
+}
+
+/* ---------- Page ---------- */
+
+html,
+body {
+  overscroll-behavior: none;
+}
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* Taps act at once: no grey flash, no double-tap-to-zoom delay. */
+button,
+a,
+input {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* The map is the page: it fills main edge to edge. */
+.tm-main {
+  position: relative;
+  padding: 0;
+}
+
+/* LiveView's connection state, from the classes it sets on its root. */
+.tm-live,
+.tm-connection {
+  display: none;
+}
+
+.phx-connected .tm-live {
+  display: inline-flex;
+}
+
+.phx-client-error .tm-connection,
+.phx-server-error .tm-connection {
+  display: flex;
+}
+
+.tm-connection {
+  flex-shrink: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.tm-flash {
+  flex-shrink: 0;
+  margin: var(--space-4) var(--page-pad-x) 0;
+}
+
+/* ---------- The map ---------- */
+
+.tm-explorer {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--map-land);
+}
+
+.tm-map {
+  position: absolute;
+  inset: 0;
+}
+
+/* The map takes keyboard focus for panning and zooming with the keys; the
+   ring sits inside it, since the map fills the page edge to edge. */
+.maplibregl-canvas:focus {
+  outline: none;
+}
+
+.maplibregl-canvas:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+
+.maplibregl-canvas {
+  cursor: grab;
+}
+
+.maplibregl-canvas:active {
+  cursor: grabbing;
+}
+
+/* First load: static text and a bar, over the whole map. */
+.tm-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  pointer-events: none;
+  background: var(--background);
+}
+
+.tm-loading[hidden] {
+  display: none;
+}
+
+.tm-loading-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(18rem, 100%);
+}
+
+.tm-loading-title {
+  font-weight: 600;
+}
+
+/* Layers that failed to load: a notice at the top of the map, between the
+   filter button and the controls. */
+.tm-map-notice {
+  position: absolute;
+  top: var(--space-4);
+  left: 50%;
+  z-index: 12;
+  width: min(30rem, calc(100% - 24rem));
+  transform: translateX(-50%);
+}
+
+.tm-map-notice[hidden] {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .tm-map-notice {
+    top: calc(var(--control-h-compact) + 2 * var(--space-4));
+    width: calc(100% - 2 * var(--space-4));
+  }
+}
+
+/* Used when the map cannot start at all. */
+.tm-map-error {
+  height: 100%;
+  min-height: 0;
+  background: var(--background);
+}
+
+/* Over the map, a control needs its own opaque surface. */
+.tm-on-map:not(:hover),
+.tm-on-map:disabled {
+  background: var(--surface);
+}
+
+.tm-on-map[aria-expanded="true"] {
+  color: var(--background);
+  background: var(--foreground);
+}
+
+/* ---------- Filter menu ---------- */
+
+.tm-menu-root {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 20rem;
+  max-width: calc(100% - 2 * var(--space-4));
+  max-height: calc(100% - 2 * var(--space-4));
+  pointer-events: none;
+}
+
+.tm-menu-root > * {
+  pointer-events: auto;
+}
+
+.tm-menu-count {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tm-menu {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-input) transparent;
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.tm-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+}
+
+.tm-menu-section + .tm-menu-section {
+  border-top: 1px solid var(--border);
+}
+
+.tm-menu-section .ui-panel-title {
+  min-height: var(--control-h-sm);
+  margin: 0;
+}
+
+.tm-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.tm-list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+}
+
+/* A row that switches one thing on the map: box, swatch, name, count. */
+.tm-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  text-align: left;
+  color: var(--foreground);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background-color var(--duration-color) ease;
+}
+
+.tm-toggle:hover:not(:disabled) {
+  background: var(--hover-surface);
+}
+
+.tm-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tm-toggle-label {
+  flex: 1;
+}
+
+.tm-toggle-count {
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+/* The checkbox look of a toggle row. The tick is drawn, not typed, so it
+   doesn't depend on the font having a check mark (a static rotation, not
+   motion). */
+.tm-check {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  transition: background-color var(--duration-color) ease;
+}
+
+[aria-checked="true"] > .tm-check {
+  background: var(--foreground);
+}
+
+[aria-checked="true"] > .tm-check::after {
+  content: "";
+  width: 32%;
+  height: 58%;
+  margin-top: -12%;
+  border: solid var(--background);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+@media (pointer: coarse) {
+  .tm-check {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+}
+
+/* Legend marks for colours from the data (section 3.6): a short stroke for a
+   kind of line, a dot for a kind of place, as each is drawn on the map. */
+.tm-swatch-line,
+.tm-swatch-dot {
+  flex: none;
+  background: var(--swatch, var(--label));
+}
+
+.tm-swatch-line {
+  width: 0.9rem;
+  height: 3px;
+}
+
+.tm-swatch-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  margin: 0 0.175rem;
+  border-radius: 50%;
+}
+
+/* A search result or a pack: name over a meta line, one action on the right. */
+.tm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--row-h);
+  padding: var(--space-2) var(--space-3);
+}
+
+.tm-row + .tm-row {
+  border-top: 1px solid var(--border);
+}
+
+.tm-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tm-row-meta {
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-row-meta.ui-hint--error {
+  color: var(--failure-text);
+}
+
+.tm-row-action {
+  flex-shrink: 0;
+}
+
+.tm-pack-progress {
+  width: 4.5rem;
+}
+
+.tm-region {
+  padding: var(--space-3) var(--space-3) 0;
+}
+
+/* A button that opens a sub-list, styled as a disclosure summary. */
+.tm-disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--control-h-sm);
+  padding: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--label);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color var(--duration-color) ease;
+}
+
+.tm-disclosure::before {
+  content: "\25B8" / "";
+}
+
+.tm-disclosure[aria-expanded="true"]::before {
+  content: "\25BE" / "";
+}
+
+.tm-disclosure:hover {
+  color: var(--foreground);
+}
+
+.tm-disclosure .ui-panel-title-aside {
+  font-size: var(--text-sm);
+}
+
+.tm-search {
+  font-size: var(--text-md);
+}
+
+/* At 16px iOS leaves the page alone when the field takes focus. */
+@media (pointer: coarse) {
+  .tm-search {
+    font-size: 16px;
+  }
+}
+
+.tm-search-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ---------- Map controls ---------- */
+
+.tm-controls {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.tm-control-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.tm-control-group > :first-child {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.tm-control-group > :last-child {
+  margin-top: -1px;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.tm-map-button {
+  width: var(--control-h);
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+
+.tm-map-button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tm-zoom-readout {
+  position: absolute;
+  right: var(--space-4);
+  bottom: 1.6rem;
+  z-index: 15;
+  display: none;
+  padding: 0.1rem 0.35rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  color: var(--muted-foreground);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.tm-zoom-readout[data-shown],
+body.playwright-visuals .tm-zoom-readout {
+  display: block;
+}
+
+/* Phones: the menu spans the width, and the controls sit in thumb reach.
+   Phones pinch to zoom, so the zoom buttons step aside there. */
+@media (max-width: 640px) {
+  .tm-menu-root {
+    right: var(--space-4);
+    width: auto;
+  }
+
+  .tm-controls {
+    top: auto;
+    bottom: 4.5rem;
+  }
+
+  .tm-control-group {
+    display: none;
+  }
+
+  .tm-zoom-readout {
+    top: var(--space-4);
+    bottom: auto;
+  }
+}
+
+/* ---------- MapLibre's own controls and popups ---------- */
+
+/* MapLibre sets its own font on the map; its popups and controls use ours. */
+.maplibregl-map {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.4;
+}
+
+.maplibregl-ctrl-attrib.maplibregl-compact,
+.maplibregl-ctrl-attrib {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  color: var(--muted-foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.maplibregl-ctrl-attrib a {
+  color: var(--muted-foreground);
+  text-decoration: underline;
+}
+
+.maplibregl-ctrl-attrib a:hover {
+  color: var(--link);
+}
+
+.maplibregl-ctrl-attrib-button {
+  background-color: transparent;
+}
+
+.maplibregl-popup {
+  z-index: 18;
+}
+
+.maplibregl-popup-content {
+  min-width: min(14rem, calc(100vw - 2rem));
+  max-width: min(18rem, calc(100vw - 2rem));
+  padding: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+
+.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: var(--border-strong);
+}
+
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+  border-top-color: var(--border-strong);
+}
+
+.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: var(--border-strong);
+}
+
+.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: var(--border-strong);
+}
+
+.maplibregl-popup-close-button {
+  top: var(--space-3);
+  right: var(--space-3);
+  display: grid;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  font-size: var(--text-md);
+  line-height: 1;
+  color: var(--muted-foreground);
+  border-radius: var(--radius);
+  transition:
+    background-color var(--duration-color) ease,
+    color var(--duration-color) ease;
+}
+
+.maplibregl-popup-close-button:hover {
+  color: var(--foreground);
+  background: var(--hover-surface);
+}
+
+/* A station, a line, or a place: header band, then the facts. */
+.tm-popup-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: var(--space-4) calc(var(--control-h-sm) + var(--space-5)) var(--space-4) var(--space-4);
+  background: var(--hover-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.tm-popup-header:only-child {
+  border-bottom: 0;
+}
+
+.tm-popup-title {
+  font-size: var(--text-md);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.tm-popup-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-popup-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-height: 14rem;
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.tm-popup-mode {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tm-popup-mode-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.tm-popup-mode-head .ui-label {
+  flex-shrink: 0;
+}
+
+.tm-popup-operator {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-popup-count {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-popup-lines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.tm-popup-lines .ui-chip {
+  max-width: 100%;
+}
+
+
+.tm-popup-empty {
+  padding: var(--space-4);
+  color: var(--muted-foreground);
+}
+
+
+.user-location-dot {
+  width: 1rem;
+  height: 1rem;
+  background: var(--link);
+  border: 3px solid var(--background);
+  border-radius: 50%;
+  outline: 1px solid var(--link);
+}
+
+/* While disconnected, the filters cannot reach the server (section 12.1). */
+.phx-client-error .tm-menu-root,
+.phx-server-error .tm-menu-root {
+  pointer-events: none;
+  opacity: 0.45;
+}

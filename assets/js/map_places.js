@@ -8,6 +8,8 @@
 // renders them too); this module owns what a group means on the map — which
 // OSM classes belong to it, and what its pin looks like.
 
+import {withAlpha} from "./map_palette"
+
 // Raw `poi` classes, grouped into the categories the sidebar offers. Anything
 // unlisted stays hidden, which is most of the layer: bollards, gates, waste
 // baskets, bicycle parking and telephones outnumber real destinations roughly
@@ -149,9 +151,9 @@ export const placePinId = (group) => `place-pin-${group}`
 
 // MapLibre's sprite ships no SDF icons, so sprite glyphs cannot be tinted to a
 // category colour. Painting each pin onto a canvas gives full control instead:
-// a coloured disc, a white ring so pins stay legible over parks and water, and
-// the group's glyph.
-export const renderPlacePin = (color, group, pixelRatio) => {
+// a coloured disc, a ring in the page's background colour so pins stay
+// legible over parks and water, and the group's glyph in white.
+export const renderPlacePin = (color, group, pixelRatio, ring) => {
   const size = Math.round(PIN_PX * pixelRatio)
   const canvas = document.createElement("canvas")
   canvas.width = size
@@ -161,7 +163,7 @@ export const renderPlacePin = (color, group, pixelRatio) => {
   const scale = size / GRID
   ctx.scale(scale, scale)
 
-  ctx.fillStyle = "rgba(255,255,255,0.95)"
+  ctx.fillStyle = ring
   ctx.beginPath()
   ctx.arc(12, 12, RING_RADIUS, 0, 2 * Math.PI)
   ctx.fill()
@@ -208,7 +210,13 @@ export const placeFilter = (groups) => {
   return ["all", ["has", "name"], ["match", ["get", "class"], classes, true, false]]
 }
 
-export const placeLayer = () => ({
+// Label colours come from the map palette (map_palette.js).
+export const placeLabelPaint = (palette) => ({
+  "text-color": palette.muted,
+  "text-halo-color": withAlpha(palette.background, 0.96),
+})
+
+export const placeLayer = (palette) => ({
   id: PLACES_LAYER_ID,
   type: "symbol",
   source: "openmaptiles",
@@ -242,8 +250,7 @@ export const placeLayer = () => ({
     "text-optional": true,
   },
   paint: {
-    "text-color": "#55555a",
-    "text-halo-color": "rgba(255,255,255,0.96)",
+    ...placeLabelPaint(palette),
     "text-halo-width": 1.6,
     "text-halo-blur": 0.35,
   },

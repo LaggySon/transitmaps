@@ -1,0 +1,106 @@
+/* Laggish design guide tokens. Each color is light-dark(light value, dark value).
+   The OS setting picks the mode. data-theme="light" or "dark" on <html> overrides it.
+   Fixed: fonts, colors, shape, motion. Adjustable per app (section 2.2): type scale, spacing, sizes. */
+:root {
+  color-scheme: light dark;
+
+  /* Fonts. Load Geist and Geist Mono (section 4). */
+  --font-sans: "Geist", Arial, Helvetica, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* Surfaces and text */
+  --background: light-dark(#ffffff, #0a0a0a);
+  --surface: light-dark(#ffffff, #0a0a0a);
+  --foreground: light-dark(#171717, #ededed);
+  --muted-foreground: light-dark(#3f3f3f, #c9c9c9);
+  --label: light-dark(
+    color-mix(in srgb, var(--foreground) 62%, transparent),
+    color-mix(in srgb, var(--foreground) 70%, transparent)
+  );
+  --placeholder: var(--label);
+  --border: color-mix(in srgb, var(--foreground) 18%, transparent);
+  --border-input: color-mix(in srgb, var(--foreground) 30%, transparent);
+  --border-strong: var(--foreground);
+  --hover-surface: light-dark(
+    color-mix(in srgb, var(--foreground) 6%, transparent),
+    color-mix(in srgb, var(--foreground) 10%, transparent)
+  );
+  --backdrop: rgb(0 0 0 / 0.55);
+  --hatch-a: color-mix(in srgb, var(--foreground) 4%, var(--surface));
+  --hatch-b: color-mix(in srgb, var(--foreground) 11%, var(--surface));
+
+  /* Interactive */
+  --link: light-dark(#0044cc, #6db3f2);
+  --focus: light-dark(#1e63b6, #228ce8);
+
+  /* State fills: bars, tints, rails, swatches, heatmap cells */
+  --success: light-dark(#90ee90, #6eeb83);
+  --failure: light-dark(#f08080, #ff6b8b);
+  --progress: light-dark(#26abfe, #1096ef);
+  --warning: light-dark(#ffa500, #ffb84d);
+  --inactive: light-dark(#b0bec5, #d0d7de);
+  --skipped: light-dark(#5b8def, #7fa8ff);
+  --accent: light-dark(#6e56cf, #a28bf5);
+
+  /* State text: 4.5:1 or better on --background, on a header band, and on a badge tint */
+  --success-text: light-dark(#17692f, #6eeb83);
+  --failure-text: light-dark(#b3261e, #ff6b8b);
+  --progress-text: light-dark(#0a5598, #5eb8ff);
+  --warning-text: light-dark(#8a5200, #ffb84d);
+  --inactive-text: light-dark(#5a6570, #d0d7de);
+  --skipped-text: light-dark(#1f4fb8, #9bbcff);
+  --accent-text: light-dark(#4f3aa8, #b9a6ff);
+
+  /* Text on a solid state fill (not on --accent in light mode) */
+  --on-fill: light-dark(#171717, #0a0a0a);
+  /* Secondary text on a 45% state tint */
+  --muted-on-tint: light-dark(var(--muted-foreground), var(--foreground));
+
+  /* Shape */
+  --radius: 2px;
+  --rail: 3px;
+
+  /* Type scale (adjustable as a set) */
+  --text-2xs: 0.625rem;
+  --text-xs: 0.7rem;
+  --text-sm: 0.78rem;
+  --text-md: 0.85rem;
+  --text-lg: clamp(1rem, 2.2vw, 1.2rem);
+  --text-xl: clamp(1.25rem, 3vw, 1.75rem);
+  --text-hero: 2.4rem;
+
+  /* Spacing scale (adjustable) */
+  --space-1: 0.15rem;
+  --space-2: 0.25rem;
+  --space-3: 0.35rem;
+  --space-4: 0.5rem;
+  --space-5: 0.75rem;
+  --space-6: 1rem;
+  --space-7: 1.5rem;
+
+  /* Sizes (adjustable; --control-h-sm stays at least 1.5rem) */
+  --control-h: 1.75rem;
+  --control-h-compact: 1.6rem;
+  --control-h-sm: 1.5rem;
+  --row-h: 2rem;
+  --topbar-height: 2.25rem;
+  --page-pad-x: clamp(0.5rem, 1.2vw, 1rem);
+  --page-pad-y: 0.5rem;
+
+  /* Motion: color changes only */
+  --duration-color: 120ms;
+}
+
+/* A theme choice made by the user (section 2.4) */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* An output surface (section 0.1) keeps the browser default, so a transparent page stays transparent */
+:root[data-surface="output"] {
+  color-scheme: normal;
+}

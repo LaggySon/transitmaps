@@ -155,6 +155,30 @@ defmodule TransitmapsWeb.MapLiveTest do
     assert has_element?(view, "#place-toggle-essentials[aria-checked='true']")
   end
 
+  test "keeps what the map shows in the URL", %{conn: conn} do
+    # The visual fixture has routes of every mode, so none is switched off.
+    {:ok, view, _html} = live(conn, ~p"/?visual_test=1")
+
+    view |> element("#map-menu-button") |> render_click()
+    view |> element("#layer-toggle-bus") |> render_click()
+    assert_push_event(view, "url-state", %{query: "modes=bus,ferry,intercity,metro,rail,tram"})
+
+    view |> element("#map-detail-labels") |> render_click()
+
+    assert_push_event(view, "url-state", %{
+      query: "modes=bus,ferry,intercity,metro,rail,tram&details=stops"
+    })
+  end
+
+  test "opens with the filters the URL names", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/?modes=bus,nonsense&details=&places=food&hide=7,x")
+
+    assert has_element?(view, ~s{#transit-map[data-enabled='["bus"]']})
+    assert has_element?(view, ~s{#transit-map[data-details='[]']})
+    assert has_element?(view, ~s{#transit-map[data-places='["food"]']})
+    assert has_element?(view, ~s{#transit-map[data-hidden='[7]']})
+  end
+
   test "starts with every place category shown", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
 

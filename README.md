@@ -61,10 +61,11 @@ of different agencies within 250 m into one interchange marker.
 
 - Lines come in three details: `low` below zoom 8, `mid` below 11, and
   full detail from there, each simplified to under half a pixel. Zoomed in,
-  an agency's low-detail lines are a probe: its sharper lines and its
-  stations (`/api/stops.geojson`, from zoom 10) load only if those lines
-  actually pass through the view, since a national network's service area
-  can cover half a continent. Data the view no longer needs is let go.
+  lines come in grid cells (`&cell=x,y`: 4° for mid, 1° for full) holding
+  only the stretches that cross them, and stations (`/api/stops.geojson`,
+  from zoom 10) in 1° cells: one train to Paris otherwise brings a whole
+  national network along (`Transitmaps.Gtfs.Cells`). Data the view no
+  longer needs is let go.
 - The search box also finds stations: `Transitmaps.Stations` keeps an
   in-memory index of every rail, metro and tram station, one entry per
   place, rebuilt when an agency lands and hourly. Picking one flies there

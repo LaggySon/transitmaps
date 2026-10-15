@@ -32,12 +32,31 @@ const LOAD_PADDING = 0.5
 // How much of each line's detail the server sends (Gtfs.sanitize_detail/1).
 // A zoomed-out view spans dozens of national networks, and their full track
 // would not fit in a phone's memory: Belgium at zoom 5 is over 100 MB of it.
-const DETAILS = ["low", "mid", "full"]
 const detailForZoom = (zoom) => (zoom < 8 ? "low" : zoom < 11 ? "mid" : "full")
 
 // Stations are drawn from zoom 10.5 (the stops layers' minzoom), so they
 // load from 10 and not before.
 const STOPS_MIN_ZOOM = 10
+
+// Zoomed in, lines and stations come in grid cells of this many degrees
+// (Transitmaps.Gtfs.Cells), each with only what crosses it: a national
+// network sent whole to a view of Paris was over 80 MB.
+const CELL_DEGREES = {mid: 4, full: 1, stops: 1}
+
+// The cells, as "x,y", of a part's grid covering the view's overlap with an
+// agency's service area.
+const cellsFor = (part, [west, south, east, north], [[feedWest, feedSouth], [feedEast, feedNorth]]) => {
+  const size = CELL_DEGREES[part]
+  const [w, s, e, n] = [Math.max(west, feedWest), Math.max(south, feedSouth), Math.min(east, feedEast), Math.min(north, feedNorth)]
+  if (w > e || s > n) return []
+
+  const clamp = (value, low, high) => Math.min(Math.max(value, low), high)
+  const xs = [clamp(Math.floor(w / size), -180, 179), clamp(Math.floor(e / size), -180, 179)]
+  const ys = [clamp(Math.floor(s / size), -90, 89), clamp(Math.floor(n / size), -90, 89)]
+  const cells = []
+  for (let x = xs[0]; x <= xs[1]; x++) for (let y = ys[0]; y <= ys[1]; y++) cells.push(`${x},${y}`)
+  return cells
+}
 
 // Stations of different agencies this close together are one interchange —
 // the same rule `Transitmaps.Gtfs.merge_colocated_stops/1` applies within an
@@ -851,84 +870,62 @@ const TransitMap = {
 
   // What the view needs: each drawn agency's enabled modes, as lines at the
   // zoom's detail, and their stations once they can be drawn.
-  //
-  // An agency's service area is a box, and a national network's box can be
-  // most of a continent: one cross-border train puts Sweden's rail network
-  // "near" Paris. So zoomed in, an agency's low-detail lines are fetched
-  // first as a cheap probe, and its sharper lines and stations only if
-  // those lines actually come near the view.
+  // Keys are "feedId:mode:part" for low-detail lines, and
+  // "feedId:mode:part:x,y" for a cell of mid or full lines or of stations.
+  // An agency is asked only for the modes it runs.
   wantedKeys() {
     const zoom = this.map.getZoom()
     const detail = detailForZoom(zoom)
-    const box = this.viewBox(LOAD_PADDING)
+    const view = this.viewBox(LOAD_PADDING)
 
-    return this.activeFeeds().flatMap((id) =>
-      MODE_ORDER.filter((cat) => this.enabled.has(cat)).flatMap((cat) => {
-        const probe = `${id}:${cat}:low`
-        if (detail === "low" || !this.feedData.has(probe)) return [probe]
-        if (!this.linesNear(probe, box)) return []
-        return [`${id}:${cat}:${detail}`, ...(zoom >= STOPS_MIN_ZOOM ? [`${id}:${cat}:stops`] : [])]
+    return this.activeFeeds().flatMap((id) => {
+      const feed = this.feeds.find((candidate) => candidate.id === id)
+      return this.modesOf(feed).flatMap((cat) => {
+        if (detail === "low") return [`${id}:${cat}:low`]
+
+        const lines = cellsFor(detail, view, feed.bounds).map((cell) => `${id}:${cat}:${detail}:${cell}`)
+        const stops =
+          zoom >= STOPS_MIN_ZOOM ? cellsFor("stops", view, feed.bounds).map((cell) => `${id}:${cat}:stops:${cell}`) : []
+        return [...lines, ...stops]
       })
-    )
+    })
   },
 
-  // Whether any of the loaded lines under `key` crosses the box: any segment
-  // whose own bounding box overlaps it, which errs towards loading.
-  linesNear(key, [west, south, east, north]) {
-    return (this.feedData.get(key)?.features || []).some((feature) =>
-      feature.geometry.coordinates.some((strand) =>
-        strand.some(([lng, lat], index) => {
-          const [nextLng, nextLat] = strand[index + 1] || [lng, lat]
-          return (
-            Math.min(lng, nextLng) <= east &&
-            Math.max(lng, nextLng) >= west &&
-            Math.min(lat, nextLat) <= north &&
-            Math.max(lat, nextLat) >= south
-          )
-        })
-      )
-    )
+  modesOf(feed) {
+    return MODE_ORDER.filter((cat) => this.enabled.has(cat) && (!feed?.counts || (feed.counts[cat] || 0) > 0))
   },
 
-  // The key of the lines to draw for an agency's mode: the zoom's detail
-  // once it has loaded, until then whichever detail is already here, so a
-  // line never blinks out while a sharper copy arrives.
-  linesKey(id, cat) {
-    const detail = detailForZoom(this.map.getZoom())
-    return [detail, ...[...DETAILS].reverse()]
-      .map((part) => `${id}:${cat}:${part}`)
-      .find((key) => this.feedData.has(key))
+  // The loaded keys of an agency's mode drawn as its lines: the view's own
+  // cells once any has landed; until then whatever lines are already here,
+  // so lines don't blink out while sharper ones arrive.
+  lineKeys(id, cat, wanted) {
+    const prefix = `${id}:${cat}:`
+    const loaded = (key) => this.feedData.has(key)
+    const own = wanted.filter((key) => key.startsWith(prefix) && !key.includes(":stops:") && loaded(key))
+    if (own.length > 0) return own
+
+    return [...this.feedData.keys()].filter((key) => key.startsWith(prefix) && !key.includes(":stops"))
   },
 
-  lines(id, cat) {
-    const key = this.linesKey(id, cat)
-    return key ? this.feedData.get(key).features : []
+  lines(id, cat, wanted = this.wantedKeys()) {
+    return this.lineKeys(id, cat, wanted).flatMap((key) => this.feedData.get(key).features)
   },
 
-  // Lets go of data the view no longer draws: agencies out of range or
-  // hidden, modes switched off, stations below their zoom, and a detail once
-  // the zoom's own detail has replaced it. Panning across a continent would
-  // otherwise keep every network it passed in memory.
-  pruneFeedData() {
-    const active = new Set(this.activeFeeds().map(String))
-    const zoom = this.map.getZoom()
-
+  // Lets go of everything the view does not draw: agencies out of range or
+  // hidden, modes switched off, cells out of view, stations below their
+  // zoom, and coarser lines once the view's own have landed. Panning across
+  // a continent would otherwise keep every network it passed in memory.
+  pruneFeedData(keep) {
     for (const key of this.feedData.keys()) {
-      const [id, cat, part] = key.split(":")
-      const drawn = active.has(id) && this.enabled.has(cat)
-      // Low-detail lines stay as the probe for whether an agency is near.
-      const needed =
-        part === "stops" ? zoom >= STOPS_MIN_ZOOM : part === "low" || this.linesKey(id, cat) === key
-
-      if (!drawn || !needed) this.feedData.delete(key)
+      if (!keep.has(key)) this.feedData.delete(key)
     }
   },
 
   async loadFeed(key) {
     if (this.pending.has(key)) return this.pending.get(key)
 
-    const [feedId, cat, part] = key.split(":")
-    const query = `feed=${feedId}&cats=${encodeURIComponent(cat)}`
+    const [feedId, cat, part, cell] = key.split(":")
+    const query = `feed=${feedId}&cats=${encodeURIComponent(cat)}${cell ? `&cell=${cell}` : ""}`
     const url = part === "stops" ? `/api/stops.geojson?${query}` : `/api/routes.geojson?${query}&detail=${part}`
 
     const request = (async () => {
@@ -956,12 +953,12 @@ const TransitMap = {
   render() {
     if (!this.styleReady) return
 
-    this.pruneFeedData()
-
     const active = this.activeFeeds()
+    const wanted = this.wantedKeys()
     const drawn = active.flatMap((id) => MODE_ORDER.filter((cat) => this.enabled.has(cat)).map((cat) => [id, cat]))
-    const lineKeys = drawn.map(([id, cat]) => this.linesKey(id, cat)).filter(Boolean)
-    const stopKeys = drawn.map(([id, cat]) => `${id}:${cat}:stops`).filter((key) => this.feedData.has(key))
+    const lineKeys = drawn.flatMap(([id, cat]) => this.lineKeys(id, cat, wanted))
+    const stopKeys = wanted.filter((key) => key.includes(":stops:") && this.feedData.has(key))
+    this.pruneFeedData(new Set([...lineKeys, ...stopKeys]))
     const renderKey = [...lineKeys, ...stopKeys].join(",")
 
     if (renderKey !== this.renderedKey) {
@@ -973,7 +970,7 @@ const TransitMap = {
       MODE_ORDER.filter((cat) => this.enabled.has(cat)).forEach((cat) => {
         const routes = {
           type: "FeatureCollection",
-          features: active.flatMap((id) => this.lines(id, cat)),
+          features: active.flatMap((id) => this.lines(id, cat, wanted)),
         }
         drawnLines += routes.features.length
         const stops = {type: "FeatureCollection", features: stopsByCategory.get(cat) || []}

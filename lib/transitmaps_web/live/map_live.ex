@@ -386,8 +386,9 @@ defmodule TransitmapsWeb.MapLive do
   defp result_feed(%{feed_id: feed_id}, feeds), do: Enum.find(feeds, &(&1.id == feed_id))
   defp result_feed(entry, feeds), do: Enum.find(feeds, &(&1.catalog_id == entry.id))
 
-  # What the map hook needs to decide which agencies are on screen.
-  defp map_feeds(feeds), do: Enum.map(feeds, &Map.take(&1, [:id, :bounds]))
+  # What the map hook needs to decide which agencies are on screen,
+  # and which modes each runs, so it never asks an agency for one it doesn't.
+  defp map_feeds(feeds), do: Enum.map(feeds, &Map.take(&1, [:id, :bounds, :counts]))
 
   defp put_enabled(socket, enabled) do
     socket

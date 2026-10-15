@@ -15,8 +15,9 @@ from the guide, and the app's own rules live in `assets/css/ui-local.css`.
 Visitors can add any transit agency with a public GTFS feed in the
 [Mobility Database](https://mobilitydatabase.org) catalog by searching for it
 in the map's menu; the server downloads it once and every visitor reads it
-from this app. The map draws whichever agencies overlap the view. Opens on
-Great Britain's national rail network.
+from this app. The map draws whichever agencies overlap the view, and the
+same search box finds their stations. Opens on Great Britain's national
+rail network.
 
 ## Running
 
@@ -53,11 +54,21 @@ pg_ctl -D .pgdata -l .pgdata/pg.log start
 ## Agencies
 
 Every imported feed is an agency the map can draw. Its service area (the
-1st–99th percentile box of its stops) decides when the map loads it: the
-browser fetches each agency in or near the view per mode
-(`/api/routes.geojson?feed=ID&cats=rail`), and merges stations of different
-agencies within 250 m into one interchange marker.
+1st–99th percentile box of its stops) decides when the map considers it:
+the browser fetches each agency in or near the view per mode
+(`/api/routes.geojson?feed=ID&cats=rail&detail=low`), and merges stations
+of different agencies within 250 m into one interchange marker.
 
+- Lines come in three details: `low` below zoom 8, `mid` below 11, and
+  full detail from there, each simplified to under half a pixel. Zoomed in,
+  an agency's low-detail lines are a probe: its sharper lines and its
+  stations (`/api/stops.geojson`, from zoom 10) load only if those lines
+  actually pass through the view, since a national network's service area
+  can cover half a continent. Data the view no longer needs is let go.
+- The search box also finds stations: `Transitmaps.Stations` keeps an
+  in-memory index of every rail, metro and tram station, one entry per
+  place, rebuilt when an agency lands and hourly. Picking one flies there
+  and opens its details.
 - The Mobility Database feed list (`feeds_v2.csv`) is downloaded at boot and
   daily, cached in `priv/gtfs_cache/catalog.csv`; a failed download keeps the
   previous copy. Feeds that are inactive, need an API key, are listed

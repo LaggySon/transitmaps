@@ -237,9 +237,6 @@ const TransitMap = {
     this.hidden = new Set(this.parseData("hidden", []))
     this.reportedView = null
     this.renderedKey = null
-    // The full-screen loading card only covers the first load; after that,
-    // agencies coming into range as the map pans load without hiding it.
-    this.firstLoadShown = false
     this.dataLoadBatch = 0
     this.dataLoading = false
     this.enabled = new Set(this.parseData("enabled", []))
@@ -279,6 +276,9 @@ const TransitMap = {
     this.styleReady = false
     this.map.on("style.load", () => {
       this.styleReady = true
+      this.compactLoading()
+      this.updateZoomReadout()
+      this.basemapLabelsId = this.map.getStyle().layers.find((layer) => layer.type === "symbol")?.id
       this.applyBasemap()
       // Places are added before any transit layer exists, which leaves every
       // pin below the lines and stations the map is actually about.
@@ -325,6 +325,13 @@ const TransitMap = {
       const search = params.toString().replaceAll("%2C", ",")
       history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}${location.hash}`)
     })
+    // A station picked in the search: fly to it, and open its details once
+    // its stops are drawn (see openPendingStation).
+    this.handleEvent("show-station", ({lng, lat, name}) => {
+      this.closePopup()
+      this.pendingStation = {lng, lat, name}
+      this.map.flyTo({center: [lng, lat], zoom: Math.max(this.map.getZoom(), 15), duration: 900})
+    })
     this.handleEvent("fly-to", ({bounds}) => {
       this.map.fitBounds(bounds, {padding: this.mapPadding(), duration: 900})
     })
@@ -340,8 +347,8 @@ const TransitMap = {
 
     // Escape lets a focused line go (the menu has its own Escape).
     this.escapeHandler = (event) => {
-      if (event.key !== "Escape" || !this.focus) return
-      if (this.popup) this.popup.remove()
+      if (event.key !== "Escape" || !(this.focus || this.popupOnClose || this.popupElement())) return
+      this.closePopup()
       this.clearFocus()
     }
     window.addEventListener("keydown", this.escapeHandler)
@@ -353,10 +360,14 @@ const TransitMap = {
 
     this.stopWatchingScheme = watchColorScheme(() => this.applyPalette())
 
+    this.map.on("click", (event) => this.handleMapClick(event))
+    this.el.querySelector("[data-map-detail-close]")?.addEventListener("click", () => this.closePopup())
+
     this.el.querySelector("[data-map-notice-dismiss]")?.addEventListener("click", () => this.hideMapNotice())
     this.el.querySelector("[data-map-notice-retry]")?.addEventListener("click", () => {
+      const retry = this.noticeRetry
       this.hideMapNotice()
-      this.syncLayers()
+      if (retry) retry()
     })
   },
 
@@ -380,8 +391,18 @@ const TransitMap = {
 
   markMapReady() {
     this.el.dataset.mapReady = "true"
-    if (!this.dataLoading && this.el.dataset.transitReady !== "error") this.hideLoading()
+    if (!this.dataLoading) this.hideLoading()
     this.updateZoomReadout()
+  },
+
+  // The basemap's style is in. Whatever is still loading steps aside to a
+  // small status over the map, so tiles and lines fill in as they arrive and
+  // the map can be moved meanwhile.
+  compactLoading() {
+    const loading = this.el.querySelector(".map-loading")
+    if (!loading) return
+    loading.classList.add("tm-loading--compact")
+    if (!this.dataLoading) loading.hidden = true
   },
 
   showLoading(label, detail, progress = null) {
@@ -410,10 +431,13 @@ const TransitMap = {
     if (loading) loading.hidden = true
   },
 
-  showMapNotice(text) {
+  // A problem with the map, named at its top, with a way to try again.
+  showMapNotice(text, retry) {
     const notice = this.el.querySelector("[data-map-notice]")
     if (!notice) return
     notice.querySelector("[data-map-notice-text]").textContent = text
+    this.noticeRetry = retry
+    notice.querySelector("[data-map-notice-retry]").hidden = !retry
     notice.hidden = false
   },
 
@@ -422,30 +446,48 @@ const TransitMap = {
     if (notice) notice.hidden = true
   },
 
-  startDataLoading(batch, categories) {
-    this.dataLoading = categories.length > 0
-    this.dataLoadProgress = {batch, categories: new Set(categories), complete: new Set()}
+  // Loading shows only when it takes long enough to notice: a pan that
+  // brings in one small agency should not flash a status.
+  startDataLoading(batch, keys) {
+    clearTimeout(this.loadingTimer)
+    this.dataLoading = keys.length > 0
+    this.dataLoadProgress = {batch, keys: new Set(keys), complete: new Set()}
 
-    if (this.dataLoading && !this.firstLoadShown) {
-      this.showLoading("Loading transit data…", `0 of ${categories.length} layers ready`, 0)
+    if (this.dataLoading) {
+      const delay = this.styleReady ? 400 : 0
+      this.loadingTimer = setTimeout(() => this.showDataProgress(batch), delay)
     }
   },
 
   advanceDataLoading(batch, key) {
     const progress = this.dataLoadProgress
-    if (!progress || progress.batch !== batch || !progress.categories.has(key)) return
+    if (!progress || progress.batch !== batch || !progress.keys.has(key)) return
 
     progress.complete.add(key)
-    if (this.firstLoadShown) return
+    if (!this.el.querySelector(".map-loading")?.hidden) this.showDataProgress(batch)
+  },
+
+  showDataProgress(batch) {
+    const progress = this.dataLoadProgress
+    if (!this.dataLoading || progress?.batch !== batch) return
+
     const complete = progress.complete.size
-    const total = progress.categories.size
-    const category = key.split(":")[1]
-    const label = MODE_LABEL[category] || category
+    const total = progress.keys.size
     this.showLoading(
       "Loading transit data…",
-      `${label} ready · ${complete} of ${total} layers`,
+      `${complete} of ${total} ${total === 1 ? "layer" : "layers"}`,
       (complete / total) * 100
     )
+  },
+
+  // Lines are drawn as they arrive, at most a few times a second, rather
+  // than once everything in view has loaded.
+  scheduleRender() {
+    if (this.renderTimer) return
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = null
+      this.render()
+    }, 250)
   },
 
   announceIdle() {
@@ -466,8 +508,9 @@ const TransitMap = {
   // Room for what sits over the map: the filter button (and its menu when
   // it is open beside a wide map) at the top-left, the controls on the right.
   mapPadding() {
-    if (window.matchMedia("(max-width: 640px)").matches) {
-      return {top: 56, right: 24, bottom: 72, left: 24}
+    if (this.narrow()) {
+      const panel = this.el.querySelector("[data-map-detail]:not([hidden])")
+      return {top: 56, right: 24, bottom: panel ? panel.offsetHeight + 24 : 72, left: 24}
     }
 
     const menu = document.getElementById("map-menu")
@@ -570,7 +613,8 @@ const TransitMap = {
 
   addPlaceLayers() {
     this.placePins()
-    this.map.addLayer(placeLayer(this.palette))
+    // Pins go under the basemap's names, and so under the lines too.
+    this.map.addLayer(placeLayer(this.palette), this.basemapLabelsId)
     this.bindPlacePopup()
     this.syncPlaces()
   },
@@ -607,55 +651,103 @@ const TransitMap = {
   },
 
   bindPlacePopup() {
-    this.map.on("click", PLACES_LAYER_ID, (event) => {
-      // Transit comes first: a pin sitting under a station marker never steals
-      // the click from it.
-      if (this.transitFeaturesAt(event.point).length > 0) return
-
-      const props = event.features[0].properties
-      const group = this.placeCatalog.find(({id}) => id === groupForClass(props.class))
-      const subtitle = placeSubtitle(props)
-      const meta = [subtitle, group?.label].filter(Boolean).join(" · ")
-
-      this.openPopup(
-        event.lngLat,
-        `<div class="tm-popup"><div class="tm-popup-header">` +
-          `<div class="tm-popup-title">${this.escapeHtml(props.name)}</div>` +
-          `<div class="tm-popup-meta">${this.swatchHtml(group?.color, "dot")}<span>${this.escapeHtml(meta)}</span></div>` +
-          `</div></div>`
-      )
-    })
-
     const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
     this.map.on("mouseenter", PLACES_LAYER_ID, setPointer(true))
     this.map.on("mouseleave", PLACES_LAYER_ID, setPointer(false))
   },
 
-  transitFeaturesAt(point) {
-    const stopLayers = MODE_ORDER.map((mode) => layerIds(mode).stops).filter((id) =>
-      this.map.getLayer(id)
-    )
+  // One handler for every click or tap on the map. It looks for a station,
+  // then a line, then a place within a thumb's reach of the point (a station
+  // marker is a few pixels wide) and opens the nearest; a click on nothing
+  // closes what is open.
+  handleMapClick(event) {
+    const reach = window.matchMedia("(pointer: coarse)").matches ? 16 : 6
+    const {x, y} = event.point
+    const box = [[x - reach, y - reach], [x + reach, y + reach]]
+    const shown = (ids) => ids.filter((id) => this.map.getLayer(id))
+    const nearest = (features) =>
+      features
+        .map((feature) => {
+          const [lng, lat] = feature.geometry.type === "Point" ? feature.geometry.coordinates : [event.lngLat.lng, event.lngLat.lat]
+          const at = this.map.project([lng, lat])
+          return {feature, distance: Math.hypot(at.x - x, at.y - y)}
+        })
+        .sort((a, b) => a.distance - b.distance)[0]?.feature
 
-    return stopLayers.length > 0 ? this.map.queryRenderedFeatures(point, {layers: stopLayers}) : []
+    const station = nearest(this.map.queryRenderedFeatures(box, {layers: shown(MODE_ORDER.map((cat) => layerIds(cat).stops))}))
+    if (station) {
+      const [lng, lat] = station.geometry.coordinates
+      this.openPopup({lng, lat}, this.stationPopupHtml(station.properties), () => this.clearFocus())
+      this.bindRouteBadges()
+      return
+    }
+
+    const line = this.map.queryRenderedFeatures(box, {layers: shown(MODE_ORDER.map((cat) => layerIds(cat).line))})[0]
+    if (line) {
+      const cat = MODE_ORDER.find((mode) => layerIds(mode).line === line.layer.id)
+      this.openLinePopup(event.lngLat, line.properties, cat)
+      return
+    }
+
+    const place = nearest(this.map.queryRenderedFeatures(box, {layers: shown([PLACES_LAYER_ID])}))
+    if (place) {
+      const [lng, lat] = place.geometry.coordinates
+      this.openPlacePopup({lng, lat}, place.properties)
+      return
+    }
+
+    this.closePopup()
+  },
+
+  openLinePopup(lngLat, props, cat) {
+    const title = props.long_name || props.name || "Transit route"
+    const meta = [MODE_LABEL[cat] || titleCase(cat), props.agency !== title && props.agency]
+      .filter(Boolean)
+      .map((part) => this.escapeHtml(part))
+      .join(`<span class="ui-sep">·</span>`)
+    this.openPopup(
+      lngLat,
+      `<div class="tm-popup"><div class="tm-popup-header">` +
+        `<div class="tm-popup-title">${this.escapeHtml(title)}</div>` +
+        `<div class="tm-popup-meta">${this.swatchHtml(props.color)}<span>${meta}</span></div>` +
+        `</div></div>`,
+      // Closing the line's details (or clicking away) lets the line go.
+      () => this.clearFocus()
+    )
+    this.focusLine({...props, category: cat})
+  },
+
+  openPlacePopup(lngLat, props) {
+    const group = this.placeCatalog.find(({id}) => id === groupForClass(props.class))
+    const meta = [placeSubtitle(props), group?.label].filter(Boolean).join(" · ")
+
+    this.openPopup(
+      lngLat,
+      `<div class="tm-popup"><div class="tm-popup-header">` +
+        `<div class="tm-popup-title">${this.escapeHtml(props.name)}</div>` +
+        `<div class="tm-popup-meta">${this.swatchHtml(group?.color, "dot")}<span>${this.escapeHtml(meta)}</span></div>` +
+        `</div></div>`
+    )
   },
 
   // Agencies whose service area overlaps the view, padded by `padding` of
   // its size on every side.
   feedsNear(padding) {
-    const bounds = this.map.getBounds()
-    const padX = (bounds.getEast() - bounds.getWest()) * padding
-    const padY = (bounds.getNorth() - bounds.getSouth()) * padding
-    const [west, south, east, north] = [
-      bounds.getWest() - padX,
-      bounds.getSouth() - padY,
-      bounds.getEast() + padX,
-      bounds.getNorth() + padY,
-    ]
+    const [west, south, east, north] = this.viewBox(padding)
 
     return this.feeds
       .filter(({bounds: [[w, s], [e, n]]}) => w <= east && e >= west && s <= north && n >= south)
       .map((feed) => feed.id)
       .sort((a, b) => a - b)
+  },
+
+  // The view as [west, south, east, north], padded by `padding` of its size
+  // on every side.
+  viewBox(padding) {
+    const bounds = this.map.getBounds()
+    const padX = (bounds.getEast() - bounds.getWest()) * padding
+    const padY = (bounds.getNorth() - bounds.getSouth()) * padding
+    return [bounds.getWest() - padX, bounds.getSouth() - padY, bounds.getEast() + padX, bounds.getNorth() + padY]
   },
 
   // The agencies drawn right now: near the view and not hidden by the visitor.
@@ -665,7 +757,9 @@ const TransitMap = {
 
   // Reports what is on screen to the menu, then loads whatever the drawn
   // agencies are missing for the enabled modes and redraws as it lands.
-  syncLayers() {
+  // `skip` holds layers that already failed in an earlier round of this
+  // load, so a follow-up round doesn't ask for them again straight away.
+  syncLayers(skip = new Set()) {
     const inView = this.feedsNear(0)
     const viewKey = inView.join(",")
     if (viewKey !== this.reportedView) {
@@ -673,7 +767,7 @@ const TransitMap = {
       this.pushEvent("view", {feeds: inView})
     }
 
-    const missing = this.wantedKeys().filter((key) => !this.feedData.has(key))
+    const missing = this.wantedKeys().filter((key) => !this.feedData.has(key) && !skip.has(key))
 
     this.el.dataset.transitReady = "false"
     this.el.dataset.mapIdle = "false"
@@ -681,42 +775,118 @@ const TransitMap = {
     this.startDataLoading(batch, missing)
     this.render()
 
-    const loads = missing.map((key) => this.loadFeed(key).then(() => this.advanceDataLoading(batch, key)))
+    const loads = missing.map((key) =>
+      this.loadFeed(key).then(() => {
+        this.advanceDataLoading(batch, key)
+        this.scheduleRender()
+      })
+    )
 
     Promise.allSettled(loads).then((results) => {
       this.render()
       if (batch !== this.dataLoadBatch) return
 
-      const failures = results.filter((result) => result.status === "rejected")
-      const quiet = this.firstLoadShown
-      this.firstLoadShown = true
+      const failed = new Set([...skip, ...missing.filter((_key, index) => results[index].status === "rejected")])
+
+      // Probes that landed may call for sharper lines: load those as the
+      // next round rather than calling the view loaded.
+      if (this.wantedKeys().some((key) => !this.feedData.has(key) && !failed.has(key))) {
+        this.syncLayers(failed)
+        return
+      }
+
+      clearTimeout(this.loadingTimer)
       this.dataLoading = false
       this.el.dataset.mapIdle = "false"
-      this.el.dataset.transitReady = failures.length === 0 ? "true" : "error"
+      this.el.dataset.transitReady = failed.size === 0 ? "true" : "error"
 
       // What did load stays on the map; what didn't is named in a notice
       // over it, with a retry that asks only for the missing layers.
-      if (failures.length > 0) {
-        this.hideLoading()
+      if (this.styleReady) this.hideLoading()
+      if (failed.size > 0) {
         this.showMapNotice(
-          `${failures.length} of ${loads.length} transit ${loads.length === 1 ? "layer" : "layers"} failed to load.`
+          `${failed.size} transit ${failed.size === 1 ? "layer" : "layers"} failed to load.`,
+          () => this.syncLayers()
         )
       } else {
         this.hideMapNotice()
-        if (!quiet && missing.length > 0) this.showLoading("Transit data ready", "Every layer in view loaded", 100)
       }
       if (this.map.loaded()) this.announceIdle()
+      this.openPendingStation(true)
     })
+  },
+
+  // Opens the searched-for station's details once it is drawn: the nearest
+  // station within half a kilometre of where the search placed it. If the
+  // view has finished loading without it (its agency or mode is switched
+  // off), the details say only its name.
+  openPendingStation(settled = false) {
+    const pending = this.pendingStation
+    if (!pending || this.map.isMoving() || this.map.getZoom() < STOPS_MIN_ZOOM) return
+
+    const [kx, ky] = kmScale(pending.lat)
+    const near = (this.stationFeatures || [])
+      .map((feature) => {
+        const [lng, lat] = feature.geometry.coordinates
+        return {feature, km: Math.hypot((lng - pending.lng) * kx, (lat - pending.lat) * ky)}
+      })
+      .filter(({km}) => km <= 0.5)
+      .sort((a, b) => a.km - b.km)[0]
+
+    if (near) {
+      this.pendingStation = null
+      const [lng, lat] = near.feature.geometry.coordinates
+      this.openPopup({lng, lat}, this.stationPopupHtml(near.feature.properties), () => this.clearFocus())
+      this.bindRouteBadges()
+    } else if (settled && !this.dataLoading) {
+      this.pendingStation = null
+      this.openPopup(
+        {lng: pending.lng, lat: pending.lat},
+        `<div class="tm-popup"><div class="tm-popup-header">` +
+          `<div class="tm-popup-title">${this.escapeHtml(pending.name)}</div></div>` +
+          `<p class="tm-popup-empty">No lines to show here. Its agency or mode may be switched off in Filters.</p></div>`
+      )
+    }
   },
 
   // What the view needs: each drawn agency's enabled modes, as lines at the
   // zoom's detail, and their stations once they can be drawn.
+  //
+  // An agency's service area is a box, and a national network's box can be
+  // most of a continent: one cross-border train puts Sweden's rail network
+  // "near" Paris. So zoomed in, an agency's low-detail lines are fetched
+  // first as a cheap probe, and its sharper lines and stations only if
+  // those lines actually come near the view.
   wantedKeys() {
     const zoom = this.map.getZoom()
-    const parts = [detailForZoom(zoom), ...(zoom >= STOPS_MIN_ZOOM ? ["stops"] : [])]
+    const detail = detailForZoom(zoom)
+    const box = this.viewBox(LOAD_PADDING)
 
     return this.activeFeeds().flatMap((id) =>
-      MODE_ORDER.filter((cat) => this.enabled.has(cat)).flatMap((cat) => parts.map((part) => `${id}:${cat}:${part}`))
+      MODE_ORDER.filter((cat) => this.enabled.has(cat)).flatMap((cat) => {
+        const probe = `${id}:${cat}:low`
+        if (detail === "low" || !this.feedData.has(probe)) return [probe]
+        if (!this.linesNear(probe, box)) return []
+        return [`${id}:${cat}:${detail}`, ...(zoom >= STOPS_MIN_ZOOM ? [`${id}:${cat}:stops`] : [])]
+      })
+    )
+  },
+
+  // Whether any of the loaded lines under `key` crosses the box: any segment
+  // whose own bounding box overlaps it, which errs towards loading.
+  linesNear(key, [west, south, east, north]) {
+    return (this.feedData.get(key)?.features || []).some((feature) =>
+      feature.geometry.coordinates.some((strand) =>
+        strand.some(([lng, lat], index) => {
+          const [nextLng, nextLat] = strand[index + 1] || [lng, lat]
+          return (
+            Math.min(lng, nextLng) <= east &&
+            Math.max(lng, nextLng) >= west &&
+            Math.min(lat, nextLat) <= north &&
+            Math.max(lat, nextLat) >= south
+          )
+        })
+      )
     )
   },
 
@@ -746,7 +916,9 @@ const TransitMap = {
     for (const key of this.feedData.keys()) {
       const [id, cat, part] = key.split(":")
       const drawn = active.has(id) && this.enabled.has(cat)
-      const needed = part === "stops" ? zoom >= STOPS_MIN_ZOOM : this.linesKey(id, cat) === key
+      // Low-detail lines stay as the probe for whether an agency is near.
+      const needed =
+        part === "stops" ? zoom >= STOPS_MIN_ZOOM : part === "low" || this.linesKey(id, cat) === key
 
       if (!drawn || !needed) this.feedData.delete(key)
     }
@@ -795,6 +967,7 @@ const TransitMap = {
     if (renderKey !== this.renderedKey) {
       this.renderedKey = renderKey
       const stopsByCategory = this.mergedStops(stopKeys)
+      this.stationFeatures = [...new Set([...stopsByCategory.values()].flat())]
 
       let drawnLines = 0
       MODE_ORDER.filter((cat) => this.enabled.has(cat)).forEach((cat) => {
@@ -820,6 +993,7 @@ const TransitMap = {
     }
 
     MODE_ORDER.forEach((cat) => (this.enabled.has(cat) ? this.setCategoryVisibility(cat) : this.hideCategory(cat)))
+    this.openPendingStation()
     this.applyFocus()
   },
 
@@ -1140,43 +1314,22 @@ const TransitMap = {
     this.setPaint(ids.labels, "text-halo-color", halo)
   },
 
+  // Lines go under the basemap's place names, as on a printed transit map,
+  // so "Manchester" stays readable where a dozen lines meet; their own
+  // names, the stations and the station names stay on top of everything.
   addLayerInOrder(layer) {
     const order = desiredLayerOrder()
-    const beforeId = order.slice(order.indexOf(layer.id) + 1).find((id) => this.map.getLayer(id))
+    const isLine = (id) => this.map.getLayer(id)?.type === "line"
+    const beforeId =
+      order
+        .slice(order.indexOf(layer.id) + 1)
+        .find((id) => this.map.getLayer(id) && (layer.type !== "line" || isLine(id))) ??
+      (layer.type === "line" ? this.basemapLabelsId : undefined)
     this.map.addLayer(layer, beforeId)
   },
 
   bindPopups(cat) {
     const ids = layerIds(cat)
-
-    this.map.on("click", ids.stops, (event) => {
-      const props = event.features[0].properties
-      this.openPopup(event.lngLat, this.stationPopupHtml(props), () => this.clearFocus())
-      this.bindRouteBadges()
-    })
-
-    this.map.on("click", ids.line, (event) => {
-      if (this.transitFeaturesAt(event.point).length > 0) return
-
-      const props = event.features[0].properties
-      const title = props.long_name || props.name || "Transit route"
-      const meta = [MODE_LABEL[cat] || titleCase(cat), props.agency !== title && props.agency]
-        .filter(Boolean)
-        .map((part) => this.escapeHtml(part))
-        .join(`<span class="ui-sep">·</span>`)
-      this.openPopup(
-        event.lngLat,
-        `<div class="tm-popup"><div class="tm-popup-header">` +
-          `<div class="tm-popup-title">${this.escapeHtml(title)}</div>` +
-          `<div class="tm-popup-meta">${this.swatchHtml(props.color)}<span>${meta}</span></div>` +
-          `</div></div>`,
-        // Closing the line's popup (or clicking away, which closes it) lets
-        // the line go.
-        () => this.clearFocus()
-      )
-      this.focusLine({...props, category: cat})
-    })
-
     const setPointer = (on) => () => (this.map.getCanvas().style.cursor = on ? "pointer" : "")
     ;[ids.stops, ids.line].forEach((id) => {
       this.map.on("mouseenter", id, setPointer(true))
@@ -1187,7 +1340,7 @@ const TransitMap = {
   // A station's line badges focus their line on the map; the popup stays
   // open, with the picked badge marked.
   bindRouteBadges() {
-    const element = this.popup?.getElement()
+    const element = this.popupElement()
     if (!element) return
 
     element.querySelectorAll("[data-focus-route]").forEach((badge) => {
@@ -1263,11 +1416,33 @@ const TransitMap = {
     return `<span class="tm-swatch-${mark}" style="--swatch: ${this.safeColor(color)}" aria-hidden="true"></span>`
   },
 
+  // Flies to the visitor's location. The button says it is working while
+  // the browser looks, and a failure says why rather than doing nothing.
   locateUser() {
-    if (!navigator.geolocation) return
+    const button = document.getElementById("map-locate")
+
+    if (!navigator.geolocation) {
+      this.showMapNotice("This browser cannot share its location.")
+      return
+    }
+
+    const settle = () => {
+      if (!button) return
+      button.disabled = false
+      button.removeAttribute("aria-busy")
+      button.setAttribute("aria-label", "Go to my location")
+    }
+
+    if (button) {
+      button.disabled = true
+      button.setAttribute("aria-busy", "true")
+      button.setAttribute("aria-label", "Finding your location…")
+    }
 
     navigator.geolocation.getCurrentPosition(
       ({coords}) => {
+        settle()
+        this.hideMapNotice()
         const lngLat = [coords.longitude, coords.latitude]
 
         if (!this.userMarker) {
@@ -1281,18 +1456,75 @@ const TransitMap = {
 
         this.map.flyTo({center: lngLat, zoom: Math.max(this.map.getZoom(), 13), duration: 850})
       },
-      (error) => console.warn("Location unavailable:", error.message),
-      {enableHighAccuracy: true, timeout: 8000, maximumAge: 60000}
+      (error) => {
+        settle()
+        const reason =
+          error.code === error.PERMISSION_DENIED
+            ? "Location is blocked for this site. Allow it in the browser's settings to use it."
+            : error.code === error.TIMEOUT
+              ? "Finding your location took too long."
+              : "Your location could not be found."
+        // Retrying cannot get past a block; only the browser's settings can.
+        this.showMapNotice(reason, error.code === error.PERMISSION_DENIED ? null : () => this.locateUser())
+      },
+      {enableHighAccuracy: true, timeout: 10000, maximumAge: 60000}
     )
   },
 
+  // Details of what was clicked: a popup at the point on a wide screen, a
+  // panel along the bottom of the map on a phone, where a popup would run
+  // off the edge.
   openPopup(lngLat, html, onClose) {
-    if (this.popup) this.popup.remove()
-    this.popup = new maplibregl.Popup({closeButton: true, closeOnClick: true, maxWidth: "288px"})
+    this.closePopup()
+    this.popupOnClose = onClose
+
+    if (this.narrow()) {
+      const panel = this.el.querySelector("[data-map-detail]")
+      panel.querySelector("[data-map-detail-body]").innerHTML = html
+      panel.hidden = false
+      panel.scrollTop = 0
+      // The panel has no tip pointing at what it describes, so a ring marks it.
+      const ring = document.createElement("div")
+      ring.className = "tm-selected"
+      this.selectedMarker = new maplibregl.Marker({element: ring}).setLngLat(lngLat).addTo(this.map)
+      return
+    }
+
+    this.popup = new maplibregl.Popup({closeButton: true, closeOnClick: false, maxWidth: "288px"})
       .setLngLat(lngLat)
       .setHTML(html)
       .addTo(this.map)
-    if (onClose) this.popup.on("close", onClose)
+    this.popup.on("close", () => this.closePopup())
+  },
+
+  closePopup() {
+    const onClose = this.popupOnClose
+    this.popupOnClose = null
+
+    if (this.popup) {
+      const popup = this.popup
+      this.popup = null
+      popup.remove()
+    }
+
+    this.selectedMarker?.remove()
+    this.selectedMarker = null
+
+    const panel = this.el.querySelector("[data-map-detail]")
+    if (panel && !panel.hidden) {
+      panel.hidden = true
+      panel.querySelector("[data-map-detail-body]").innerHTML = ""
+    }
+
+    if (onClose) onClose()
+  },
+
+  popupElement() {
+    return this.popup ? this.popup.getElement() : this.el.querySelector("[data-map-detail]:not([hidden])")
+  },
+
+  narrow() {
+    return window.matchMedia("(max-width: 640px)").matches
   },
 
   escapeHtml(value) {

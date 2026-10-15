@@ -11,6 +11,8 @@ defmodule Transitmaps.Catalog do
   """
 
   use GenServer
+
+  alias Transitmaps.Search
   require Logger
 
   alias Transitmaps.Catalog.Countries
@@ -54,20 +56,21 @@ defmodule Transitmaps.Catalog do
 
   @doc """
   Agencies whose name or place contains every word of `query`, best
-  matches first: provider names starting with the query, then the rest.
+  matches first (see `Transitmaps.Search`), then names that start with the
+  query.
   """
   def search(query, limit \\ 20) do
-    words = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
+    words = Search.words(query)
 
-    if words == [] do
-      []
-    else
-      feeds()
-      |> Enum.filter(fn feed -> Enum.all?(words, &String.contains?(feed.search_text, &1)) end)
-      |> Enum.sort_by(&{not String.starts_with?(String.downcase(&1.label), hd(words)), &1.label})
-      |> Enum.take(limit)
-    end
+    feeds()
+    |> Enum.filter(&Search.match?(words, &1.search_index))
+    |> Enum.sort_by(
+      &{Search.rank(words, &1.search_index), not label_starts?(&1, words), &1.label}
+    )
+    |> Enum.take(limit)
   end
+
+  defp label_starts?(feed, [word | _]), do: String.starts_with?(Search.fold(feed.label), word)
 
   @doc "The catalog entry with `id`, or nil."
   def get(id), do: Enum.find(feeds(), &(&1.id == id))
@@ -147,7 +150,7 @@ defmodule Transitmaps.Catalog do
       url:
         if(row["id"] in @shaped, do: @shaped_url <> row["id"] <> ".zip", else: row["urls.latest"]),
       source_url: presence(row["urls.direct_download"]),
-      search_text: String.downcase(label <> " " <> place)
+      search_index: Search.index([label, place])
     }
   end
 

@@ -32,6 +32,28 @@ const liveSocket = new LiveSocket("/live", Socket, {
   hooks: {...colocatedHooks, TransitMap},
 })
 
+// "/" jumps to the agency search from anywhere but a field (DESIGN.md
+// section 12.4), opening the filter menu first if it is closed.
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return
+  if (event.target.closest?.("input, textarea, select, [contenteditable]")) return
+
+  const search = () => document.querySelector("#agency-search input")
+  event.preventDefault()
+  if (search()) return search().focus()
+
+  document.querySelector("#map-menu-button")?.click()
+  const observer = new MutationObserver(() => {
+    if (!search()) return
+    observer.disconnect()
+    search().focus()
+  })
+  observer.observe(document.body, {childList: true, subtree: true})
+  setTimeout(() => observer.disconnect(), 3000)
+})
+
+window.addEventListener("phx:focus-search", () => document.querySelector("#agency-search input")?.focus())
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

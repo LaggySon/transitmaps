@@ -45,3 +45,6 @@ config :transitmaps, Transitmaps.Catalog,
   source: Path.expand("../test/support/fixtures/catalog.csv", __DIR__)
 
 config :transitmaps, :agency_worker, false
+
+# Station searches build their index in the test process, under the sandbox.
+config :transitmaps, :station_index, false

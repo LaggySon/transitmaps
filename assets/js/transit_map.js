@@ -928,8 +928,14 @@ const TransitMap = {
     const query = `feed=${feedId}&cats=${encodeURIComponent(cat)}${cell ? `&cell=${cell}` : ""}`
     const url = part === "stops" ? `/api/stops.geojson?${query}` : `/api/routes.geojson?${query}&detail=${part}`
 
+    // A server error is often a first build of a big agency running long
+    // while others build too, so one retry follows a short wait.
     const request = (async () => {
-      const response = await fetch(url)
+      let response = await fetch(url).catch(() => null)
+      if (!response?.ok) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        response = await fetch(url)
+      }
       if (!response.ok) throw new Error(`Could not load ${key}`)
       this.feedData.set(key, await response.json())
     })()

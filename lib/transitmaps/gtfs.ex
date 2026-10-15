@@ -53,7 +53,9 @@ defmodule Transitmaps.Gtfs do
     |> where([r], r.feed_id == ^feed_id)
     |> where([r], r.category in ^categories)
     |> where([r], not is_nil(r.geometry))
-    |> Repo.all()
+    # A national network's lines are tens of megabytes; this builds a cached
+    # response, so it may take longer than a request's usual 15 seconds.
+    |> Repo.all(timeout: :timer.minutes(1))
     |> Display.drawn_lines()
     |> Enum.map(&line_feature(&1, detail))
     |> feature_collection()
@@ -69,7 +71,7 @@ defmodule Transitmaps.Gtfs do
   def stop_feature_collection(categories, feed_id) do
     Stop
     |> where([s], s.feed_id == ^feed_id)
-    |> Repo.all()
+    |> Repo.all(timeout: :timer.minutes(1))
     |> merge_colocated_stops()
     |> Enum.filter(fn stop -> Enum.any?(stop.categories, &(&1 in categories)) end)
     |> Enum.map(&stop_feature/1)

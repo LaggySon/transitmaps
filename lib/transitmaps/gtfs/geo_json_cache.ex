@@ -103,12 +103,18 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     end
   end
 
+  # A first visit to a new area can ask for a dozen agencies' collections
+  # at once, each a big query and seconds of work. Built all together they
+  # starve each other of database connections until queries time out, so
+  # only this many build at a time and the rest wait their turn.
+  @concurrent_builds 2
+
   defp build_term(key, builder) do
     lock = {:building, key}
 
     if :ets.insert_new(@terms, {lock, nil, :building}) do
       try do
-        term = builder.()
+        term = with_build_slot(builder)
         :ets.insert(@terms, {key, term, System.monotonic_time(:millisecond)})
         term
       after
@@ -119,9 +125,23 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     end
   end
 
+  defp with_build_slot(builder) do
+    if :ets.update_counter(@terms, :builds, {3, 1}, {:builds, nil, 0}) <= @concurrent_builds do
+      try do
+        builder.()
+      after
+        :ets.update_counter(@terms, :builds, {3, -1})
+      end
+    else
+      :ets.update_counter(@terms, :builds, {3, -1})
+      Process.sleep(100)
+      with_build_slot(builder)
+    end
+  end
+
   # Another process is building this term: wait for it, up to a minute,
   # then build it here after all.
-  defp await_term(_key, builder, 0), do: builder.()
+  defp await_term(_key, builder, 0), do: with_build_slot(builder)
 
   defp await_term(key, builder, tries) do
     Process.sleep(100)
@@ -182,6 +202,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     # Kept terms go: the next cell built from one builds it again.
     @terms
     |> :ets.select([{{:"$1", :_, :"$2"}, [{:is_integer, :"$2"}], [:"$1"]}])
+    |> Enum.reject(&(&1 == :builds))
     |> Enum.filter(affected?)
     |> Enum.each(&:ets.delete(@terms, &1))
 

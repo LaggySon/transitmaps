@@ -23,4 +23,31 @@ defmodule Transitmaps.Gtfs.GeoJsonCacheTermsTest do
 
     assert GeoJsonCache.fetch_term(key, fn -> :second end) == :second
   end
+
+  test "builds at most two terms at a time" do
+    counter = :counters.new(2, [])
+
+    builder = fn ->
+      :counters.add(counter, 1, 1)
+      now = :counters.get(counter, 1)
+      if now > :counters.get(counter, 2), do: :counters.put(counter, 2, now)
+      Process.sleep(50)
+      :counters.sub(counter, 1, 1)
+      :built
+    end
+
+    1..6
+    |> Enum.map(fn n ->
+      Task.async(fn ->
+        GeoJsonCache.fetch_term(
+          {:test_slots, System.unique_integer([:positive]) + n, []},
+          builder
+        )
+      end)
+    end)
+    |> Task.await_many()
+    |> Enum.each(&assert(&1 == :built))
+
+    assert :counters.get(counter, 2) <= 2
+  end
 end

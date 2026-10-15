@@ -18,6 +18,7 @@ defmodule Transitmaps.Application do
       {DNSCluster, query: Application.get_env(:transitmaps, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Transitmaps.PubSub},
       Transitmaps.Catalog,
+      Transitmaps.Stations,
       # Start to serve requests, typically the last entry
       TransitmapsWeb.Endpoint,
       # Pre-build the default map responses so the first visit is cached too

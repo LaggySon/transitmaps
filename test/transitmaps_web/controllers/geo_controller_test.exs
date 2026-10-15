@@ -70,6 +70,55 @@ defmodule TransitmapsWeb.GeoControllerTest do
       assert points.("nonsense") == full
     end
 
+    test "serves a zoomed-in map only what crosses its cell", %{conn: conn} do
+      feed = insert_feed("long")
+      # A line running east across four 1° cells, one point every 0.1°.
+      insert_route(feed, "Long", for(i <- 5..35, do: [i / 10, 52.5]))
+
+      Transitmaps.Repo.insert!(%Transitmaps.Gtfs.Stop{
+        feed_id: feed.id,
+        stop_id: "in",
+        name: "Inside",
+        lon: 1.5,
+        lat: 52.5,
+        categories: ["rail"],
+        lines: []
+      })
+
+      Transitmaps.Repo.insert!(%Transitmaps.Gtfs.Stop{
+        feed_id: feed.id,
+        stop_id: "out",
+        name: "Outside",
+        lon: 3.4,
+        lat: 52.5,
+        categories: ["rail"],
+        lines: []
+      })
+
+      cell = fn kind, cell, extra ->
+        conn
+        |> get(
+          "/api/#{kind}.geojson",
+          [cats: "rail", feed: to_string(feed.id), cell: cell] ++ extra
+        )
+        |> json_response(200)
+        |> Map.fetch!("features")
+      end
+
+      [line] = cell.("routes", "1,52", detail: "full")
+      longitudes = line["geometry"]["coordinates"] |> List.flatten() |> Enum.take_every(2)
+      # The stretch inside the cell, plus the segments that leave it.
+      assert Enum.min(longitudes) == 0.9 and Enum.max(longitudes) == 2.1
+      assert line["properties"]["agency"] == "Long"
+
+      assert cell.("routes", "10,10", detail: "full") == []
+      assert [%{"properties" => %{"name" => "Inside"}}] = cell.("stops", "1,52", [])
+      assert cell.("stops", "2,52", []) == []
+
+      # A malformed cell serves the whole agency, as before.
+      assert [_line] = cell.("routes", "nonsense", detail: "full")
+    end
+
     test "serves nothing for a feed that doesn't exist", %{conn: conn} do
       assert agencies(conn, "999999") == []
       assert agencies(conn, "not-a-feed") == []

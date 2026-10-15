@@ -4,23 +4,46 @@ defmodule TransitmapsWeb.GeoController do
   import Ecto.Query, only: [from: 2]
 
   alias Transitmaps.Gtfs
-  alias Transitmaps.Gtfs.{Feed, GeoJsonCache}
+  alias Transitmaps.Gtfs.{Cells, Feed, GeoJsonCache}
   alias Transitmaps.Repo
 
   @empty %{type: "FeatureCollection", features: []}
 
+  # The detail and the cell ride in the kind, so a cache key keeps its
+  # {kind, feed, categories} shape for invalidation.
   def routes(conn, params) do
     detail = Gtfs.sanitize_detail(params["detail"])
 
-    # The detail rides in the kind, so a cache key keeps its {kind, feed,
-    # categories} shape for invalidation.
-    kind = if detail == :full, do: :routes, else: {:routes, detail}
+    case {detail, Cells.parse(params["cell"])} do
+      {detail, {_x, _y} = cell} when detail != :low ->
+        send_cached_geojson(
+          conn,
+          {:routes, detail, cell},
+          params,
+          &Cells.routes(&1, &2, detail, cell)
+        )
 
-    send_cached_geojson(conn, kind, params, &Gtfs.route_feature_collection(&1, &2, detail))
+      {:full, _cell} ->
+        send_cached_geojson(conn, :routes, params, &Gtfs.route_feature_collection/2)
+
+      {detail, _cell} ->
+        send_cached_geojson(
+          conn,
+          {:routes, detail},
+          params,
+          &Gtfs.route_feature_collection(&1, &2, detail)
+        )
+    end
   end
 
   def stops(conn, params) do
-    send_cached_geojson(conn, :stops, params, &Gtfs.stop_feature_collection/2)
+    case Cells.parse(params["cell"]) do
+      nil ->
+        send_cached_geojson(conn, :stops, params, &Gtfs.stop_feature_collection/2)
+
+      cell ->
+        send_cached_geojson(conn, {:stops, cell}, params, &Cells.stops(&1, &2, cell))
+    end
   end
 
   defp send_cached_geojson(conn, kind, params, builder) do

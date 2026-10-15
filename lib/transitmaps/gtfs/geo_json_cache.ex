@@ -18,6 +18,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   use GenServer
 
   @table __MODULE__
+  @terms Module.concat(__MODULE__, Terms)
 
   # The categories the map loads by default (see MapLive).
   @warm_categories ~w(rail metro tram intercity ferry)
@@ -81,6 +82,62 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     end
   end
 
+  @doc """
+  Returns the term `builder.()` makes for `key`, kept as it is rather than
+  encoded, for responses cut from it (`Transitmaps.Gtfs.Cells`). Large
+  binaries inside it are shared with the table, not copied. A term older
+  than the TTL, or invalidated, is built again by the next caller; callers
+  arriving meanwhile wait for that build rather than repeat it.
+  """
+  def fetch_term(key, builder) do
+    if enabled?() do
+      case :ets.lookup(@terms, key) do
+        [{^key, term, built_at}] when is_integer(built_at) ->
+          if fresh?(built_at), do: term, else: build_term(key, builder)
+
+        _ ->
+          build_term(key, builder)
+      end
+    else
+      builder.()
+    end
+  end
+
+  defp build_term(key, builder) do
+    lock = {:building, key}
+
+    if :ets.insert_new(@terms, {lock, nil, :building}) do
+      try do
+        term = builder.()
+        :ets.insert(@terms, {key, term, System.monotonic_time(:millisecond)})
+        term
+      after
+        :ets.delete(@terms, lock)
+      end
+    else
+      await_term(key, builder, 600)
+    end
+  end
+
+  # Another process is building this term: wait for it, up to a minute,
+  # then build it here after all.
+  defp await_term(_key, builder, 0), do: builder.()
+
+  defp await_term(key, builder, tries) do
+    Process.sleep(100)
+
+    case :ets.lookup(@terms, {:building, key}) do
+      [] ->
+        case :ets.lookup(@terms, key) do
+          [{^key, term, built_at}] when is_integer(built_at) -> term
+          _ -> build_term(key, builder)
+        end
+
+      _building ->
+        await_term(key, builder, tries - 1)
+    end
+  end
+
   defp fresh?(:stale), do: false
   defp fresh?(built_at), do: System.monotonic_time(:millisecond) - built_at < @ttl_ms
 
@@ -108,6 +165,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   @impl true
   def init(nil) do
     :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true])
+    :ets.new(@terms, [:named_table, :set, :public, read_concurrency: true])
     {:ok, %{queue: [], rebuilding: nil}}
   end
 
@@ -120,6 +178,12 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   def handle_call({:invalidate, affected?}, _from, state) do
     keys = @table |> :ets.select([{{:"$1", :_, :_, :_}, [], [:"$1"]}]) |> Enum.filter(affected?)
     Enum.each(keys, &:ets.update_element(@table, &1, {3, :stale}))
+
+    # Kept terms go: the next cell built from one builds it again.
+    @terms
+    |> :ets.select([{{:"$1", :_, :"$2"}, [{:is_integer, :"$2"}], [:"$1"]}])
+    |> Enum.filter(affected?)
+    |> Enum.each(&:ets.delete(@terms, &1))
 
     # A rebuild already under way may have read the data this import
     # replaced, so its key queues again too.

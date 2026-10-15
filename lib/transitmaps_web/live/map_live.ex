@@ -5,6 +5,8 @@ defmodule TransitmapsWeb.MapLive do
   alias Transitmaps.Catalog
   alias Transitmaps.Gtfs.RouteTypes
   alias Transitmaps.Packages
+  alias Transitmaps.Search
+  alias Transitmaps.Stations
 
   @mode_groups [
     {"rail", "Rail",
@@ -98,11 +100,14 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:results, [])
      |> assign(:packages, packages)
      |> assign(:package_results, [])
+     |> assign(:station_results, [])
      |> assign(:packages_open?, false)
      |> assign(:imports, package_imports)
      |> assign(:requested, MapSet.new())
      |> assign(:agency_error, nil)
-     |> assign_feeds(feeds, Enum.map(feeds, & &1.id))}
+     # Nothing is in view until the map says what it shows.
+     |> assign(:view_known?, false)
+     |> assign_feeds(feeds, [])}
   end
 
   @impl true
@@ -150,7 +155,10 @@ defmodule TransitmapsWeb.MapLive do
   # The map reports which agencies overlap what is on screen; the menu's
   # mode counts and agency list follow it.
   def handle_event("view", %{"feeds" => feed_ids}, socket) when is_list(feed_ids) do
-    {:noreply, assign_feeds(socket, socket.assigns.feeds, feed_ids)}
+    {:noreply,
+     socket
+     |> assign(:view_known?, true)
+     |> assign_feeds(socket.assigns.feeds, feed_ids)}
   end
 
   def handle_event("search-agencies", %{"agency" => %{"query" => query}}, socket) do
@@ -162,6 +170,7 @@ defmodule TransitmapsWeb.MapLive do
      |> assign(:agency_form, to_form(%{"query" => query}, as: :agency))
      |> assign(:results, results)
      |> assign(:package_results, Enum.filter(socket.assigns.packages, &(&1.id in package_ids)))
+     |> assign(:station_results, Stations.search(query))
      |> update(:imports, &Map.merge(&1, Agencies.imports(Enum.map(results, fn r -> r.id end))))
      |> assign(:agency_error, nil)}
   end
@@ -183,6 +192,30 @@ defmodule TransitmapsWeb.MapLive do
 
       {:error, _reason} ->
         {:noreply, assign(socket, :agency_error, "This pack cannot be downloaded.")}
+    end
+  end
+
+  # The map flies to the station and opens its details once its stops land.
+  def handle_event("show-station", %{"index" => index}, socket) do
+    case Integer.parse(index) do
+      {index, ""} when index >= 0 ->
+        case Enum.at(socket.assigns.station_results, index) do
+          nil ->
+            {:noreply, socket}
+
+          station ->
+            {:noreply,
+             socket
+             |> assign(:menu_open?, false)
+             |> push_event("show-station", %{
+               lng: station.lon,
+               lat: station.lat,
+               name: station.name
+             })}
+        end
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -240,6 +273,11 @@ defmodule TransitmapsWeb.MapLive do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  # From the empty-view prompt: open the menu with the search focused.
+  def handle_event("search-here", _params, socket) do
+    {:noreply, socket |> assign(:menu_open?, true) |> push_event("focus-search", %{})}
   end
 
   def handle_event("toggle-menu", _params, socket) do
@@ -300,12 +338,11 @@ defmodule TransitmapsWeb.MapLive do
   # Hand-curated agencies aren't in the catalog, so search finds them among
   # what is already on the map, shaped like catalog results.
   defp on_map_matches(feeds, query) do
-    words = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
+    words = Search.words(query)
 
     for feed <- feeds,
         is_nil(feed.catalog_id),
-        words != [],
-        Enum.all?(words, &String.contains?(String.downcase(feed.label), &1)) do
+        Search.match?(words, Search.index([feed.label])) do
       %{id: "on-map-#{feed.id}", label: feed.label, place: "On the map", feed_id: feed.id}
     end
   end
@@ -454,7 +491,7 @@ defmodule TransitmapsWeb.MapLive do
     ~H"""
     <Layouts.app flash={@flash}>
       <:aside>
-        <span id="view-summary" class="ui-num">
+        <span :if={@view_known?} id="view-summary" class="ui-num">
           {agencies_label(length(@visible_feeds))}<span class="ui-sep">·</span>{routes_label(
             total_routes(@counts)
           )} in view
@@ -468,6 +505,9 @@ defmodule TransitmapsWeb.MapLive do
           id="transit-map"
           phx-hook="TransitMap"
           phx-update="ignore"
+          phx-mounted={
+            JS.ignore_attributes(["class", "data-map-*", "data-transit-ready", "data-drawn-lines"])
+          }
           data-enabled={Jason.encode!(MapSet.to_list(@enabled))}
           data-details={Jason.encode!(MapSet.to_list(@details))}
           data-places={Jason.encode!(MapSet.to_list(@places))}
@@ -494,6 +534,17 @@ defmodule TransitmapsWeb.MapLive do
               </div>
             </div>
           </div>
+          <section data-map-detail class="tm-detail" aria-label="Details" hidden>
+            <button
+              type="button"
+              data-map-detail-close
+              class="ui-button ui-button--ghost ui-button--small tm-detail-close"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+            <div data-map-detail-body></div>
+          </section>
           <div
             data-map-notice
             class="ui-notice tm-map-notice"
@@ -516,6 +567,23 @@ defmodule TransitmapsWeb.MapLive do
               </button>
             </span>
           </div>
+        </div>
+
+        <div
+          :if={@view_known? and @visible_feeds == [] and not @menu_open?}
+          id="empty-view"
+          class="ui-panel tm-empty-view"
+          role="status"
+        >
+          <p>No transit agencies downloaded here yet.</p>
+          <button
+            id="empty-view-search"
+            type="button"
+            phx-click="search-here"
+            class="ui-button ui-button--small"
+          >
+            Find one
+          </button>
         </div>
 
         <%!--
@@ -545,8 +613,8 @@ defmodule TransitmapsWeb.MapLive do
           </button>
 
           <section :if={@menu_open?} id="map-menu" aria-label="Map filters" class="tm-menu">
-            <section id="agency-menu" class="tm-menu-section" aria-labelledby="agency-menu-title">
-              <h2 id="agency-menu-title" class="ui-panel-title">Agencies</h2>
+            <section id="search-menu" class="tm-menu-section" aria-labelledby="search-menu-title">
+              <h2 id="search-menu-title" class="ui-panel-title">Search</h2>
               <.form
                 for={@agency_form}
                 id="agency-search"
@@ -556,8 +624,9 @@ defmodule TransitmapsWeb.MapLive do
                 <.input
                   field={@agency_form[:query]}
                   type="search"
-                  aria-label="Find an agency"
-                  placeholder="MBTA, Amtrak, Trenitalia"
+                  aria-label="Search stations and agencies"
+                  aria-keyshortcuts="/"
+                  placeholder="King's Cross, MBTA, Paris"
                   autocomplete="off"
                   autocapitalize="none"
                   spellcheck="false"
@@ -578,6 +647,28 @@ defmodule TransitmapsWeb.MapLive do
               </div>
 
               <%= if searching?(@agency_form) do %>
+                <h3 :if={@station_results != []} class="ui-label tm-subhead">Stations</h3>
+                <ul :if={@station_results != []} id="station-results" class="tm-list">
+                  <li
+                    :for={{station, index} <- Enum.with_index(@station_results)}
+                    id={"station-result-#{index}"}
+                    class="tm-row"
+                  >
+                    <span class="tm-row-text">
+                      <span class="ui-row-name ui-clamp" title={station.name}>{station.name}</span>
+                      <span class="tm-row-meta ui-truncate">{modes_label(station.categories)}</span>
+                    </span>
+                    <button
+                      type="button"
+                      phx-click="show-station"
+                      phx-value-index={index}
+                      class="ui-button ui-button--quiet ui-button--small tm-row-action"
+                    >
+                      Show
+                    </button>
+                  </li>
+                </ul>
+                <h3 :if={@package_results != []} class="ui-label tm-subhead">Regional packs</h3>
                 <ul :if={@package_results != []} id="package-results" class="tm-list">
                   <.package_row
                     :for={package <- @package_results}
@@ -586,6 +677,7 @@ defmodule TransitmapsWeb.MapLive do
                     progress={package_progress(package, @feeds, @imports)}
                   />
                 </ul>
+                <h3 :if={@results != []} class="ui-label tm-subhead">Agencies</h3>
                 <ul id="agency-results" class="tm-list" aria-live="polite">
                   <li
                     :for={entry <- @results}
@@ -593,7 +685,7 @@ defmodule TransitmapsWeb.MapLive do
                     class="tm-row"
                   >
                     <span class="tm-row-text">
-                      <span class="ui-row-name ui-truncate" title={entry.label}>{entry.label}</span>
+                      <span class="ui-row-name ui-clamp" title={entry.label}>{entry.label}</span>
                       <.agency_meta entry={entry} feed_import={@imports[entry.id]} />
                     </span>
                     <.agency_action
@@ -604,62 +696,72 @@ defmodule TransitmapsWeb.MapLive do
                   </li>
                 </ul>
                 <p
-                  :if={@results == [] and @package_results == []}
+                  :if={@results == [] and @package_results == [] and @station_results == []}
                   id="agency-results-empty"
                   class="ui-empty"
                 >
-                  No agencies match “{@agency_form[:query].value}”. Try an operator or a city.
-                </p>
-              <% else %>
-                <div id="package-menu">
-                  <button
-                    id="packages-toggle"
-                    type="button"
-                    phx-click="toggle-packages"
-                    aria-expanded={to_string(@packages_open?)}
-                    aria-controls="packages"
-                    class="tm-disclosure"
-                  >
-                    Regional packs
-                    <span class="ui-panel-title-aside">{length(@packages)} regions</span>
-                  </button>
-                  <div :if={@packages_open?} id="packages">
-                    <p class="ui-hint">Every agency of a region in one go.</p>
-                    <div
-                      :for={{region, packages} <- packages_by_region(@packages)}
-                      id={"packages-#{dom_key(region)}"}
-                    >
-                      <h3 class="ui-label tm-region">{region}</h3>
-                      <ul class="tm-list">
-                        <.package_row
-                          :for={package <- packages}
-                          id={"package-#{package.id}"}
-                          package={package}
-                          progress={package_progress(package, @feeds, @imports)}
-                        />
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-
-                <h3 class="ui-label tm-subhead">
-                  In view <span class="ui-panel-title-aside ui-num">{length(@visible_feeds)}</span>
-                </h3>
-                <ul :if={@visible_feeds != []} id="agencies-in-view" class="tm-list">
-                  <li :for={feed <- @visible_feeds}>
-                    <.toggle
-                      id={"agency-toggle-#{feed.id}"}
-                      on={not MapSet.member?(@hidden, feed.id)}
-                      phx-click="toggle-agency"
-                      phx-value-id={feed.id}
-                      label={feed.label}
-                    />
-                  </li>
-                </ul>
-                <p :if={@visible_feeds == []} id="agencies-in-view" class="ui-empty">
-                  No agencies downloaded here yet. Search to add one.
+                  Nothing matches “{@agency_form[:query].value}”. Try a station, an operator or a city.
                 </p>
               <% end %>
+            </section>
+
+            <section
+              :if={not searching?(@agency_form)}
+              id="agency-menu"
+              class="tm-menu-section"
+              aria-labelledby="agency-menu-title"
+            >
+              <h2 id="agency-menu-title" class="ui-panel-title">Agencies</h2>
+              <div id="package-menu">
+                <button
+                  id="packages-toggle"
+                  type="button"
+                  phx-click="toggle-packages"
+                  aria-expanded={to_string(@packages_open?)}
+                  aria-controls="packages"
+                  class="tm-disclosure"
+                >
+                  Regional packs <span class="ui-panel-title-aside">{length(@packages)} regions</span>
+                </button>
+                <div :if={@packages_open?} id="packages">
+                  <p class="ui-hint">Every agency of a region in one go.</p>
+                  <div
+                    :for={{region, packages} <- packages_by_region(@packages)}
+                    id={"packages-#{dom_key(region)}"}
+                  >
+                    <h3 class="ui-label tm-region">{region}</h3>
+                    <ul class="tm-list">
+                      <.package_row
+                        :for={package <- packages}
+                        id={"package-#{package.id}"}
+                        package={package}
+                        progress={package_progress(package, @feeds, @imports)}
+                      />
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <h3 class="ui-label tm-subhead">
+                In view <span class="ui-panel-title-aside ui-num">{length(@visible_feeds)}</span>
+              </h3>
+              <ul :if={@visible_feeds != []} id="agencies-in-view" class="tm-list">
+                <li :for={feed <- @visible_feeds}>
+                  <.toggle
+                    id={"agency-toggle-#{feed.id}"}
+                    on={not MapSet.member?(@hidden, feed.id)}
+                    phx-click="toggle-agency"
+                    phx-value-id={feed.id}
+                    label={feed.label}
+                  />
+                </li>
+              </ul>
+              <p :if={@visible_feeds == [] and @view_known?} id="agencies-in-view" class="ui-empty">
+                No agencies downloaded here yet. Search to add one.
+              </p>
+              <p :if={not @view_known?} id="agencies-in-view" class="ui-loading" role="status">
+                Loading the agencies in view…
+              </p>
             </section>
 
             <section
@@ -795,6 +897,7 @@ defmodule TransitmapsWeb.MapLive do
 
         <div
           id="map-zoom-readout"
+          phx-update="ignore"
           class="tm-zoom-readout"
           data-shown={zoom_readout?()}
           aria-hidden="true"
@@ -812,14 +915,25 @@ defmodule TransitmapsWeb.MapLive do
   defp routes_label(1), do: "1 route"
   defp routes_label(count), do: "#{format_count(count)} routes"
 
+  # "Metro · National Rail", in the menu's words for each mode.
+  defp modes_label(categories) do
+    labels =
+      for {_group, _label, modes} <- @mode_groups,
+          {cat, label, _} <- modes,
+          into: %{},
+          do: {cat, label}
+
+    Enum.map_join(categories, " · ", &Map.get(labels, &1, &1))
+  end
+
   defp searching?(form), do: form[:query].value not in [nil, ""]
 
   # How many of the things the menu switches are off right now, so a closed
   # menu still says the map isn't showing everything.
   defp hidden_count(assigns) do
     modes_off =
-      Enum.count(assigns.counts, fn {cat, count} ->
-        count > 0 and not MapSet.member?(assigns.enabled, cat)
+      Enum.count(@mode_ids, fn cat ->
+        Map.get(assigns.counts, cat, 0) > 0 and not MapSet.member?(assigns.enabled, cat)
       end)
 
     agencies_off = Enum.count(assigns.visible_feeds, &MapSet.member?(assigns.hidden, &1.id))
@@ -953,7 +1067,7 @@ defmodule TransitmapsWeb.MapLive do
     ~H"""
     <li id={@id} class="tm-row">
       <span class="tm-row-text">
-        <span class="ui-row-name ui-truncate" title={@package.label}>{@package.label}</span>
+        <span class="ui-row-name ui-clamp" title={@package.label}>{@package.label}</span>
         <span class="tm-row-meta ui-truncate" title={@package.place}>
           {agencies_label(@progress.total)}<span class="ui-sep">·</span>{@package.place}
         </span>

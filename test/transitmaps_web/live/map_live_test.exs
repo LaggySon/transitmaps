@@ -91,6 +91,21 @@ defmodule TransitmapsWeb.MapLiveTest do
       refute has_element?(view, "#map-menu")
     end
 
+    test "finds a station and flies to it", %{conn: conn} do
+      {:ok, _feed} = Importer.import_feed("gb-rail", "tmp/fixtures/tiny-gtfs.zip")
+      {:ok, view, _html} = live(conn, ~p"/")
+      view |> element("#map-menu-button") |> render_click()
+
+      view |> form("#agency-search", agency: %{query: "station 2"}) |> render_change()
+      assert has_element?(view, "#station-results #station-result-0", "Station 2")
+      assert has_element?(view, "#station-result-0", "National Rail")
+
+      view |> element("#station-result-0 button", "Show") |> render_click()
+      assert_push_event(view, "show-station", %{name: "Station 2", lng: lng, lat: lat})
+      assert is_float(lng) and is_float(lat)
+      refute has_element?(view, "#map-menu")
+    end
+
     test "lists the agencies in view, each of which can be hidden", %{conn: conn} do
       {:ok, feed} = Importer.import_feed("gb-rail", "tmp/fixtures/tiny-gtfs.zip")
       {:ok, view, _html} = live(conn, ~p"/")
@@ -116,6 +131,20 @@ defmodule TransitmapsWeb.MapLiveTest do
       refute has_element?(view, toggle)
       assert has_element?(view, "#layer-toggle-rail[disabled]")
     end
+  end
+
+  test "offers to search where nothing is downloaded, once the map has said so", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+    refute has_element?(view, "#empty-view")
+    refute has_element?(view, "#view-summary")
+
+    view |> element("#transit-map") |> render_hook("view", %{"feeds" => []})
+    assert has_element?(view, "#view-summary", "0 agencies")
+
+    view |> element("#empty-view-search") |> render_click()
+    assert has_element?(view, "#map-menu #agency-search")
+    assert_push_event(view, "focus-search", %{})
+    refute has_element?(view, "#empty-view")
   end
 
   test "toggles map details", %{conn: conn} do
@@ -158,6 +187,7 @@ defmodule TransitmapsWeb.MapLiveTest do
   test "keeps what the map shows in the URL", %{conn: conn} do
     # The visual fixture has routes of every mode, so none is switched off.
     {:ok, view, _html} = live(conn, ~p"/?visual_test=1")
+    view |> element("#transit-map") |> render_hook("view", %{"feeds" => [1]})
 
     view |> element("#map-menu-button") |> render_click()
     view |> element("#layer-toggle-bus") |> render_click()

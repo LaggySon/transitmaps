@@ -74,13 +74,8 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 /* LiveView's connection state, from the classes it sets on its root. */
-.tm-live,
 .tm-connection {
   display: none;
-}
-
-.phx-connected .tm-live {
-  display: inline-flex;
 }
 
 .phx-client-error .tm-connection,
@@ -160,6 +155,28 @@ input[type="search"]::-webkit-search-cancel-button {
   font-weight: 600;
 }
 
+/* Once the basemap is up, loading is a small status at the top of the map
+   that neither covers it nor takes clicks. */
+.tm-loading--compact {
+  inset: var(--space-4) auto auto 50%;
+  display: block;
+  width: min(18rem, calc(100% - 24rem));
+  padding: 0;
+  background: transparent;
+  transform: translateX(-50%);
+}
+
+.tm-loading--compact .tm-loading-panel {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .tm-loading--compact {
+    top: calc(var(--control-h-compact) + 2 * var(--space-4));
+    width: calc(100% - 2 * var(--space-4));
+  }
+}
+
 /* Layers that failed to load: a notice at the top of the map, between the
    filter button and the controls. */
 .tm-map-notice {
@@ -179,6 +196,56 @@ input[type="search"]::-webkit-search-cancel-button {
   .tm-map-notice {
     top: calc(var(--control-h-compact) + 2 * var(--space-4));
     width: calc(100% - 2 * var(--space-4));
+  }
+}
+
+/* On a phone, what was tapped opens in a panel along the bottom of the map,
+   where a popup would run off the screen's edge. */
+.tm-detail {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 18;
+  max-height: 55%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border-top: 1px solid var(--border-strong);
+}
+
+.tm-detail[hidden] {
+  display: none;
+}
+
+.tm-detail-close {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+}
+
+.tm-detail .tm-popup-body {
+  max-height: none;
+}
+
+/* Nothing downloaded in view: a prompt where the loading status sits. */
+.tm-empty-view {
+  position: absolute;
+  bottom: 2.5rem;
+  left: 50%;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: max-content;
+  max-width: calc(100% - 2 * var(--space-4));
+  transform: translateX(-50%);
+}
+
+@media (max-width: 640px) {
+  .tm-empty-view {
+    bottom: 7.5rem;
   }
 }
 
@@ -522,9 +589,12 @@ body.playwright-visuals .tm-zoom-readout {
 /* Phones: the menu spans the width, and the controls sit in thumb reach.
    Phones pinch to zoom, so the zoom buttons step aside there. */
 @media (max-width: 640px) {
+  /* The menu leaves the bottom of the map in sight, so a switch's effect
+     shows while the menu is open. */
   .tm-menu-root {
     right: var(--space-4);
     width: auto;
+    max-height: min(72%, calc(100% - 2 * var(--space-4)));
   }
 
   .tm-controls {
@@ -713,6 +783,16 @@ body.playwright-visuals .tm-zoom-readout {
   color: var(--muted-foreground);
 }
 
+
+/* What the phone's detail panel describes. */
+.tm-selected {
+  width: 1.4rem;
+  height: 1.4rem;
+  pointer-events: none;
+  border: 3px solid var(--foreground);
+  border-radius: 50%;
+  outline: 2px solid var(--background);
+}
 
 .user-location-dot {
   width: 1rem;

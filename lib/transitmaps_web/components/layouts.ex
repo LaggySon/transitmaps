@@ -43,9 +43,6 @@ defmodule TransitmapsWeb.Layouts do
         </span>
         <div class="ui-topbar-aside">
           {render_slot(@aside)}
-          <span id="connection-live" class="ui-badge tm-live" data-status="progress">
-            <span class="ui-dot"></span>Live
-          </span>
         </div>
       </header>
       <div id="connection-lost" class="ui-notice tm-connection" data-status="warning" role="alert">

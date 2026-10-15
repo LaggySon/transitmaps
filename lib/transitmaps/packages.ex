@@ -393,14 +393,18 @@ defmodule Transitmaps.Packages do
   @doc "The pack with `id`, or nil."
   def get(id), do: Enum.find(@packages, &(&1.id == id))
 
-  @doc "Packs whose name, place or keywords contain every word of `query`."
+  @doc """
+  Packs whose name, place or keywords contain every word of `query`, best
+  matches first (see `Transitmaps.Search`).
+  """
   def search(query) do
-    words = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
+    words = Transitmaps.Search.words(query)
 
-    Enum.filter(@packages, fn package ->
-      text = String.downcase("#{package.label} #{package.place} #{package.keywords}")
-      words != [] and Enum.all?(words, &String.contains?(text, &1))
-    end)
+    @packages
+    |> Enum.map(&{&1, Transitmaps.Search.index([&1.label, &1.place, &1.keywords])})
+    |> Enum.filter(fn {_package, index} -> Transitmaps.Search.match?(words, index) end)
+    |> Enum.sort_by(fn {_package, index} -> Transitmaps.Search.rank(words, index) end)
+    |> Enum.map(fn {package, _index} -> package end)
   end
 
   @doc "Catalog ids of every pack's members."

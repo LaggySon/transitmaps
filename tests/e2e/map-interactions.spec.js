@@ -1,5 +1,5 @@
 import {expect, test} from "@playwright/test"
-import {openStableMap} from "./support/map-fixtures.js"
+import {mockTransitApis, openStableMap} from "./support/map-fixtures.js"
 
 test.beforeEach(async ({page}) => {
   await openStableMap(page)
@@ -66,4 +66,18 @@ test("custom zoom buttons update the live map zoom", async ({page}) => {
   await expect.poll(async () => Number(await map.getAttribute("data-map-zoom"))).toBeGreaterThan(initialZoom)
   await page.locator("#map-zoom-out").click()
   await expect.poll(async () => Number(await map.getAttribute("data-map-zoom"))).toBeLessThan(initialZoom + 1)
+})
+
+// Transit data that lands before the basemap's tiles must still be drawn,
+// without waiting for the visitor to move the map.
+test("draws lines that arrive before the basemap tiles", async ({page}) => {
+  await page.route(/\/tiles\/(?!styles)/, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2500))
+    await route.continue()
+  })
+  await mockTransitApis(page)
+  await page.goto("/?visual_test=1")
+
+  await expect(page.locator("#transit-map")).toHaveAttribute("data-transit-ready", "true", {timeout: 60_000})
+  await expect.poll(async () => Number(await page.locator("#transit-map").getAttribute("data-drawn-lines"))).toBeGreaterThan(0)
 })

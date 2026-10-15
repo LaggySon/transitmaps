@@ -273,7 +273,12 @@ const TransitMap = {
     }
 
     this.map.on("error", (event) => console.error("MapLibre error:", event.error))
+    // Layers can be added once the style has loaded. isStyleLoaded() is no
+    // guide to that: it stays false while any basemap tile is still loading,
+    // and a redraw skipped then would not come back until the map moved.
+    this.styleReady = false
     this.map.on("style.load", () => {
+      this.styleReady = true
       this.applyBasemap()
       // Places are added before any transit layer exists, which leaves every
       // pin below the lines and stations the map is actually about.
@@ -284,12 +289,12 @@ const TransitMap = {
     this.map.on("zoom", () => this.updateZoomReadout())
     this.map.on("idle", () => this.announceIdle())
     this.map.on("moveend", () => {
-      if (this.map.isStyleLoaded()) this.syncLayers()
+      if (this.styleReady) this.syncLayers()
     })
 
     this.handleEvent("categories-changed", ({enabled}) => {
       this.enabled = new Set(enabled)
-      if (this.map.isStyleLoaded()) this.syncLayers()
+      if (this.styleReady) this.syncLayers()
     })
     this.handleEvent("details-changed", ({enabled}) => {
       this.details = new Set(enabled)
@@ -304,7 +309,7 @@ const TransitMap = {
     // drops out of range. A weekly refresh shows on the next page load.
     this.handleEvent("feeds-changed", ({feeds}) => {
       this.feeds = feeds
-      if (this.map.isStyleLoaded()) this.syncLayers()
+      if (this.styleReady) this.syncLayers()
     })
     this.handleEvent("agencies-hidden", ({hidden}) => {
       this.hidden = new Set(hidden)
@@ -547,7 +552,7 @@ const TransitMap = {
   // everything the map drew from them.
   applyPalette() {
     this.palette = readPalette()
-    if (!this.map?.isStyleLoaded()) return
+    if (!this.styleReady) return
 
     this.applyBasemap()
     this.loaded.forEach((cat) => this.paintCategory(cat))
@@ -777,7 +782,7 @@ const TransitMap = {
   // interchange is one marker. Redrawing is skipped while nothing it depends
   // on has changed, since a pan alone must not re-tessellate a country.
   render() {
-    if (!this.map?.isStyleLoaded()) return
+    if (!this.styleReady) return
 
     this.pruneFeedData()
 
@@ -791,11 +796,13 @@ const TransitMap = {
       this.renderedKey = renderKey
       const stopsByCategory = this.mergedStops(stopKeys)
 
+      let drawnLines = 0
       MODE_ORDER.filter((cat) => this.enabled.has(cat)).forEach((cat) => {
         const routes = {
           type: "FeatureCollection",
           features: active.flatMap((id) => this.lines(id, cat)),
         }
+        drawnLines += routes.features.length
         const stops = {type: "FeatureCollection", features: stopsByCategory.get(cat) || []}
 
         if (this.map.getSource(`${cat}-routes`)) {
@@ -808,6 +815,8 @@ const TransitMap = {
           this.loaded.add(cat)
         }
       })
+      // How many lines the map hands MapLibre, for tests to read.
+      this.el.dataset.drawnLines = String(drawnLines)
     }
 
     MODE_ORDER.forEach((cat) => (this.enabled.has(cat) ? this.setCategoryVisibility(cat) : this.hideCategory(cat)))
@@ -876,7 +885,7 @@ const TransitMap = {
   // Draws the focused line (or nothing) and fades the rest to match. Run on
   // every render, so the focus follows agencies loading as the map moves.
   applyFocus() {
-    if (!this.map?.isStyleLoaded()) return
+    if (!this.styleReady) return
 
     const data = {type: "FeatureCollection", features: this.focusedFeatures()}
 

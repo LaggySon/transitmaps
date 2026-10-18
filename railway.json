@@ -9,5 +9,12 @@
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
+  },
+  "environments": {
+    "pr": {
+      "deploy": {
+        "preDeployCommand": "sh /app/_build/prod/rel/transitmaps/bin/prepare_pr"
+      }
+    }
   }
 }

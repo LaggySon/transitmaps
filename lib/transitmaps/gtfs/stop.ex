@@ -9,6 +9,8 @@ defmodule Transitmaps.Gtfs.Stop do
     field :location_type, :integer
     field :categories, {:array, :string}
     field :lines, {:array, :map}, default: []
+    # The stops under a merged station marker that have departures to list.
+    field :departure_ids, {:array, :integer}, virtual: true, default: []
 
     belongs_to :feed, Transitmaps.Gtfs.Feed
 

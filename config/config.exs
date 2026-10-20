@@ -31,6 +31,9 @@ config :transitmaps, TransitmapsWeb.Endpoint,
 # at the `config/runtime.exs`.
 config :transitmaps, Transitmaps.Mailer, adapter: Swoosh.Adapters.Local
 
+# Departure times are worked out in each agency's own time zone.
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",

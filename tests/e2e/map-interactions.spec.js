@@ -1,5 +1,5 @@
 import {expect, test} from "@playwright/test"
-import {mockTransitApis, openStableMap} from "./support/map-fixtures.js"
+import {mockTransitApis, openStableMap, setMapZoom} from "./support/map-fixtures.js"
 
 test.beforeEach(async ({page}) => {
   await openStableMap(page)
@@ -80,4 +80,27 @@ test("draws lines that arrive before the basemap tiles", async ({page}) => {
 
   await expect(page.locator("#transit-map")).toHaveAttribute("data-transit-ready", "true", {timeout: 60_000})
   await expect.poll(async () => Number(await page.locator("#transit-map").getAttribute("data-drawn-lines"))).toBeGreaterThan(0)
+})
+
+// A station's popup opens on its departures, which refresh while it stays
+// open, and keeps its lines a tab away.
+test("shows a station's departures and lines", async ({page}) => {
+  await setMapZoom(page, 14, [-0.1276, 51.5072])
+  const canvas = page.locator("#transit-map canvas")
+  const box = await canvas.boundingBox()
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+
+  const departures = page.locator("#station-panel-departures")
+  await expect(page.locator("#station-tab-departures")).toHaveAttribute("aria-selected", "true")
+  await expect(departures.locator(".tm-departure")).toHaveCount(3)
+  await expect(departures).toContainText("Live")
+  await expect(departures.locator(".tm-departure").nth(1)).toContainText("+5 min")
+  await expect(departures.locator(".tm-departure[data-cancelled]")).toContainText("Cancelled")
+
+  await page.locator("#station-tab-lines").click()
+  await expect(page.locator("#station-panel-lines")).toBeVisible()
+  await expect(departures).toBeHidden()
+
+  await page.keyboard.press("Escape")
+  await expect(page.locator("#station-panel-departures")).toHaveCount(0)
 })

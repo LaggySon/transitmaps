@@ -10,3 +10,6 @@ mdb-9006,gtfs,,DE,,,Chord Rail,,,,,,https://example.com/chords.zip,0,,,tmp/fixtu
 mdb-9007,gtfs,,GB,,,Shapeless Rail,,,,,,https://example.com/shapeless.zip,0,,,tmp/fixtures/shapeless-gtfs.zip,,,,,,,active,,,
 mdb-53,gtfs,,US,California,Alameda County,Bay Area Rapid Transit (BART),,,,,,https://example.com/bart.zip,0,,,tmp/fixtures/bart.zip,,,,,,,active,Shapes,,
 mdb-2455,gtfs,,US,California,,Alameda-Contra Costa Transit District (AC Transit),,,,,,https://example.com/ac-transit.zip,1,,,tmp/fixtures/ac-transit.zip,,,,,,,active,Shapes,,
+mdb-9101,gtfs_rt,tu,GB,,,Tiny Rail,,Trip updates,,,mdb-9001,https://example.com/rt/tiny-trip-updates.pb,0,,,,,,,,,,active,,,
+mdb-9102,gtfs_rt,tu,GB,,,Tiny Rail,,Keyed trip updates,,,mdb-9001,https://example.com/rt/keyed.pb,1,,,,,,,,,,active,,,
+mdb-9103,gtfs_rt,vp,GB,,,Tiny Rail,,Vehicle positions,,,mdb-9001,https://example.com/rt/positions.pb,0,,,,,,,,,,active,,,

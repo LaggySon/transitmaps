@@ -16,7 +16,7 @@ const ROUTE_COORDINATES = [
   [0.129, 51.5681],
 ]
 
-const stopFeature = (name, coordinates, color, category) => ({
+const stopFeature = (name, coordinates, color, category, ids) => ({
   type: "Feature",
   geometry: {type: "Point", coordinates},
   properties: {
@@ -24,8 +24,27 @@ const stopFeature = (name, coordinates, color, category) => ({
     station: true,
     categories: [category],
     lines: [{name: `${category[0].toUpperCase()}${category.slice(1)} Line`, agency: "Visual Transit", color}],
+    ...(ids ? {ids} : {}),
   },
 })
+
+// London Central's departures: one on time, one late, one cancelled.
+const departuresFixture = () => {
+  const now = Math.floor(Date.now() / 1000)
+  const line = {name: "Rail Line", agency: "Visual Transit", category: "rail", color: CATEGORY_COLORS.rail}
+  return {
+    timezone: "Europe/London",
+    live: "live",
+    updated_at: now - 5,
+    timetable: "ok",
+    more: true,
+    departures: [
+      {time: now + 240, scheduled: now + 240, delay: 0, status: "on_time", destination: "Stratford International", platform: "2", line},
+      {time: now + 900, scheduled: now + 600, delay: 300, status: "late", destination: "Heathrow", platform: "4", line},
+      {time: now + 1200, scheduled: now + 1200, delay: null, status: "cancelled", destination: "Reading", platform: null, line},
+    ],
+  }
+}
 
 export const mockTransitApis = async (page) => {
   await page.route("**/api/routes.geojson?*", async (route) => {
@@ -63,11 +82,15 @@ export const mockTransitApis = async (page) => {
       body: JSON.stringify({
         type: "FeatureCollection",
         features: [
-          stopFeature("London Central", [-0.1276, 51.5072], color, category),
+          stopFeature("London Central", [-0.1276, 51.5072], color, category, [101]),
           stopFeature("Stratford International", [0.0032, 51.5413], color, category),
         ],
       }),
     })
+  })
+
+  await page.route("**/api/departures?*", async (route) => {
+    await route.fulfill({contentType: "application/json", body: JSON.stringify(departuresFixture())})
   })
 }
 

@@ -783,6 +783,127 @@ body.playwright-visuals .tm-zoom-readout {
   color: var(--muted-foreground);
 }
 
+/* A station with departures: tabs under the header, and a little more room
+   for a departure board. */
+.maplibregl-popup-content:has(.tm-popup--departures) {
+  min-width: min(18rem, calc(100vw - 2rem));
+  max-width: min(21rem, calc(100vw - 2rem));
+}
+
+.tm-popup-tabs {
+  padding: 0 var(--space-3);
+}
+
+.tm-departures-panel {
+  gap: var(--space-3);
+  max-height: 20rem;
+}
+
+.tm-departures-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-h-sm);
+}
+
+.tm-departures-age {
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+/* Live times older than twice the refresh (DESIGN.md section 11). */
+.tm-departures-age--stale {
+  color: var(--warning-text);
+}
+
+.tm-departures-zone {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-departures {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Time, then where it goes and on what, then how it is running. */
+.tm-departure {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.tm-departure:first-child,
+.tm-departures-day + .tm-departure {
+  border-top: 0;
+}
+
+.tm-departure-time {
+  font-weight: 600;
+}
+
+.tm-departure-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tm-departure-destination {
+  font-weight: 600;
+}
+
+.tm-departure-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-departure-line .ui-sep {
+  margin: 0;
+}
+
+.tm-departure-platform {
+  flex: none;
+  white-space: nowrap;
+}
+
+.tm-departure-status {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--state-text, var(--muted-foreground));
+}
+
+/* A cancelled train keeps its time, struck through, beside the word. */
+.tm-departure[data-cancelled] .tm-departure-time,
+.tm-departure[data-cancelled] .tm-departure-destination {
+  text-decoration: line-through;
+  color: var(--muted-foreground);
+}
+
+.tm-departures-day {
+  padding: var(--space-3) 0 var(--space-1);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.tm-departures-more {
+  align-self: stretch;
+}
+
+.tm-departures-empty {
+  margin: 0;
+}
+
 
 /* What the phone's detail panel describes. */
 .tm-selected {

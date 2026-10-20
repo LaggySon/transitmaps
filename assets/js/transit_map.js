@@ -10,6 +10,7 @@ import {
   renderPlacePin,
 } from "./map_places"
 import {DARK_LINE, readPalette, watchColorScheme, withAlpha} from "./map_palette"
+import {DepartureBoard} from "./station_departures"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
 const tileProxyUrl = (path) => `${location.origin}/tiles${path}`
@@ -67,6 +68,13 @@ const STOP_MERGE_KM = 0.05
 const kmScale = (lat) => [111.32 * Math.cos((lat * Math.PI) / 180), 110.57]
 const lineKey = (line) => line.key || `${line.name}|${line.agency}`
 
+// The stops under a station marker that have departures to show
+// (/api/departures). MapLibre hands a drawn feature's arrays back as JSON.
+const departureIds = (props) => {
+  const ids = typeof props.ids === "string" ? JSON.parse(props.ids) : props.ids
+  return Array.isArray(ids) ? ids.filter(Number.isInteger) : []
+}
+
 // One station out of several agencies' stops at the same place: the name of
 // whichever serves the most lines, every line and mode, sat at their middle.
 const combineStops = (features) => {
@@ -86,6 +94,7 @@ const combineStops = (features) => {
       ...best.properties,
       categories: [...new Set(features.flatMap((f) => f.properties.categories || []))],
       lines,
+      ids: [...new Set(features.flatMap((f) => departureIds(f.properties)))],
       station: features.some((f) => f.properties.station),
       interchange: new Set(lines.map(lineKey)).size || best.properties.interchange,
     },
@@ -544,6 +553,7 @@ const TransitMap = {
     this.el.removeEventListener("map:locate", this.locateHandler)
     this.el.removeEventListener("map:set-zoom", this.setZoomHandler)
     if (this.stopWatchingScheme) this.stopWatchingScheme()
+    this.departureBoard?.stop()
     if (this.map) this.map.remove()
   },
 
@@ -696,8 +706,7 @@ const TransitMap = {
     const station = nearest(this.map.queryRenderedFeatures(box, {layers: shown(MODE_ORDER.map((cat) => layerIds(cat).stops))}))
     if (station) {
       const [lng, lat] = station.geometry.coordinates
-      this.openPopup({lng, lat}, this.stationPopupHtml(station.properties), () => this.clearFocus())
-      this.bindRouteBadges()
+      this.openStationPopup({lng, lat}, station.properties)
       return
     }
 
@@ -855,8 +864,7 @@ const TransitMap = {
     if (near) {
       this.pendingStation = null
       const [lng, lat] = near.feature.geometry.coordinates
-      this.openPopup({lng, lat}, this.stationPopupHtml(near.feature.properties), () => this.clearFocus())
-      this.bindRouteBadges()
+      this.openStationPopup({lng, lat}, near.feature.properties)
     } else if (settled && !this.dataLoading) {
       this.pendingStation = null
       this.openPopup(
@@ -1359,7 +1367,52 @@ const TransitMap = {
     })
   },
 
-  stationPopupHtml(props) {
+  // A station's details: its departures, when it has any to show, and its
+  // lines. The departure board runs until the popup closes.
+  openStationPopup(lngLat, props) {
+    const ids = departureIds(props)
+    this.openPopup(lngLat, this.stationPopupHtml(props, ids.length > 0), () => this.clearFocus())
+    this.bindRouteBadges()
+    this.bindStationTabs()
+
+    const panel = ids.length ? this.popupElement()?.querySelector("[data-departures]") : null
+    if (panel) {
+      this.departureBoard = new DepartureBoard(panel, ids)
+      this.departureBoard.start()
+    }
+  },
+
+  // Departures and Lines are tabs; the arrow keys move between them
+  // (DESIGN.md section 7.21).
+  bindStationTabs() {
+    const element = this.popupElement()
+    const tabs = [...(element?.querySelectorAll("[role='tab']") || [])]
+
+    const select = (tab) =>
+      tabs.forEach((other) => {
+        const selected = other === tab
+        other.setAttribute("aria-selected", String(selected))
+        other.tabIndex = selected ? 0 : -1
+        element.querySelector(`#${other.getAttribute("aria-controls")}`).hidden = !selected
+      })
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", (event) => {
+        event.stopPropagation()
+        select(tab)
+      })
+      tab.addEventListener("keydown", (event) => {
+        const step = {ArrowRight: 1, ArrowLeft: -1}[event.key]
+        if (!step) return
+        event.preventDefault()
+        const next = tabs[(index + step + tabs.length) % tabs.length]
+        select(next)
+        next.focus()
+      })
+    })
+  },
+
+  stationPopupHtml(props, withDepartures = false) {
     const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
     const fallback = this.stationFallbackCategory(props)
     const groups = this.stationModeGroups(lines, fallback)
@@ -1402,12 +1455,26 @@ const TransitMap = {
           .join("")}</div>`
       : `<p class="tm-popup-empty">No lines listed for this stop.</p>`
 
-    return (
-      `<div class="tm-popup">` +
+    const header =
       `<div class="tm-popup-header">` +
       `<div class="tm-popup-title">${this.escapeHtml(props.name || "Stop")}</div>` +
       meta +
-      `</div>${body}</div>`
+      `</div>`
+
+    if (!withDepartures) return `<div class="tm-popup">${header}${body}</div>`
+
+    return (
+      `<div class="tm-popup tm-popup--departures">${header}` +
+      `<div class="ui-tabs tm-popup-tabs" role="tablist" aria-label="Station details">` +
+      `<button type="button" class="ui-tab" role="tab" id="station-tab-departures" aria-selected="true"` +
+      ` aria-controls="station-panel-departures">Departures</button>` +
+      `<button type="button" class="ui-tab" role="tab" id="station-tab-lines" aria-selected="false" tabindex="-1"` +
+      ` aria-controls="station-panel-lines">Lines <span class="ui-tab-count">${lineTotal}</span></button>` +
+      `</div>` +
+      `<div class="tm-popup-body tm-departures-panel" role="tabpanel" id="station-panel-departures"` +
+      ` aria-labelledby="station-tab-departures" data-departures></div>` +
+      `<div role="tabpanel" id="station-panel-lines" aria-labelledby="station-tab-lines" hidden>${body}</div>` +
+      `</div>`
     )
   },
 
@@ -1493,7 +1560,9 @@ const TransitMap = {
       return
     }
 
-    this.popup = new maplibregl.Popup({closeButton: true, closeOnClick: false, maxWidth: "288px"})
+    // A departure board needs a little more room than a list of lines.
+    const maxWidth = html.includes("tm-popup--departures") ? "336px" : "288px"
+    this.popup = new maplibregl.Popup({closeButton: true, closeOnClick: false, maxWidth})
       .setLngLat(lngLat)
       .setHTML(html)
       .addTo(this.map)
@@ -1503,6 +1572,8 @@ const TransitMap = {
   closePopup() {
     const onClose = this.popupOnClose
     this.popupOnClose = null
+    this.departureBoard?.stop()
+    this.departureBoard = null
 
     if (this.popup) {
       const popup = this.popup

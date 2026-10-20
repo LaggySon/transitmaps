@@ -101,6 +101,34 @@ of different agencies within 250 m into one interchange marker.
 - Visitors can hide an agency on their own map from the menu's in-view list;
   nothing is deleted.
 
+## Departures
+
+Clicking a station opens its departures: the next trains, with platform and
+destination, and live delays and cancellations where the agency publishes
+them. The board refreshes every 30 seconds while it is open, and the
+station's lines are a tab away.
+
+- **Timetables** are read at import (`Transitmaps.Gtfs.Timetable`) for
+  metro, tram, rail, intercity and ferry stations, not bus stops, whose
+  timetables would outweigh everything else. Only trips running in the 64
+  days from two days before the import are kept, which weekly refreshes
+  keep ahead of today. Each station's departures are one compressed row in
+  `stop_departures` (Great Britain's 2,600 stations take about 34 MB).
+  Times are shown in the agency's time zone.
+- **Live times** come from GTFS Realtime trip updates the Mobility Database
+  catalog lists for the agency without a key (`Transitmaps.Realtime`); a
+  hand-curated feed uses the listings of the catalog agency that replaces
+  it. A feed is fetched only while someone has one of its stations open, at
+  most every 30 seconds, and dropped after 10 minutes unread.
+- **TfL's stations** (Tube, DLR, Overground, Elizabeth line, trams) show
+  TfL's live arrivals (`Transitmaps.Realtime.Tfl`); `TFL_APP_KEY` raises the
+  rate limit. Where National Rail's timetable lists the same line at a
+  station, the live arrivals replace it.
+- National Rail has no live times: Network Rail's feeds need a registered
+  account.
+- `/api/departures?stops=12,34&limit=10` serves a station marker's stops
+  (the `ids` on its feature).
+
 Imported data accumulates in Postgres; watch the database size on Railway
 as more agencies are added.
 
@@ -193,10 +221,11 @@ SECRET_KEY_BASE=<output of mix phx.gen.secret>
 Add `transitmaps.laggi.sh` as the service's custom domain, then create the DNS
 record Railway provides.
 
-The importer is schedule-free: it stores each route with a simplified
-representative geometry (up to 6 most-used service patterns) and each
-station tagged with the mode categories serving it, keeping API payloads
-small enough to render the whole country at once.
+The importer stores each route with a simplified representative geometry
+(up to 6 most-used service patterns) and each station tagged with the mode
+categories serving it, keeping API payloads small enough to render the
+whole country at once. Timetables are kept apart from that, one packed row
+per station (see Departures).
 
 ## Architecture
 
@@ -226,6 +255,12 @@ small enough to render the whole country at once.
   and retiring hand-curated copies
 - `TransitmapsWeb.GeoController` — `/api/routes.geojson`, `/api/stops.geojson`,
   one agency per request (`?feed=`)
+- `Transitmaps.Departures` + `TransitmapsWeb.DepartureController` — a
+  station's next departures, its timetable with live times laid over it;
+  `assets/js/station_departures.js` is the board in the station's popup
+- `Transitmaps.Realtime` (with `Realtime.GtfsRt`, a reader for the trip
+  updates in a GTFS Realtime feed) and `Realtime.Tfl` — live times, cached
+  while stations are open
 - `TransitmapsWeb.MapLive` + `assets/js/transit_map.js` — LiveView page and
   MapLibre hook. One floating menu filters what the map shows (agencies,
   modes, station names and stop markers, places). The view is kept in the

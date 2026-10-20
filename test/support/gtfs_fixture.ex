@@ -34,6 +34,11 @@ defmodule Transitmaps.GtfsFixture do
       | shapes_file(stops, shapes)
     ]
 
+    # Extra files, or replacements for the ones above (calendar.txt, a
+    # trips.txt with headsigns).
+    extra = Keyword.get(opts, :files, [])
+    files = Enum.reject(files, fn {name, _body} -> List.keymember?(extra, name, 0) end) ++ extra
+
     File.mkdir_p!(Path.dirname(path))
     File.rm(path)
 

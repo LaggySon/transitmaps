@@ -24,6 +24,12 @@ defmodule Transitmaps.CatalogTest do
     assert %{place: "Boston, Massachusetts, United States"} = Catalog.get("mdb-437")
   end
 
+  test "finds an agency's live trip updates that need no key" do
+    assert Catalog.realtime("mdb-9001") == ["https://example.com/rt/tiny-trip-updates.pb"]
+    assert Catalog.realtime("mdb-437") == []
+    refute "mdb-9101" in Enum.map(Catalog.feeds(), & &1.id), "live feeds aren't agencies to add"
+  end
+
   test "searches by any words of the name or place, name matches first" do
     assert [%{id: "mdb-437"}] = Catalog.search("mbta")
     assert [%{id: "mdb-437"}] = Catalog.search("boston transportation")

@@ -21,7 +21,7 @@ defmodule Transitmaps.Gtfs.Importer do
   require Logger
 
   alias Transitmaps.Geometry
-  alias Transitmaps.Gtfs.{Csv, RouteTypes}
+  alias Transitmaps.Gtfs.{Csv, RouteTypes, Timetable}
   alias Transitmaps.Repo
 
   @cache_dir Path.join(["priv", "gtfs_cache"])
@@ -89,6 +89,8 @@ defmodule Transitmaps.Gtfs.Importer do
       `true`); on-demand region imports throw theirs away
     * `:invalidate` — mark cached GeoJSON stale afterwards (default
       `true`); a region import does it once when all its feeds are in
+    * `:today` — the day the stations' timetables are counted from
+      (default today; see `Transitmaps.Gtfs.Timetable`)
   """
   def import_feed(name, source, opts \\ []) do
     dir = fetch_and_extract!(name, source, opts)
@@ -105,8 +107,15 @@ defmodule Transitmaps.Gtfs.Importer do
 
       if drawable?(route_rows) do
         stations = read_stations(dir, scan_stop_times(dir, trip_index))
+        timetable = Timetable.read(dir, route_rows, Keyword.take(opts, [:today]))
 
-        persist_rows(name, source, route_rows, station_rows(stations, route_rows), opts)
+        persist_rows(
+          name,
+          source,
+          route_rows,
+          station_rows(stations, route_rows),
+          Keyword.put(opts, :timetable, timetable)
+        )
       else
         remove_feed(name)
         {:error, :no_shapes}
@@ -795,11 +804,15 @@ defmodule Transitmaps.Gtfs.Importer do
 
   # -- persistence -------------------------------------------------------------
 
+  # `opts[:timetable]` is the feed's `Transitmaps.Gtfs.Timetable`, if it has
+  # one; a feed imported without (TfL's) can still name its time zone in
+  # `opts[:feed]`.
   @doc false
   def persist_rows(name, source, route_rows, station_rows, opts \\ []) do
     now = DateTime.utc_now(:second)
 
     routes_by_id = Map.new(route_rows, fn route -> {route.route_id, route} end)
+    timetable = Keyword.get(opts, :timetable)
 
     result =
       Repo.transaction(
@@ -808,6 +821,7 @@ defmodule Transitmaps.Gtfs.Importer do
             opts
             |> Keyword.get(:feed, %{})
             |> Map.merge(service_area(station_rows, route_rows))
+            |> Map.merge(timetable_attrs(timetable))
 
           feed = upsert_feed!(name, source, now, attrs)
 
@@ -823,10 +837,15 @@ defmodule Transitmaps.Gtfs.Importer do
             )
           end)
 
-          insert_batched!(
-            Transitmaps.Gtfs.Stop,
-            Enum.map(station_rows, &stop_insert(&1, feed.id, now, routes_by_id))
-          )
+          station_rows
+          |> Stream.map(&stop_insert(&1, feed.id, now, routes_by_id))
+          |> Stream.chunk_every(@insert_batch)
+          |> Enum.each(fn batch ->
+            {_count, inserted} =
+              Repo.insert_all(Transitmaps.Gtfs.Stop, batch, returning: [:id, :stop_id])
+
+            insert_departures!(inserted, timetable)
+          end)
 
           Logger.info(
             "Imported #{length(route_rows)} routes, #{length(station_rows)} stops for feed #{name}"
@@ -839,6 +858,27 @@ defmodule Transitmaps.Gtfs.Importer do
 
     if Keyword.get(opts, :invalidate, true), do: Transitmaps.Gtfs.GeoJsonCache.invalidate()
     result
+  end
+
+  defp timetable_attrs(nil), do: %{}
+
+  defp timetable_attrs(timetable),
+    do: %{timezone: timetable.timezone, timetable_from: timetable.from}
+
+  # A big station's departures run to a few hundred kilobytes, so they go
+  # in small batches.
+  defp insert_departures!(_inserted, nil), do: :ok
+
+  defp insert_departures!(inserted, %{stations: stations}) do
+    inserted
+    |> Enum.flat_map(fn %{id: id, stop_id: stop_id} ->
+      case stations do
+        %{^stop_id => departures} -> [%{stop_id: id, departures: departures}]
+        _ -> []
+      end
+    end)
+    |> Enum.chunk_every(50)
+    |> Enum.each(&Repo.insert_all("stop_departures", &1))
   end
 
   defp feed_scope(schema, feed_id) do
@@ -912,7 +952,18 @@ defmodule Transitmaps.Gtfs.Importer do
   defp upsert_feed!(name, source, now, attrs) do
     attrs =
       %{label: Map.get(@known_labels, name, name)}
-      |> Map.merge(Map.take(attrs, [:label, :catalog_id, :min_lon, :min_lat, :max_lon, :max_lat]))
+      |> Map.merge(
+        Map.take(attrs, [
+          :label,
+          :catalog_id,
+          :min_lon,
+          :min_lat,
+          :max_lon,
+          :max_lat,
+          :timezone,
+          :timetable_from
+        ])
+      )
 
     Repo.insert!(
       struct(
@@ -1008,12 +1059,6 @@ defmodule Transitmaps.Gtfs.Importer do
 
   defp geometry_points(%{coordinates: lines}), do: lines |> Enum.map(&line_length/1) |> Enum.sum()
   defp geometry_points(_geometry), do: 0
-
-  defp insert_batched!(schema, rows) do
-    rows
-    |> Stream.chunk_every(@insert_batch)
-    |> Enum.each(&Repo.insert_all(schema, &1))
-  end
 
   # -- parsing helpers -----------------------------------------------------------
 

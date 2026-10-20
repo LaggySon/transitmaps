@@ -12,7 +12,7 @@ defmodule Transitmaps.Gtfs do
   alias Transitmaps.Display
   alias Transitmaps.Display.Identity
   alias Transitmaps.Geometry
-  alias Transitmaps.Gtfs.{Route, RouteTypes, Stop}
+  alias Transitmaps.Gtfs.{Feed, Route, RouteTypes, Stop}
   alias Transitmaps.Repo
 
   @doc """
@@ -72,10 +72,38 @@ defmodule Transitmaps.Gtfs do
     Stop
     |> where([s], s.feed_id == ^feed_id)
     |> Repo.all(timeout: :timer.minutes(1))
+    |> with_departure_ids(feed_id)
     |> merge_colocated_stops()
     |> Enum.filter(fn stop -> Enum.any?(stop.categories, &(&1 in categories)) end)
     |> Enum.map(&stop_feature/1)
     |> feature_collection()
+  end
+
+  # Which stops have departures to show: those with a timetable, and every
+  # TfL station, whose departures come live from TfL.
+  defp with_departure_ids(stops, feed_id) do
+    live_only? =
+      Repo.exists?(from f in Feed, where: f.id == ^feed_id and f.name == "tfl")
+
+    timetabled =
+      if live_only? do
+        MapSet.new()
+      else
+        from(d in "stop_departures",
+          join: s in Stop,
+          on: s.id == d.stop_id,
+          where: s.feed_id == ^feed_id,
+          select: d.stop_id
+        )
+        |> Repo.all(timeout: :timer.minutes(1))
+        |> MapSet.new()
+      end
+
+    Enum.map(stops, fn stop ->
+      if live_only? or MapSet.member?(timetabled, stop.id),
+        do: %{stop | departure_ids: [stop.id]},
+        else: stop
+    end)
   end
 
   # How far apart two stops can be and still be one place. A big interchange
@@ -178,6 +206,7 @@ defmodule Transitmaps.Gtfs do
     %{
       representative
       | categories: stops |> Enum.flat_map(& &1.categories) |> Enum.uniq(),
+        departure_ids: Enum.flat_map(stops, & &1.departure_ids),
         lines: stops |> Enum.flat_map(& &1.lines) |> Enum.uniq_by(&line_identity/1),
         name: preferred_station_name(stops),
         # Sit the marker in the middle of the complex rather than on whichever
@@ -279,18 +308,25 @@ defmodule Transitmaps.Gtfs do
     %{
       type: "Feature",
       geometry: %{type: "Point", coordinates: [stop.lon, stop.lat]},
-      properties: %{
-        name: stop.name,
-        categories: stop.categories,
-        lines: Enum.map(stop.lines, &present_line/1),
-        # Stations serving rail-family modes get the larger "station" marker.
-        station: station?(stop),
-        # How many services meet here, so the map can draw Bank at the size of
-        # the interchange it is rather than as one more dot on the Northern.
-        interchange: drawn_line_count(stop)
-      }
+      properties:
+        %{
+          name: stop.name,
+          categories: stop.categories,
+          lines: Enum.map(stop.lines, &present_line/1),
+          # Stations serving rail-family modes get the larger "station" marker.
+          station: station?(stop),
+          # How many services meet here, so the map can draw Bank at the size of
+          # the interchange it is rather than as one more dot on the Northern.
+          interchange: drawn_line_count(stop)
+        }
+        |> put_departure_ids(stop.departure_ids)
     }
   end
+
+  # The stops the station's departures are asked for by
+  # (`/api/departures`); a stop with none to show leaves it out.
+  defp put_departure_ids(properties, []), do: properties
+  defp put_departure_ids(properties, ids), do: Map.put(properties, :ids, ids)
 
   # Stored line entries may be atom- or string-keyed (structs vs jsonb);
   # normalize the shape and apply operator brand colours, matching what

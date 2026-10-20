@@ -81,6 +81,36 @@ defmodule Transitmaps.Catalog do
   @doc "Whether the catalog has loaded, so its agencies can be looked up."
   def loaded?, do: :persistent_term.get(__MODULE__, nil) != nil
 
+  @doc """
+  The GTFS Realtime trip update URLs the catalog lists for agency
+  `catalog_id`: live delays and cancellations for its timetable. Only
+  feeds that need no key and are still running are kept.
+  """
+  def realtime(catalog_id) do
+    {__MODULE__, :realtime} |> :persistent_term.get(%{}) |> Map.get(catalog_id, [])
+  end
+
+  @doc false
+  def parse_realtime(path) do
+    path
+    |> Path.dirname()
+    |> Csv.stream(Path.basename(path))
+    |> Stream.filter(&live_trip_updates?/1)
+    |> Enum.flat_map(fn row ->
+      for static_id <- String.split(row["static_reference"], "|", trim: true),
+          do: {static_id, row["urls.direct_download"]}
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {static_id, urls} -> {static_id, Enum.uniq(urls)} end)
+  end
+
+  defp live_trip_updates?(row) do
+    row["data_type"] == "gtfs_rt" and
+      "tu" in String.split(row["entity_type"] || "", "|") and
+      row["urls.authentication_type"] in [nil, "", "0"] and row["status"] in ["active", ""] and
+      present?(row["urls.direct_download"]) and present?(row["static_reference"])
+  end
+
   @doc false
   def parse(path) do
     pinned = Packages.catalog_ids()
@@ -198,6 +228,7 @@ defmodule Transitmaps.Catalog do
 
     if path do
       feeds = parse(path)
+      :persistent_term.put({__MODULE__, :realtime}, parse_realtime(path))
       :persistent_term.put(__MODULE__, feeds)
       Logger.info("Feed catalog loaded: #{length(feeds)} feeds")
       Transitmaps.Agencies.Worker.poke()

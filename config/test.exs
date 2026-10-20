@@ -48,3 +48,10 @@ config :transitmaps, :agency_worker, false
 
 # Station searches build their index in the test process, under the sandbox.
 config :transitmaps, :station_index, false
+
+# Live departures are fetched in the test process, from Req.Test stubs.
+config :transitmaps, :realtime_cache, false
+config :transitmaps, Transitmaps.Realtime, req_options: [plug: {Req.Test, Transitmaps.Realtime}]
+
+config :transitmaps, Transitmaps.Realtime.Tfl,
+  req_options: [plug: {Req.Test, Transitmaps.Realtime.Tfl}]

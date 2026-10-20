@@ -16,6 +16,10 @@ defmodule Transitmaps.Gtfs.Feed do
     field :min_lat, :float
     field :max_lon, :float
     field :max_lat, :float
+    # The agency's time zone, and the first day its stations' timetables
+    # count from (`Transitmaps.Gtfs.Timetable`).
+    field :timezone, :string
+    field :timetable_from, :date
 
     has_many :routes, Transitmaps.Gtfs.Route
     has_many :stops, Transitmaps.Gtfs.Stop

@@ -63,7 +63,9 @@ defmodule Transitmaps.Gtfs.TflImporter do
     routes = Enum.map(details, &route_row(&1, osm_relations))
     stations = station_rows(details)
 
-    Importer.persist_rows("tfl", @api, routes, stations)
+    # TfL's stations have no timetable here; their departures come live
+    # from TfL (`Transitmaps.Realtime.Tfl`), in London's time.
+    Importer.persist_rows("tfl", @api, routes, stations, feed: %{timezone: "Europe/London"})
   end
 
   defp line_detail(line) do
@@ -327,9 +329,14 @@ defmodule Transitmaps.Gtfs.TflImporter do
     cond do
       # The network gate already isolates the tram and DLR systems, whose
       # relations are not consistently named after the TfL line.
-      mode == "tram" or line["id"] == "dlr" -> true
-      line["id"] == "elizabeth" -> String.contains?(label, "elizabeth")
-      true -> String.contains?(label, "#{name} line") or String.downcase(tags["ref"] || "") == name
+      mode == "tram" or line["id"] == "dlr" ->
+        true
+
+      line["id"] == "elizabeth" ->
+        String.contains?(label, "elizabeth")
+
+      true ->
+        String.contains?(label, "#{name} line") or String.downcase(tags["ref"] || "") == name
     end
   end
 

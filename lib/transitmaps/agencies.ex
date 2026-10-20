@@ -57,6 +57,16 @@ defmodule Transitmaps.Agencies do
   }
 
   @doc """
+  The catalog agency a feed stands for: its own catalog id, or for a
+  hand-curated copy, the catalog agency that replaces it.
+  """
+  def catalog_id(%{catalog_id: catalog_id}) when is_binary(catalog_id), do: catalog_id
+
+  def catalog_id(%{name: name}) do
+    Enum.find_value(@supersedes, fn {catalog_id, names} -> if name in names, do: catalog_id end)
+  end
+
+  @doc """
   Every agency the map can draw: `%{id, label, bounds, counts}`, where
   `bounds` is `[[west, south], [east, north]]` and `counts` maps each mode
   to its route count.

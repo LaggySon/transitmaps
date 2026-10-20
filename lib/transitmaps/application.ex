@@ -19,6 +19,11 @@ defmodule Transitmaps.Application do
       {Phoenix.PubSub, name: Transitmaps.PubSub},
       Transitmaps.Catalog,
       Transitmaps.Stations,
+      # Live departures: fetches run under their own supervisor, and the
+      # caches keep what they fetched.
+      {Task.Supervisor, name: Transitmaps.Realtime.tasks()},
+      Transitmaps.Realtime,
+      Transitmaps.Realtime.Tfl,
       # Start to serve requests, typically the last entry
       TransitmapsWeb.Endpoint,
       # Pre-build the default map responses so the first visit is cached too

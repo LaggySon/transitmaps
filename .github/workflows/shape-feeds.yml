@@ -130,7 +130,7 @@ jobs:
             mot: "subway"
             url: "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_east/"
             agency: "Tyne and Wear Metro"
-            strip_names: '\(?(Tyne and Wear )?Metro Station\)?$'
+            strip_names: '\(?(Tyne (and|&) Wear )?Metro Station\)?$'
     steps:
       - uses: actions/checkout@v4
 

@@ -71,7 +71,8 @@ defmodule Transitmaps.Gtfs.Importer do
     "marc" => "MARC Train",
     "baltimore-metro" => "Baltimore Metro SubwayLink",
     "baltimore-light-rail" => "Baltimore Light RailLink",
-    "wmata-rapid" => "WMATA Metrorail"
+    "wmata-rapid" => "WMATA Metrorail",
+    "tyne-wear-metro" => "Tyne and Wear Metro"
   }
 
   @doc """
@@ -104,6 +105,7 @@ defmodule Transitmaps.Gtfs.Importer do
         build_route_rows(routes, trip_index, shape_geometries)
         |> normalize_feed_categories(name)
         |> Enum.map(&amtrak_as_intercity/1)
+        |> name_lines(name)
 
       if drawable?(route_rows) do
         stations = read_stations(dir, scan_stop_times(dir, trip_index))
@@ -142,6 +144,14 @@ defmodule Transitmaps.Gtfs.Importer do
 
       import_feed("gb-rail", @gb_rail_source)
   end
+
+  # The Tyne and Wear Metro, which isn't in the catalog either: the "Shape
+  # rail feeds" workflow cuts it out of the Bus Open Data Service's North
+  # East feed and traces it along OpenStreetMap.
+  @tyne_wear_metro "https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/tyne-wear-metro.zip"
+
+  @doc "Imports the Tyne and Wear Metro."
+  def import_tyne_wear_metro, do: import_feed("tyne-wear-metro", @tyne_wear_metro)
 
   # A feed is drawn when shapes that follow the track outweigh shapes that
   # only join stops. Where most of its shapes are straight hops, the few
@@ -192,6 +202,27 @@ defmodule Transitmaps.Gtfs.Importer do
   end
 
   defp normalize_feed_categories(routes, _name), do: routes
+
+  # The Bus Open Data Service files the Metro's two lines under codes and
+  # without colours; these are the colours Wikipedia gives the lines.
+  @tyne_wear_lines %{
+    "GRN" => {"Green", "Green line", "#1B873B", "#FFFFFF"},
+    "YEL" => {"Yellow", "Yellow line", "#FEB300", "#000000"}
+  }
+
+  defp name_lines(routes, "tyne-wear-metro") do
+    Enum.map(routes, fn route ->
+      case @tyne_wear_lines[route.short_name] do
+        {short, long, color, text_color} ->
+          %{route | short_name: short, long_name: long, color: color, text_color: text_color}
+
+        nil ->
+          route
+      end
+    end)
+  end
+
+  defp name_lines(routes, _name), do: routes
 
   # -- download / extract ----------------------------------------------------
 

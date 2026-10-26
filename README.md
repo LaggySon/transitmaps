@@ -143,6 +143,9 @@ mix gtfs.import gb-rail https://storage.travelwhiz.app/generated-gtfs/gb-nationa
 # TfL Tube, DLR, London Overground, Elizabeth line, and trams:
 mix tfl.import
 
+# Tyne and Wear Metro (see below):
+mix gtfs.import tyne-wear-metro https://github.com/LaggySon/transitmaps/releases/download/shaped-feeds/tyne-wear-metro.zip
+
 # Amtrak, including the complete Boston-Washington Northeast Corridor:
 mix gtfs.import amtrak https://content.amtrak.com/content/gtfs/GTFS.zip
 
@@ -178,8 +181,16 @@ The TfL importer uses the public Unified API. Anonymous access works for
 occasional imports; set `TFL_APP_KEY` to a registered API key for a higher
 rate limit.
 
+The Tyne and Wear Metro is only published in the Bus Open Data Service's
+North East feed, among the region's buses, with coarse shapes. The weekly
+"Shape rail feeds" workflow cuts the Metro out of it
+(`.github/scripts/cut_agency.py`), traces it along OpenStreetMap, and
+publishes it on the `shaped-feeds` release. The importer names its two
+lines (filed as `GRN` and `YEL`) and gives them their colours.
+
 Re-importing under the same name replaces that feed's data. Downloads are
-cached in `priv/gtfs_cache/`. Railway refreshes Great Britain rail and TfL in
+cached in `priv/gtfs_cache/`. Railway refreshes Great Britain rail, the Tyne
+and Wear Metro, and TfL in
 the background after the web service is healthy; a failed upstream refresh
 leaves the previously imported map data in place.
 
@@ -190,6 +201,7 @@ immediately:
 ```sh
 bin/transitmaps eval "Transitmaps.Release.import_tfl()"
 bin/transitmaps eval "Transitmaps.Release.import_gb()"
+bin/transitmaps eval "Transitmaps.Release.import_tyne_wear_metro()"
 ```
 
 Railway also starts a TfL refresh in the background after every application

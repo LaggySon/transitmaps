@@ -19,8 +19,8 @@ defmodule Transitmaps.Release do
   end
 
   @doc """
-  Re-imports the Great Britain data set (national rail GTFS plus TfL)
-  from the deployed release, e.g.:
+  Re-imports the Great Britain data set (national rail GTFS, the Tyne and
+  Wear Metro, and TfL) from the deployed release, e.g.:
 
       bin/transitmaps eval "Transitmaps.Release.import_gb()"
 
@@ -29,7 +29,13 @@ defmodule Transitmaps.Release do
   """
   def import_gb do
     with_import_repo(&Transitmaps.Gtfs.Importer.import_gb_rail/0)
+    import_tyne_wear_metro()
     import_tfl()
+  end
+
+  @doc ~S|Imports the Tyne and Wear Metro: eval "Transitmaps.Release.import_tyne_wear_metro()"|
+  def import_tyne_wear_metro do
+    with_import_repo(&Transitmaps.Gtfs.Importer.import_tyne_wear_metro/0)
   end
 
   @doc ~S"""

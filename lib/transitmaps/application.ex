@@ -58,23 +58,9 @@ defmodule Transitmaps.Application do
       # Serve the persisted data and let the GeoJSON cache warm before a
       # large download/import consumes CPU and invalidates that cache.
       Process.sleep(@gb_refresh_delay)
-      Logger.info("Refreshing Great Britain rail data after Railway startup")
-
-      try do
-        Transitmaps.Gtfs.Importer.import_gb_rail()
-      rescue
-        error ->
-          Logger.error(
-            "Great Britain rail startup refresh failed; keeping existing map data:\n" <>
-              Exception.format(:error, error, __STACKTRACE__)
-          )
-      catch
-        kind, reason ->
-          Logger.error(
-            "Great Britain rail startup refresh failed; keeping existing map data:\n" <>
-              Exception.format(kind, reason, __STACKTRACE__)
-          )
-      end
+      refresh("Great Britain rail", &Transitmaps.Gtfs.Importer.import_gb_rail/0)
+      # The Metro is small; it follows national rail so imports never overlap.
+      refresh("Tyne and Wear Metro", &Transitmaps.Gtfs.Importer.import_tyne_wear_metro/0)
     end
   end
 
@@ -83,24 +69,32 @@ defmodule Transitmaps.Application do
       # Stagger this behind the national feed so the two imports never fight
       # each other (or the first visitor) immediately after a deployment.
       Process.sleep(@tfl_refresh_delay)
-      Logger.info("Refreshing TfL data after Railway startup")
-
-      try do
-        Transitmaps.Gtfs.TflImporter.import(cache: false)
-      rescue
-        error ->
-          Logger.error(
-            "TfL startup refresh failed; keeping existing map data:\n" <>
-              Exception.format(:error, error, __STACKTRACE__)
-          )
-      catch
-        kind, reason ->
-          Logger.error(
-            "TfL startup refresh failed; keeping existing map data:\n" <>
-              Exception.format(kind, reason, __STACKTRACE__)
-          )
-      end
+      refresh("TfL", fn -> Transitmaps.Gtfs.TflImporter.import(cache: false) end)
     end
+  end
+
+  defp refresh(label, import) do
+    Logger.info("Refreshing #{label} data after Railway startup")
+
+    case import.() do
+      {:error, reason} ->
+        Logger.error("#{label} startup refresh failed: #{inspect(reason)}")
+
+      _ok ->
+        :ok
+    end
+  rescue
+    error ->
+      Logger.error(
+        "#{label} startup refresh failed; keeping existing map data:\n" <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+  catch
+    kind, reason ->
+      Logger.error(
+        "#{label} startup refresh failed; keeping existing map data:\n" <>
+          Exception.format(kind, reason, __STACKTRACE__)
+      )
   end
 
   # Tell Phoenix to update the endpoint configuration

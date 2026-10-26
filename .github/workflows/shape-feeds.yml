@@ -123,6 +123,14 @@ jobs:
           # Great Britain's national rail (hand-curated, not in the catalog):
           # the North Wales coast trains have no shapes
           - {id: gb-rail, mot: "rail", url: "https://storage.travelwhiz.app/generated-gtfs/gb-nationalrail.gtfs.zip"}
+          # The Tyne and Wear Metro (hand-curated, not in the catalog): cut
+          # out of the Bus Open Data Service's North East feed, whose shapes
+          # for it are coarse, and traced again
+          - id: tyne-wear-metro
+            mot: "subway"
+            url: "https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_east/"
+            agency: "Tyne and Wear Metro"
+            strip_names: '\(?(Tyne and Wear )?Metro Station\)?$'
     steps:
       - uses: actions/checkout@v4
 
@@ -135,6 +143,15 @@ jobs:
         run: |
           curl -sSfL --retry 3 --compressed -H "Digitraffic-User: transitmaps" -o feed.zip \
             "${{ matrix.feed.url || format('https://files.mobilitydatabase.org/{0}/latest.zip', matrix.feed.id) }}"
+
+      - name: Keep one agency
+        if: matrix.feed.agency
+        env:
+          AGENCY: ${{ matrix.feed.agency }}
+          STRIP_NAMES: ${{ matrix.feed.strip_names }}
+        run: |
+          python3 .github/scripts/cut_agency.py feed.zip cut.zip "$AGENCY" --strip-names "$STRIP_NAMES"
+          mv cut.zip feed.zip
 
       - name: Drop station-to-station train shapes
         if: matrix.feed.unshape

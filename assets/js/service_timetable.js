@@ -3,7 +3,8 @@
 // platforms, and live times where the agency publishes them. It takes the
 // board's place in the popup until "Back to departures". With live times
 // it asks /api/service again every 30 seconds; a timetable alone doesn't
-// change, so it is read once.
+// change, so it is read once. Each stop shows its time and name; opening it
+// shows its platform and the rest, and a way to its station on the map.
 
 import {REFRESH_MS, DEPARTURE_STATES, minutes, escapeHtml, safeColor, clockFormat, dayFormat, dayKey} from "./departure_format"
 
@@ -24,6 +25,8 @@ export class ServiceTimetable {
     this.error = null
     this.request = 0
     this.placed = false
+    // The stops opened to show their details, kept across refreshes.
+    this.expanded = new Set()
   }
 
   start() {
@@ -105,6 +108,7 @@ export class ServiceTimetable {
     const scroll = this.panel.querySelector(".tm-service")?.scrollTop || 0
     const focused = document.activeElement
     const focusedStation = this.panel.contains(focused) ? focused.getAttribute("data-service-station") : null
+    const focusedCall = this.panel.contains(focused) ? focused.getAttribute("data-service-call") : null
     const backFocused = this.panel.contains(focused) && focused.hasAttribute("data-service-back")
 
     this.panel.innerHTML = this.backHtml() + failure + this.headHtml() + this.callsHtml()
@@ -125,6 +129,7 @@ export class ServiceTimetable {
     // list to its top.
     if (backFocused) this.panel.querySelector("[data-service-back]")?.focus({preventScroll: true})
     else if (focusedStation) this.panel.querySelector(`[data-service-station="${focusedStation}"]`)?.focus({preventScroll: true})
+    else if (focusedCall) this.panel.querySelector(`[data-service-call="${focusedCall}"]`)?.focus({preventScroll: true})
   }
 
   headHtml() {
@@ -175,24 +180,20 @@ export class ServiceTimetable {
       const only =
         index > 0 && index < last && !call.pickup ? "Set down only" : index > 0 && index < last && !call.drop_off ? "Pick up only" : null
 
+      // A stop's details stay folded away until it is opened: its platform,
+      // a long stop's arrival, who may board, and the way to its station.
       const notes = [
         call.platform ? `<span title="Platform ${escapeHtml(call.platform)}">Plat. ${escapeHtml(call.platform)}</span>` : null,
         arrives ? `<span class="ui-mono">${escapeHtml(arrives)}</span>` : null,
         only ? `<span>${only}</span>` : null,
         here ? `<span>This station</span>` : null,
       ].filter(Boolean)
-
-      const name =
-        call.station != null && call.lng != null && call.lat != null
-          ? `<button type="button" class="tm-call-station ui-truncate" data-service-station="${index}"` +
-            ` title="Show ${escapeHtml(call.name)} on the map">${escapeHtml(call.name)}</button>`
-          : `<span class="tm-call-name ui-truncate">${escapeHtml(call.name || "—")}</span>`
+      const onMap = call.station != null && call.lng != null && call.lat != null
+      const openable = notes.length > 0 || onMap
+      const open = openable && this.expanded.has(index)
 
       const label = [
         `${shown} ${index === last ? "arrives at" : "leaves"} ${call.name}`,
-        call.platform ? `platform ${call.platform}` : null,
-        arrives,
-        only,
         here ? "this station" : null,
         passed ? "passed" : null,
         word ? (call.status === "late" ? `${minutes(call.delay)} minutes late, expected ${expected}` : word) : null,
@@ -207,15 +208,33 @@ export class ServiceTimetable {
           `${expected ? ` title="Expected ${escapeHtml(expected)}"` : ""}>${escapeHtml(word)}</span>`
         : passed
           ? `<span class="tm-departure-status" title="Passed"><span aria-hidden="true">✓</span></span>`
-          : ""
+          : `<span></span>`
+
+      const cells =
+        `<span class="tm-departure-time ui-mono">${escapeHtml(shown)}</span>` +
+        `<span class="tm-call-name ui-truncate">${escapeHtml(call.name || "—")}</span>` +
+        status
+
+      const attrs =
+        `${here ? ` aria-current="location"` : ""}${passed ? " data-passed" : ""}${call.status === "cancelled" ? " data-cancelled" : ""}`
+
+      if (!openable) return `<li class="tm-call"${attrs} aria-label="${escapeHtml(label)}">${cells}<span></span></li>`
+
+      const details =
+        `<div class="tm-call-details" id="tm-call-details-${index}"${open ? "" : " hidden"}>` +
+        (notes.length ? `<span class="tm-departure-line">${notes.join(`<span class="ui-sep">·</span>`)}</span>` : "") +
+        (onMap
+          ? `<button type="button" class="ui-button ui-button--quiet ui-button--small" data-service-station="${index}">Show on map</button>`
+          : "") +
+        `</div>`
 
       return (
-        `<li class="tm-call" aria-label="${escapeHtml(label)}"` +
-        `${here ? ` aria-current="location"` : ""}${passed ? " data-passed" : ""}${call.status === "cancelled" ? " data-cancelled" : ""}>` +
-        `<span class="tm-departure-time ui-mono">${escapeHtml(shown)}</span>` +
-        `<span class="tm-departure-main">${name}` +
-        (notes.length ? `<span class="tm-departure-line">${notes.join(`<span class="ui-sep">·</span>`)}</span>` : "") +
-        `</span>${status}</li>`
+        `<li class="tm-call"${attrs}>` +
+        `<button type="button" class="tm-call-toggle" data-service-call="${index}" aria-expanded="${open}"` +
+        ` aria-controls="tm-call-details-${index}" aria-label="${escapeHtml(label)}">` +
+        `${cells}<span class="tm-call-mark" aria-hidden="true">${open ? "▾" : "▸"}</span></button>` +
+        details +
+        `</li>`
       )
     })
 
@@ -232,6 +251,21 @@ export class ServiceTimetable {
       event.stopPropagation()
       this.load()
     })
+
+    // Opening a stop unfolds its details in place, without drawing the list
+    // again.
+    this.panel.querySelectorAll("[data-service-call]").forEach((button) =>
+      button.addEventListener("click", (event) => {
+        event.stopPropagation()
+        const index = Number(button.getAttribute("data-service-call"))
+        const open = !this.expanded.has(index)
+        if (open) this.expanded.add(index)
+        else this.expanded.delete(index)
+        button.setAttribute("aria-expanded", String(open))
+        button.querySelector(".tm-call-mark").textContent = open ? "▾" : "▸"
+        this.panel.querySelector(`#tm-call-details-${index}`).hidden = !open
+      })
+    )
 
     this.panel.querySelectorAll("[data-service-station]").forEach((button) =>
       button.addEventListener("click", (event) => {

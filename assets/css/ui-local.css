@@ -958,13 +958,13 @@ body.playwright-visuals .tm-zoom-readout {
   font-weight: 600;
 }
 
-/* The stop's name opens its station on the map. */
+/* A stop: time, name, how it runs, and the mark that opens its details.
+   The row's button and its details share the stop's columns. */
 .tm-call {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: baseline;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
+  column-gap: var(--space-3);
   border-top: 1px solid var(--border);
 }
 
@@ -972,10 +972,18 @@ body.playwright-visuals .tm-zoom-readout {
   border-top: 0;
 }
 
-.tm-call-station {
-  max-width: 100%;
+.tm-call > .tm-departure-time,
+.tm-call > .tm-call-name {
+  padding: var(--space-2) 0;
+}
+
+.tm-call-toggle {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
   margin: 0;
-  padding: 0;
+  padding: var(--space-2) 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -984,26 +992,40 @@ body.playwright-visuals .tm-zoom-readout {
   cursor: pointer;
 }
 
-.tm-call-station:hover {
+.tm-call-toggle:hover .tm-call-name {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-/* The station it was opened from stands out by weight, and says so. */
-.tm-call[aria-current] .tm-call-station,
+.tm-call-mark {
+  color: var(--muted-foreground);
+}
+
+.tm-call-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  grid-column: 2 / -1;
+  padding-bottom: var(--space-2);
+}
+
+.tm-call-details[hidden] {
+  display: none;
+}
+
+/* The station it was opened from stands out by weight. */
 .tm-call[aria-current] .tm-call-name {
   font-weight: 600;
 }
 
 /* Stops already left behind step back. */
 .tm-call[data-passed] .tm-departure-time,
-.tm-call[data-passed] .tm-call-station,
 .tm-call[data-passed] .tm-call-name {
   color: var(--muted-foreground);
 }
 
 .tm-call[data-cancelled] .tm-departure-time,
-.tm-call[data-cancelled] .tm-call-station,
 .tm-call[data-cancelled] .tm-call-name {
   text-decoration: line-through;
   color: var(--muted-foreground);

@@ -128,6 +128,15 @@ station's lines are a tab away.
   account.
 - `/api/departures?stops=12,34&limit=10` serves a station marker's stops
   (the `ids` on its feature).
+- **A service's whole run**: clicking a departure shows every stop it
+  calls at that day, with times, platforms and live times, and each stop
+  opens its station on the map (`Transitmaps.Services`,
+  `assets/js/service_timetable.js`). Imports keep each trip's calls in
+  `trip_calls`, about 256 trips to a compressed row, hashed by trip id
+  (Great Britain's 400,000 trips add about a fifth to its departures'
+  size). `/api/service?feed=12&trip=T1&date=2026-10-26` serves one; the
+  board's departures carry these parameters as `service`. TfL's live
+  arrivals have no trip to open.
 
 Imported data accumulates in Postgres; watch the database size on Railway
 as more agencies are added.

@@ -2,48 +2,22 @@
 // times where the agency publishes them (Transitmaps.Departures). It asks
 // /api/departures when the station opens and every 30 seconds while it stays
 // open, keeping the last list on screen while a new one loads. The
-// "updated" readout ticks every second.
+// "updated" readout ticks every second. A departure opens to its service's
+// whole run (ServiceTimetable), which takes the board's place until it goes
+// back.
 
-const REFRESH_MS = 30_000
-// The server keeps a live feed for 30 seconds and the board asks every 30,
-// so live times are normally under a minute old. Twice that is stale.
-const STALE_AFTER_S = 120
+import {REFRESH_MS, STALE_AFTER_S, DEPARTURE_STATES, minutes, escapeHtml, safeColor, clockFormat, dayFormat, dayKey, zoneName, viewerZone} from "./departure_format"
+import {ServiceTimetable} from "./service_timetable"
+
 const PAGE = 10
 const MAX_DEPARTURES = 60
 
-// A departure's state: its word and its role (DESIGN.md section 3.1). Every
-// state the board shows is defined here.
-export const DEPARTURE_STATES = {
-  on_time: {role: "success", word: () => "On time"},
-  late: {role: "warning", word: (d) => `+${minutes(d.delay)} min`},
-  early: {role: null, word: (d) => `−${minutes(-d.delay)} min`},
-  cancelled: {role: "failure", word: () => "Cancelled"},
-  live: {role: null, word: (d, now) => (d.time - now < 60 ? "Due" : `${minutes(d.time - now)} min`)},
-  scheduled: {role: null, word: () => ""},
-}
-
-const minutes = (seconds) => Math.max(1, Math.round(seconds / 60))
-
-const escapeHtml = (value) =>
-  String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[char])
-
-const safeColor = (value) => (/^#[0-9a-f]{6}$/i.test(value || "") ? value : "#6e6e73")
-
-// Times are the station's own (a London board in London time, wherever the
-// visitor is), 24-hour (DESIGN.md section 11).
-const clockFormat = (timeZone) =>
-  new Intl.DateTimeFormat(undefined, {timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23"})
-const dayFormat = (timeZone) => new Intl.DateTimeFormat(undefined, {timeZone, weekday: "short", day: "numeric", month: "short"})
-const dayKey = (timeZone) => new Intl.DateTimeFormat("en-CA", {timeZone, year: "numeric", month: "2-digit", day: "2-digit"})
-const zoneName = (timeZone) =>
-  new Intl.DateTimeFormat(undefined, {timeZone, timeZoneName: "short"}).formatToParts(new Date()).find((part) => part.type === "timeZoneName")?.value
-
-const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
-
 export class DepartureBoard {
-  constructor(panel, ids) {
+  // `onStation` opens a station on the map, from a stop on a service's run.
+  constructor(panel, ids, {onStation} = {}) {
     this.panel = panel
     this.ids = ids
+    this.onStation = onStation
     this.limit = PAGE
     this.result = null
     this.error = null
@@ -54,19 +28,51 @@ export class DepartureBoard {
   start() {
     this.renderLoading()
     this.load()
+    this.startTimers()
+  }
+
+  startTimers() {
     this.refreshTimer = setInterval(() => this.load(), REFRESH_MS)
     this.ageTimer = setInterval(() => this.renderAge(), 1000)
   }
 
-  stop() {
-    this.stopped = true
+  pause() {
     clearInterval(this.refreshTimer)
     clearInterval(this.ageTimer)
     this.controller?.abort()
+    this.request++
+    this.loading = false
+  }
+
+  stop() {
+    this.stopped = true
+    this.pause()
+    this.serviceView?.stop()
+  }
+
+  // The board steps aside for one departure's whole run, and comes back
+  // with the focus on that departure.
+  openService(departure) {
+    this.pause()
+    this.serviceView = new ServiceTimetable(this.panel, departure.service, {
+      here: this.ids,
+      onStation: this.onStation,
+      onBack: () => this.closeService(departure.service),
+    })
+    this.serviceView.start()
+  }
+
+  closeService(service) {
+    this.serviceView?.stop()
+    this.serviceView = null
+    this.render()
+    ;(this.serviceButton(service) || this.panel.querySelector("[data-service]"))?.focus()
+    this.load()
+    this.startTimers()
   }
 
   async load() {
-    if (this.stopped) return
+    if (this.stopped || this.serviceView) return
     this.controller?.abort()
     this.controller = new AbortController()
     const request = ++this.request
@@ -77,7 +83,7 @@ export class DepartureBoard {
       const response = await fetch(`/api/departures?${params}`, {signal: this.controller.signal, headers: {accept: "application/json"}})
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const result = await response.json()
-      if (this.stopped || request !== this.request) return
+      if (this.stopped || this.serviceView || request !== this.request) return
       this.result = result
       this.error = null
     } catch (error) {
@@ -95,7 +101,7 @@ export class DepartureBoard {
   }
 
   render() {
-    if (this.stopped) return
+    if (this.stopped || this.serviceView) return
     // A failed refresh keeps the last list and says so above it.
     const failure = this.error
       ? `<div class="ui-notice" data-status="failure" role="alert">` +
@@ -116,6 +122,10 @@ export class DepartureBoard {
     const focused = ["data-departures-more", "data-departures-retry"].find((name) =>
       document.activeElement?.hasAttribute?.(name)
     )
+    const active = this.panel.contains(document.activeElement) ? document.activeElement : null
+    const focusedService = active?.hasAttribute("data-service")
+      ? {trip: active.getAttribute("data-trip"), at: active.getAttribute("data-at")}
+      : null
 
     this.panel.innerHTML =
       failure +
@@ -128,6 +138,13 @@ export class DepartureBoard {
     this.renderAge()
     this.panel.scrollTop = scroll
     if (focused) this.panel.querySelector(`[${focused}]`)?.focus()
+    else if (focusedService) this.serviceButton(focusedService)?.focus()
+  }
+
+  serviceButton({trip, at}) {
+    return [...this.panel.querySelectorAll("[data-service]")].find(
+      (button) => button.getAttribute("data-trip") === trip && button.getAttribute("data-at") === String(at)
+    )
   }
 
   headHtml(timezone, live, timetable) {
@@ -159,19 +176,19 @@ export class DepartureBoard {
     const key = dayKey(timezone)
     let shownDay = key.format(new Date())
 
-    const rows = departures.map((departure) => {
+    const rows = departures.map((departure, index) => {
       const at = new Date((departure.scheduled ?? departure.time) * 1000)
       const thisDay = key.format(at)
       const separator =
         thisDay !== shownDay ? `<li class="tm-departures-day ui-label" aria-hidden="true">${escapeHtml(day.format(at))}</li>` : ""
       shownDay = thisDay
-      return separator + this.rowHtml(departure, clock, now)
+      return separator + this.rowHtml(departure, clock, now, index)
     })
 
     return `<ol class="tm-departures" aria-label="Departures">${rows.join("")}</ol>`
   }
 
-  rowHtml(departure, clock, now) {
+  rowHtml(departure, clock, now, index) {
     const state = DEPARTURE_STATES[departure.status] || DEPARTURE_STATES.scheduled
     const word = state.word(departure, now)
     const shown = clock.format(new Date((departure.scheduled ?? departure.time) * 1000))
@@ -199,13 +216,23 @@ export class DepartureBoard {
         `${expected ? ` title="Expected ${escapeHtml(expected)}"` : ""}>${escapeHtml(word)}</span>`
       : ""
 
-    return (
-      `<li class="tm-departure" ${departure.status === "cancelled" ? "data-cancelled" : ""} aria-label="${escapeHtml(label)}">` +
+    const cells =
       `<span class="tm-departure-time ui-mono">${escapeHtml(shown)}</span>` +
       `<span class="tm-departure-main">` +
       `<span class="tm-departure-destination ui-truncate" title="${escapeHtml(destination)}">${escapeHtml(destination)}</span>` +
       `<span class="tm-departure-line">${sub}</span>` +
-      `</span>${status}</li>`
+      `</span>${status}`
+    const cancelled = departure.status === "cancelled" ? " data-cancelled" : ""
+
+    // A departure with its service's run kept opens it; TfL's live arrivals
+    // have none.
+    if (!departure.service) return `<li class="tm-departure"${cancelled} aria-label="${escapeHtml(label)}">${cells}</li>`
+
+    return (
+      `<li class="tm-departure tm-departure--service"${cancelled}>` +
+      `<button type="button" class="tm-departure-open" data-service="${index}"` +
+      ` data-trip="${escapeHtml(departure.service.trip)}" data-at="${escapeHtml(departure.service.at)}"` +
+      ` aria-label="${escapeHtml(`${label}. Show all stops`)}">${cells}</button></li>`
     )
   }
 
@@ -237,6 +264,14 @@ export class DepartureBoard {
       event.stopPropagation()
       this.load()
     })
+
+    this.panel.querySelectorAll("[data-service]").forEach((button) =>
+      button.addEventListener("click", (event) => {
+        event.stopPropagation()
+        const departure = this.result?.departures[Number(button.getAttribute("data-service"))]
+        if (departure?.service) this.openService(departure)
+      })
+    )
 
     this.panel.querySelector("[data-departures-more]")?.addEventListener("click", (event) => {
       event.stopPropagation()

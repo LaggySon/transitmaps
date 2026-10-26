@@ -858,6 +858,8 @@ defmodule Transitmaps.Gtfs.Importer do
 
           Repo.delete_all(feed_scope(Transitmaps.Gtfs.Route, feed.id))
           Repo.delete_all(feed_scope(Transitmaps.Gtfs.Stop, feed.id))
+          Repo.delete_all(feed_scope("trip_calls", feed.id))
+          insert_trip_calls!(feed.id, timetable)
 
           route_rows
           |> batches_by_points()
@@ -893,8 +895,24 @@ defmodule Transitmaps.Gtfs.Importer do
 
   defp timetable_attrs(nil), do: %{}
 
-  defp timetable_attrs(timetable),
-    do: %{timezone: timetable.timezone, timetable_from: timetable.from}
+  defp timetable_attrs(timetable) do
+    %{
+      timezone: timetable.timezone,
+      timetable_from: timetable.from,
+      trip_buckets: timetable[:trips] && timetable.trips.count
+    }
+  end
+
+  # A bucket of a national feed's trips runs to tens of kilobytes.
+  defp insert_trip_calls!(_feed_id, nil), do: :ok
+  defp insert_trip_calls!(_feed_id, %{trips: nil}), do: :ok
+
+  defp insert_trip_calls!(feed_id, %{trips: %{buckets: buckets}}) do
+    buckets
+    |> Enum.map(fn {bucket, calls} -> %{feed_id: feed_id, bucket: bucket, calls: calls} end)
+    |> Enum.chunk_every(100)
+    |> Enum.each(&Repo.insert_all("trip_calls", &1))
+  end
 
   # A big station's departures run to a few hundred kilobytes, so they go
   # in small batches.
@@ -992,7 +1010,8 @@ defmodule Transitmaps.Gtfs.Importer do
           :max_lon,
           :max_lat,
           :timezone,
-          :timetable_from
+          :timetable_from,
+          :trip_buckets
         ])
       )
 

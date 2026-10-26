@@ -5,7 +5,7 @@
 // it asks /api/service again every 30 seconds; a timetable alone doesn't
 // change, so it is read once.
 
-import {REFRESH_MS, STALE_AFTER_S, DEPARTURE_STATES, minutes, escapeHtml, safeColor, clockFormat, dayFormat, dayKey} from "./departure_format"
+import {REFRESH_MS, DEPARTURE_STATES, minutes, escapeHtml, safeColor, clockFormat, dayFormat, dayKey} from "./departure_format"
 
 // A stop counts as passed this long after the train leaves it.
 const PASSED_AFTER_S = 30
@@ -33,14 +33,12 @@ export class ServiceTimetable {
     this.bind()
     this.panel.querySelector("[data-service-back]")?.focus()
     this.load()
-    this.ageTimer = setInterval(() => this.renderAge(), 1000)
   }
 
   stop() {
     this.stopped = true
     this.panel.classList.remove("tm-service-panel")
     clearInterval(this.refreshTimer)
-    clearInterval(this.ageTimer)
     this.controller?.abort()
   }
 
@@ -111,7 +109,6 @@ export class ServiceTimetable {
 
     this.panel.innerHTML = this.backHtml() + failure + this.headHtml() + this.callsHtml()
     this.bind()
-    this.renderAge()
 
     // The first time, the station it was opened from is brought into view;
     // a refresh keeps the reader's place and focus.
@@ -138,12 +135,6 @@ export class ServiceTimetable {
         ? `<span class="ui-sep">·</span><span>${escapeHtml(dayFormat(timezone).format(new Date(first.scheduled * 1000)))}</span>`
         : ""
 
-    const source =
-      live === "live"
-        ? `<span class="ui-badge" data-status="progress"><span class="ui-dot"></span>Live</span>` +
-          `<span class="tm-departures-age ui-mono" aria-live="off" data-service-age></span>`
-        : `<span class="ui-label">Timetable</span>`
-
     const notice = cancelled
       ? `<div class="ui-notice" data-status="${DEPARTURE_STATES.cancelled.role}" role="status">This service is cancelled.</div>`
       : live === "unavailable"
@@ -158,7 +149,7 @@ export class ServiceTimetable {
       `<span class="ui-truncate">${escapeHtml(line.name || "")}${line.agency && line.agency !== line.name ? ` · ${escapeHtml(line.agency)}` : ""}</span>` +
       day +
       `</span></div>` +
-      `<div class="tm-departures-head">${source}</div>${notice}`
+      notice
     )
   }
 
@@ -229,15 +220,6 @@ export class ServiceTimetable {
     })
 
     return `<ol class="tm-departures tm-service" aria-label="Stops">${rows.join("")}</ol>`
-  }
-
-  renderAge() {
-    const age = this.panel.querySelector("[data-service-age]")
-    const updated = this.result?.updated_at
-    if (!age || !updated) return
-    const seconds = Math.max(0, Math.round(Date.now() / 1000 - updated))
-    age.textContent = seconds < 60 ? `updated ${seconds}s ago` : `updated ${Math.floor(seconds / 60)}m ago`
-    age.classList.toggle("tm-departures-age--stale", seconds > STALE_AFTER_S)
   }
 
   bind() {

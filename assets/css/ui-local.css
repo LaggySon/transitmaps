@@ -904,6 +904,111 @@ body.playwright-visuals .tm-zoom-readout {
   margin: 0;
 }
 
+/* A departure that opens its service's run: the whole row is the button. */
+.tm-departure--service {
+  display: block;
+  padding: 0;
+}
+
+.tm-departure-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  margin: 0;
+  padding: var(--space-2) 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tm-departure-open:hover .tm-departure-destination {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* A service's run, in the board's place. Only its stops scroll, so the way
+   back and what the service is stay in view. */
+.tm-departures-panel.tm-service-panel {
+  overflow: hidden;
+}
+
+.tm-service {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tm-service-back {
+  display: flex;
+}
+
+.tm-service-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tm-service-destination {
+  font-weight: 600;
+}
+
+/* The stop's name opens its station on the map. */
+.tm-call {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.tm-call:first-child {
+  border-top: 0;
+}
+
+.tm-call-station {
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tm-call-station:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The station it was opened from stands out by weight, and says so. */
+.tm-call[aria-current] .tm-call-station,
+.tm-call[aria-current] .tm-call-name {
+  font-weight: 600;
+}
+
+/* Stops already left behind step back. */
+.tm-call[data-passed] .tm-departure-time,
+.tm-call[data-passed] .tm-call-station,
+.tm-call[data-passed] .tm-call-name {
+  color: var(--muted-foreground);
+}
+
+.tm-call[data-cancelled] .tm-departure-time,
+.tm-call[data-cancelled] .tm-call-station,
+.tm-call[data-cancelled] .tm-call-name {
+  text-decoration: line-through;
+  color: var(--muted-foreground);
+}
+
 
 /* What the phone's detail panel describes. */
 .tm-selected {

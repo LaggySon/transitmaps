@@ -15,6 +15,7 @@ defmodule Transitmaps.Departures do
 
   import Ecto.Query
 
+  alias Transitmaps.Departures.Live
   alias Transitmaps.Display.Identity
   alias Transitmaps.Gtfs.{RouteTypes, Stop, Timetable}
   alias Transitmaps.Realtime
@@ -29,19 +30,18 @@ defmodule Transitmaps.Departures do
   # live times could have it running late.
   @late_window 3 * 3600
 
-  # Within a minute of the timetable is on time.
-  @on_time 60
-
   @doc """
   The next departures from stops `stop_ids` (`stops` rows), at most
   `:limit` of them (default #{@default_limit}, at most #{@max_limit}), as
   `%{departures, more, timezone, live, updated_at, timetable}`:
 
     * `departures` — `%{time, scheduled, delay, status, destination,
-      platform, line}`, `time` (when it leaves, live or not) and
+      platform, line, service}`, `time` (when it leaves, live or not) and
       `scheduled` as Unix times and `status` one of `"on_time"`, `"late"`,
       `"early"`, `"cancelled"`, `"scheduled"` (no live time) or `"live"` (a
-      live time with no timetable to compare to)
+      live time with no timetable to compare to), and `service` what
+      `Transitmaps.Services.show/2` opens the trip's whole run with (nil
+      for TfL's live arrivals)
     * `more` — whether later departures were left out
     * `timezone` — the stations' time zone, to show the times in
     * `live` — `"live"` when live times came in, `"unavailable"` when the
@@ -120,6 +120,7 @@ defmodule Transitmaps.Departures do
           destination: arrival.destination,
           platform: arrival.platform,
           line: tfl_line(arrival, stop),
+          service: nil,
           live?: true
         }
       end
@@ -240,12 +241,25 @@ defmodule Transitmaps.Departures do
         stop_id: stop_id,
         destination: destination,
         platform: platform,
-        line: present_line(line)
+        line: present_line(line),
+        service: service(feed, trip_id, date, seq, base + seconds)
       }
     end
   end
 
-  defp service_day_start(date, timezone) do
+  # What opens the trip's whole run (`Transitmaps.Services`): which trip, on
+  # which day, and when it leaves here, which places a trip run at a
+  # frequency. Feeds imported before trips were kept have none.
+  defp service(%{trip_buckets: nil}, _trip_id, _date, _seq, _scheduled), do: nil
+
+  defp service(feed, trip_id, date, seq, scheduled),
+    do: %{feed: feed.id, trip: trip_id, date: Date.to_iso8601(date), seq: seq, at: scheduled}
+
+  @doc """
+  When service day `date` starts in `timezone`, as Unix time: noon minus
+  12 hours, the time a timetable's seconds count from.
+  """
+  def service_day_start(date, timezone) do
     case DateTime.new(date, ~T[12:00:00], timezone) do
       {:ok, noon} -> DateTime.to_unix(noon) - 12 * 3600
       {:ambiguous, noon, _later} -> DateTime.to_unix(noon) - 12 * 3600
@@ -260,10 +274,12 @@ defmodule Transitmaps.Departures do
     Date.diff(today, feed.timetable_from) >= Timetable.days() - 1
   end
 
-  # A route as a departure board names it: its number or name, or, for a
-  # train whose route is just its stops ("Bedford - Brighton"), its
-  # operator. Colours follow the lines the map draws.
-  defp present_line(line) do
+  @doc """
+  A route as a departure board names it: its number or name, or, for a
+  train whose route is just its stops ("Bedford - Brighton"), its
+  operator. Colours follow the lines the map draws.
+  """
+  def present_line(line) do
     agency = line.agency_name
     category = line.category
 
@@ -293,14 +309,9 @@ defmodule Transitmaps.Departures do
   end
 
   defp apply_live(departure, updates) do
-    service_date = Calendar.strftime(departure.date, "%Y%m%d")
+    update = Live.update_for(updates, departure.trip_id, departure.date)
 
-    update =
-      updates
-      |> Map.get(departure.trip_id, [])
-      |> Enum.find(&(&1.start_date in [nil, service_date]))
-
-    case live_time(update, departure) do
+    case Live.delay(update, departure) do
       :cancelled ->
         departure
         |> Map.merge(%{time: departure.scheduled, delay: nil, status: "cancelled", live?: true})
@@ -311,7 +322,7 @@ defmodule Transitmaps.Departures do
         |> Map.merge(%{
           time: departure.scheduled + delay,
           delay: delay,
-          status: delay_status(delay),
+          status: Live.status(delay),
           live?: true
         })
         |> finish()
@@ -320,53 +331,6 @@ defmodule Transitmaps.Departures do
         no_live(departure)
     end
   end
-
-  defp live_time(nil, _departure), do: nil
-  defp live_time(%{cancelled: true}, _departure), do: :cancelled
-
-  defp live_time(update, departure) do
-    case stop_update(update.stops, departure) do
-      %{skipped: true} ->
-        :cancelled
-
-      %{no_data: true} ->
-        nil
-
-      %{} = stop ->
-        event_delay(stop.departure || stop.arrival, departure.scheduled)
-
-      nil ->
-        # No word on this stop: the delay at the last stop before it carries
-        # on, or else the trip's own.
-        earlier_delay(update.stops, departure) || if(update.delay, do: {:delay, update.delay})
-    end
-  end
-
-  defp stop_update(stops, %{seq: seq, stop_id: stop_id}) do
-    Enum.find(stops, &(&1.seq == seq and seq != nil)) ||
-      Enum.find(stops, &(&1.seq == nil and &1.stop_id == stop_id))
-  end
-
-  defp earlier_delay(stops, %{seq: seq}) do
-    stops
-    |> Enum.filter(&(&1.seq != nil and &1.seq < seq and not &1.skipped))
-    |> Enum.max_by(& &1.seq, fn -> nil end)
-    |> case do
-      %{departure: {delay, _time}} when is_integer(delay) -> {:delay, delay}
-      %{arrival: {delay, _time}} when is_integer(delay) -> {:delay, delay}
-      _ -> nil
-    end
-  end
-
-  defp event_delay({_delay, time}, scheduled) when is_integer(time) and time > 0,
-    do: {:delay, time - scheduled}
-
-  defp event_delay({delay, _time}, _scheduled) when is_integer(delay), do: {:delay, delay}
-  defp event_delay(_event, _scheduled), do: nil
-
-  defp delay_status(delay) when delay >= @on_time, do: "late"
-  defp delay_status(delay) when delay <= -@on_time, do: "early"
-  defp delay_status(_delay), do: "on_time"
 
   defp finish(departure), do: Map.drop(departure, [:date, :trip_id, :seq, :stop_id])
 
@@ -418,9 +382,10 @@ defmodule Transitmaps.Departures do
     end)
   end
 
-  defp valid_timezone(nil), do: "Etc/UTC"
+  @doc "`timezone` when it is one, or UTC."
+  def valid_timezone(nil), do: "Etc/UTC"
 
-  defp valid_timezone(timezone) do
+  def valid_timezone(timezone) do
     case DateTime.shift_zone(DateTime.utc_now(), timezone) do
       {:ok, _} -> timezone
       {:error, _} -> "Etc/UTC"

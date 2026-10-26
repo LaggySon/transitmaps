@@ -355,11 +355,7 @@ const TransitMap = {
     })
     // A station picked in the search: fly to it, and open its details once
     // its stops are drawn (see openPendingStation).
-    this.handleEvent("show-station", ({lng, lat, name}) => {
-      this.closePopup()
-      this.pendingStation = {lng, lat, name}
-      this.map.flyTo({center: [lng, lat], zoom: Math.max(this.map.getZoom(), 15), duration: 900})
-    })
+    this.handleEvent("show-station", (station) => this.showStation(station))
     this.handleEvent("fly-to", ({bounds}) => {
       this.map.fitBounds(bounds, {padding: this.mapPadding(), duration: 900})
     })
@@ -1367,6 +1363,14 @@ const TransitMap = {
     })
   },
 
+  // Flies to a station (one picked in the search, or a stop on a service's
+  // run) and opens its details once its stops are drawn.
+  showStation({lng, lat, name}) {
+    this.closePopup()
+    this.pendingStation = {lng, lat, name}
+    this.map.flyTo({center: [lng, lat], zoom: Math.max(this.map.getZoom(), 15), duration: 900})
+  },
+
   // A station's details: its departures, when it has any to show, and its
   // lines. The departure board runs until the popup closes.
   openStationPopup(lngLat, props) {
@@ -1377,7 +1381,7 @@ const TransitMap = {
 
     const panel = ids.length ? this.popupElement()?.querySelector("[data-departures]") : null
     if (panel) {
-      this.departureBoard = new DepartureBoard(panel, ids)
+      this.departureBoard = new DepartureBoard(panel, ids, {onStation: (station) => this.showStation(station)})
       this.departureBoard.start()
     }
   },

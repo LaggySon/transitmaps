@@ -232,6 +232,7 @@ defmodule Transitmaps.DeparturesTest do
                status: "live",
                destination: "Edgware Road (Circle Line)",
                platform: "2",
+               service: nil,
                line: %{
                  name: "Circle",
                  agency: "Transport for London",

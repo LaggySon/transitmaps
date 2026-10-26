@@ -20,12 +20,27 @@ defmodule Transitmaps.Gtfs.Timetable do
   A trip's last stop isn't a departure, and nor is a stop where it only
   sets passengers down. Trips run at a frequency (`frequencies.txt`) are
   expanded into their departures.
+
+  Each trip's whole run is kept too, for a departure clicked open: every
+  stop it calls at, in order, with its times and platforms. Trips go into
+  buckets by a hash of their id (`trip_bucket/2`), about 256 to a bucket,
+  each one compressed binary (`trip_calls`), so a lookup reads one small
+  row and a national feed's 400,000 trips aren't 400,000 rows.
   """
 
   alias Transitmaps.Gtfs.Csv
 
   @days 64
   @categories ~w(metro tram rail intercity ferry)
+  @trips_per_bucket 256
+
+  # A time a stop doesn't give (GTFS lets stops between timepoints leave
+  # theirs out).
+  @no_time 0xFFFFFFFF
+
+  # A call's flags: nobody boards there, nobody alights there.
+  @no_pickup 1
+  @no_drop_off 2
 
   @doc "The modes whose stations keep a timetable."
   def categories, do: @categories
@@ -35,8 +50,11 @@ defmodule Transitmaps.Gtfs.Timetable do
 
   @doc """
   Reads the timetable of the feed extracted in `dir` for `routes` (the
-  route rows the import keeps), returning `%{timezone, from, stations}`,
-  where `stations` maps a station's stop id to its packed departures.
+  route rows the import keeps), returning `%{timezone, from, stations,
+  trips}`, where `stations` maps a station's stop id to its packed
+  departures, and `trips` is `%{count, buckets}`, the number of trip
+  buckets and each bucket's packed trips (nil without any timetabled
+  route).
 
   Runs in its own process, so the garbage of reading millions of rows goes
   with it. `:today` sets the day the window is counted from (in tests).
@@ -68,19 +86,34 @@ defmodule Transitmaps.Gtfs.Timetable do
 
     timezone = read_timezone(dir)
 
-    stations =
+    {stations, trip_buckets} =
       if map_size(lines) == 0 do
-        %{}
+        {%{}, nil}
       else
         services = read_services(dir, from)
         trips = read_trips(dir, lines, services)
         stops = read_stops(dir)
         frequencies = read_frequencies(dir, trips)
         scan = scan_stop_times(dir, trips, stops, frequencies)
-        pack_stations(scan, trips, lines, stops, frequencies)
+        by_index = by_index(trips)
+
+        {pack_stations(scan, by_index, lines, stops, frequencies),
+         pack_trips(scan, by_index, lines, stops)}
       end
 
-    %{timezone: timezone, from: from, stations: stations}
+    %{timezone: timezone, from: from, stations: stations, trips: trip_buckets}
+  end
+
+  @doc "The bucket trip `trip_id` is kept in, of `count`."
+  def trip_bucket(trip_id, count), do: rem(:erlang.crc32(trip_id), count)
+
+  defp bucket_count(trips),
+    do: max(1, div(map_size(trips) + @trips_per_bucket - 1, @trips_per_bucket))
+
+  defp by_index(trips) do
+    Map.new(trips, fn {trip_id, {index, route, days, headsign}} ->
+      {index, {trip_id, route, days, headsign}}
+    end)
   end
 
   # -- reading ------------------------------------------------------------------
@@ -227,10 +260,20 @@ defmodule Transitmaps.Gtfs.Timetable do
 
   # One pass over stop_times.txt. Each call becomes a 20-byte record under
   # its station: time, trip, sequence, stop and platform (the last two
-  # interned). Each trip's last stop is noted, so it can be dropped, and so
-  # is the first time of a trip run at a frequency.
+  # interned), and a 25-byte record under its trip's bucket, with both its
+  # times and who may board and alight. Each trip's last stop is noted, so
+  # it can be dropped from the station's departures, and so is the first
+  # time of a trip run at a frequency.
   defp scan_stop_times(dir, trips, stops, frequencies) do
-    initial = %{calls: %{}, last: %{}, first: %{}, stop_ids: %{}, platforms: %{nil => 0}}
+    initial = %{
+      calls: %{},
+      trip_calls: %{},
+      buckets: bucket_count(trips),
+      last: %{},
+      first: %{},
+      stop_ids: %{},
+      platforms: %{nil => 0}
+    }
 
     dir
     |> Csv.stream("stop_times.txt")
@@ -238,15 +281,32 @@ defmodule Transitmaps.Gtfs.Timetable do
       with {index, _route, _days, _headsign} <- trips[row["trip_id"]],
            {station, stop_platform, _name} <- stops[row["stop_id"]],
            seq when is_integer(seq) <- parse_int(row["stop_sequence"]) do
-        time = parse_time(row["departure_time"]) || parse_time(row["arrival_time"])
+        arrival = parse_time(row["arrival_time"])
+        departure = parse_time(row["departure_time"])
+        time = departure || arrival
         {stop_key, acc} = intern(acc, :stop_ids, row["stop_id"])
+
+        {platform_key, acc} =
+          intern(acc, :platforms, presence(row["platform_code"]) || stop_platform)
+
         acc = note_last(acc, index, seq, stop_key)
         acc = if is_map_key(frequencies, index), do: note_first(acc, index, seq, time), else: acc
 
-        if time && row["pickup_type"] != "1" do
-          {platform_key, acc} =
-            intern(acc, :platforms, presence(row["platform_code"]) || stop_platform)
+        flags =
+          if(row["pickup_type"] == "1", do: @no_pickup, else: 0) +
+            if(row["drop_off_type"] == "1", do: @no_drop_off, else: 0)
 
+        packed_arrival = arrival || @no_time
+        packed_departure = departure || @no_time
+
+        record =
+          <<index::32, seq::32, stop_key::32, platform_key::32, packed_arrival::32,
+            packed_departure::32, flags::8>>
+
+        bucket = trip_bucket(row["trip_id"], acc.buckets)
+        acc = %{acc | trip_calls: append(acc.trip_calls, bucket, record)}
+
+        if time && row["pickup_type"] != "1" do
           %{acc | calls: add_call(acc.calls, station, time, index, seq, stop_key, platform_key)}
         else
           acc
@@ -255,6 +315,13 @@ defmodule Transitmaps.Gtfs.Timetable do
         _ -> acc
       end
     end)
+  end
+
+  defp append(binaries, key, record) do
+    case binaries do
+      %{^key => records} -> %{binaries | key => <<records::binary, record::binary>>}
+      _ -> Map.put(binaries, key, record)
+    end
   end
 
   # A station's records are appended to one binary, which grows in place: a
@@ -307,12 +374,7 @@ defmodule Transitmaps.Gtfs.Timetable do
 
   # -- packing --------------------------------------------------------------------
 
-  defp pack_stations(scan, trips, lines, stops, frequencies) do
-    by_index =
-      Map.new(trips, fn {trip_id, {index, route, days, headsign}} ->
-        {index, {trip_id, route, days, headsign}}
-      end)
-
+  defp pack_stations(scan, by_index, lines, stops, frequencies) do
     stop_ids = invert(scan.stop_ids)
     platforms = invert(scan.platforms)
 
@@ -399,11 +461,81 @@ defmodule Transitmaps.Gtfs.Timetable do
   defp destination(last, stops, stop_ids, index) do
     with {_seq, stop_key} <- last[index],
          {station, _platform, name} <- stops[Map.fetch!(stop_ids, stop_key)] do
-      case stops[station] do
-        {_station, _platform, station_name} when is_binary(station_name) -> station_name
-        _ -> name
-      end
+      station_name(stops, station) || name
     else
+      _ -> nil
+    end
+  end
+
+  # Each bucket's trips: a table of its stops (with their station and the
+  # station's name), platforms and lines, and per trip its line, headsign,
+  # days and calls, packed 17 bytes a call in stop order.
+  defp pack_trips(scan, by_index, lines, stops) do
+    stop_ids = invert(scan.stop_ids)
+    platforms = invert(scan.platforms)
+
+    buckets =
+      Map.new(scan.trip_calls, fn {bucket, records} ->
+        {bucket, pack_bucket(records, by_index, lines, stops, stop_ids, platforms)}
+      end)
+
+    %{count: scan.buckets, buckets: buckets}
+  end
+
+  defp pack_bucket(records, by_index, lines, stops, stop_ids, platforms) do
+    calls =
+      Enum.sort(
+        for <<index::32, seq::32, stop_key::32, platform_key::32, arrival::32, departure::32,
+              flags::8 <- records>>,
+            do: {index, seq, stop_key, platform_key, arrival, departure, flags}
+      )
+
+    {stop_keys, stop_table} = local_table(calls, &elem(&1, 2))
+    {platform_keys, platform_table} = local_table(calls, &elem(&1, 3))
+
+    trip_rows =
+      calls
+      |> Enum.chunk_by(&elem(&1, 0))
+      |> Enum.map(fn [{index, _, _, _, _, _, _} | _] = trip_calls ->
+        {trip_id, route_id, days, headsign} = Map.fetch!(by_index, index)
+
+        packed =
+          for {_index, seq, stop_key, platform_key, arrival, departure, flags} <- trip_calls,
+              into: <<>> do
+            <<seq::32, Map.fetch!(stop_keys, stop_key)::16,
+              Map.fetch!(platform_keys, platform_key)::16, arrival::32, departure::32, flags::8>>
+          end
+
+        {trip_id, route_id, days, headsign, packed}
+      end)
+
+    {line_keys, line_table} = local_table(trip_rows, &elem(&1, 1))
+
+    :erlang.term_to_binary(
+      %{
+        version: 1,
+        trips:
+          Map.new(trip_rows, fn {trip_id, route_id, days, headsign, packed} ->
+            {trip_id, {Map.fetch!(line_keys, route_id), headsign, days, packed}}
+          end),
+        lines: line_table |> Enum.map(&Map.fetch!(lines, &1)) |> List.to_tuple(),
+        stops:
+          stop_table
+          |> Enum.map(fn key ->
+            stop_id = Map.fetch!(stop_ids, key)
+            {station, _platform, name} = Map.fetch!(stops, stop_id)
+            {stop_id, station, station_name(stops, station) || name}
+          end)
+          |> List.to_tuple(),
+        platforms: platform_table |> Enum.map(&Map.fetch!(platforms, &1)) |> List.to_tuple()
+      },
+      compressed: 6
+    )
+  end
+
+  defp station_name(stops, station) do
+    case stops[station] do
+      {_station, _platform, name} when is_binary(name) -> name
       _ -> nil
     end
   end
@@ -440,6 +572,50 @@ defmodule Transitmaps.Gtfs.Timetable do
 
   @doc "Unpacks a station's stored departures."
   def unpack(binary), do: :erlang.binary_to_term(binary, [:safe])
+
+  @doc """
+  Trip `trip_id` from its bucket's stored binary, or nil when the bucket
+  doesn't hold it: `%{line, headsign, days, calls}`, its calls in stop
+  order as `%{seq, stop_id, station, name, platform, arrival, departure,
+  pickup, drop_off}`, with times in seconds as in `departures/2` (nil where
+  the feed gives none) and `pickup`/`drop_off` whether riders may board and
+  alight there.
+  """
+  def trip(bucket, trip_id) do
+    %{trips: trips} = bucket = unpack(bucket)
+
+    case trips do
+      %{^trip_id => {line_key, headsign, days, packed}} ->
+        %{
+          line: elem(bucket.lines, line_key),
+          headsign: headsign,
+          days: days,
+          calls:
+            for <<seq::32, stop_key::16, platform_key::16, arrival::32, departure::32,
+                  flags::8 <- packed>> do
+              {stop_id, station, name} = elem(bucket.stops, stop_key)
+
+              %{
+                seq: seq,
+                stop_id: stop_id,
+                station: station,
+                name: name,
+                platform: elem(bucket.platforms, platform_key),
+                arrival: time_or_nil(arrival),
+                departure: time_or_nil(departure),
+                pickup: Bitwise.band(flags, @no_pickup) == 0,
+                drop_off: Bitwise.band(flags, @no_drop_off) == 0
+              }
+            end
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp time_or_nil(@no_time), do: nil
+  defp time_or_nil(seconds), do: seconds
 
   # -- parsing helpers ------------------------------------------------------------
 

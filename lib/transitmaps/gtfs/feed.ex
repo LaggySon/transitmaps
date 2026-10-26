@@ -20,6 +20,9 @@ defmodule Transitmaps.Gtfs.Feed do
     # count from (`Transitmaps.Gtfs.Timetable`).
     field :timezone, :string
     field :timetable_from, :date
+    # How many buckets its trips' runs are kept in (`trip_calls`), or nil
+    # when they aren't kept.
+    field :trip_buckets, :integer
 
     has_many :routes, Transitmaps.Gtfs.Route
     has_many :stops, Transitmaps.Gtfs.Stop

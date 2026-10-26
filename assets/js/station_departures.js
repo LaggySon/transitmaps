@@ -1,12 +1,11 @@
 // A station's departure board, inside its popup: the timetable, with live
 // times where the agency publishes them (Transitmaps.Departures). It asks
 // /api/departures when the station opens and every 30 seconds while it stays
-// open, keeping the last list on screen while a new one loads. The
-// "updated" readout ticks every second. A departure opens to its service's
+// open, keeping the last list on screen while a new one loads. A departure opens to its service's
 // whole run (ServiceTimetable), which takes the board's place until it goes
 // back.
 
-import {REFRESH_MS, STALE_AFTER_S, DEPARTURE_STATES, minutes, escapeHtml, safeColor, clockFormat, dayFormat, dayKey, zoneName, viewerZone} from "./departure_format"
+import {REFRESH_MS, DEPARTURE_STATES, minutes, escapeHtml, safeColor, clockFormat, dayFormat, dayKey, zoneName, viewerZone} from "./departure_format"
 import {ServiceTimetable} from "./service_timetable"
 
 const PAGE = 10
@@ -33,12 +32,10 @@ export class DepartureBoard {
 
   startTimers() {
     this.refreshTimer = setInterval(() => this.load(), REFRESH_MS)
-    this.ageTimer = setInterval(() => this.renderAge(), 1000)
   }
 
   pause() {
     clearInterval(this.refreshTimer)
-    clearInterval(this.ageTimer)
     this.controller?.abort()
     this.request++
     this.loading = false
@@ -135,7 +132,6 @@ export class DepartureBoard {
         ? `<button type="button" class="ui-button ui-button--quiet ui-button--small tm-departures-more" data-departures-more>Later departures</button>`
         : "")
     this.bind()
-    this.renderAge()
     this.panel.scrollTop = scroll
     if (focused) this.panel.querySelector(`[${focused}]`)?.focus()
     else if (focusedService) this.serviceButton(focusedService)?.focus()
@@ -148,12 +144,6 @@ export class DepartureBoard {
   }
 
   headHtml(timezone, live, timetable) {
-    const source =
-      live === "live"
-        ? `<span class="ui-badge" data-status="progress"><span class="ui-dot"></span>Live</span>` +
-          `<span class="tm-departures-age ui-mono" aria-live="off" data-departures-age></span>`
-        : `<span class="ui-label">Timetable</span>`
-
     const zone =
       timezone && timezone !== viewerZone()
         ? `<span class="tm-departures-zone ui-mono" title="Times are the station's local time (${escapeHtml(timezone)})">` +
@@ -167,7 +157,7 @@ export class DepartureBoard {
           `</div>`
         : ""
 
-    return `<div class="tm-departures-head">${source}${zone}</div>${notice}`
+    return (zone ? `<div class="tm-departures-head">${zone}</div>` : "") + notice
   }
 
   listHtml(departures, timezone, now) {
@@ -246,17 +236,6 @@ export class DepartureBoard {
             ? "No departures to show here."
             : "No departures in the coming week."
     return `<p class="ui-empty tm-departures-empty">${escapeHtml(sentence)}</p>`
-  }
-
-  // "updated 12s ago", from when the live times were fetched. It turns to
-  // the warning colour once the times are stale.
-  renderAge() {
-    const age = this.panel.querySelector("[data-departures-age]")
-    const updated = this.result?.updated_at
-    if (!age || !updated) return
-    const seconds = Math.max(0, Math.round(Date.now() / 1000 - updated))
-    age.textContent = seconds < 60 ? `updated ${seconds}s ago` : `updated ${Math.floor(seconds / 60)}m ago`
-    age.classList.toggle("tm-departures-age--stale", seconds > STALE_AFTER_S)
   }
 
   bind() {

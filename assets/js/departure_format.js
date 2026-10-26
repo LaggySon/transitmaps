@@ -2,9 +2,6 @@
 // timing, the state words, and the formats times are shown in.
 
 export const REFRESH_MS = 30_000
-// The server keeps a live feed for 30 seconds and the board asks every 30,
-// so live times are normally under a minute old. Twice that is stale.
-export const STALE_AFTER_S = 120
 
 // A departure's state: its word and its role (DESIGN.md section 3.1). Every
 // state the board shows is defined here.

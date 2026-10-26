@@ -806,16 +806,6 @@ body.playwright-visuals .tm-zoom-readout {
   min-height: var(--control-h-sm);
 }
 
-.tm-departures-age {
-  font-size: var(--text-sm);
-  color: var(--muted-foreground);
-}
-
-/* Live times older than twice the refresh (DESIGN.md section 11). */
-.tm-departures-age--stale {
-  color: var(--warning-text);
-}
-
 .tm-departures-zone {
   margin-left: auto;
   font-size: var(--text-sm);

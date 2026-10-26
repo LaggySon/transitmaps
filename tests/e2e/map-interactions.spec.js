@@ -93,7 +93,6 @@ test("shows a station's departures and lines", async ({page}) => {
   const departures = page.locator("#station-panel-departures")
   await expect(page.locator("#station-tab-departures")).toHaveAttribute("aria-selected", "true")
   await expect(departures.locator(".tm-departure")).toHaveCount(3)
-  await expect(departures).toContainText("Live")
   await expect(departures.locator(".tm-departure").nth(1)).toContainText("+5 min")
   await expect(departures.locator(".tm-departure[data-cancelled]")).toContainText("Cancelled")
 

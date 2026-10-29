@@ -711,6 +711,23 @@ body.playwright-visuals .tm-zoom-readout {
   border-bottom: 1px solid var(--border);
 }
 
+/* A map popup is dragged by its header (see bindPopupDrag). */
+.tm-popup-handle {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.tm-popup-handle--dragging {
+  cursor: grabbing;
+}
+
+/* Moved off its place, the popup's tip would point at nothing; a ring
+   (.tm-selected) marks the place instead. */
+.tm-popup--moved .maplibregl-popup-tip {
+  visibility: hidden;
+}
+
 .tm-popup-header:only-child {
   border-bottom: 0;
 }

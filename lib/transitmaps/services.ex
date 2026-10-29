@@ -19,6 +19,7 @@ defmodule Transitmaps.Services do
   alias Transitmaps.Realtime
   alias Transitmaps.Repo
   alias Transitmaps.Services.Path
+  alias Transitmaps.Services.Tfl
 
   @doc """
   The run of trip `trip` of feed `feed` on service day `date`, as
@@ -37,6 +38,12 @@ defmodule Transitmaps.Services do
   statuses.
   """
   def show(%{feed: feed_id, trip: trip_id, date: %Date{} = date} = service) do
+    if Tfl.trip?(trip_id),
+      do: tfl(feed_id, &Tfl.show(&1, service)),
+      else: timetable_show(feed_id, trip_id, date, service)
+  end
+
+  defp timetable_show(feed_id, trip_id, date, service) do
     with %Feed{trip_buckets: count} = feed when is_integer(count) <- Repo.get(Feed, feed_id),
          bucket when is_binary(bucket) <- read_bucket(feed, trip_id),
          %{} = trip <- Timetable.trip(bucket, trip_id) do
@@ -57,7 +64,21 @@ defmodule Transitmaps.Services do
   features (`name`, and `terminus` for its first and last), for the map to
   mark along the track, even where no track was found.
   """
-  def path(%{feed: feed_id, trip: trip_id}) do
+  def path(%{feed: feed_id, trip: trip_id} = service) do
+    if Tfl.trip?(trip_id),
+      do: tfl(feed_id, &Tfl.path(&1, service)),
+      else: timetable_path(feed_id, trip_id)
+  end
+
+  # TfL's trains have no timetable; their runs are built live.
+  defp tfl(feed_id, run) do
+    case Repo.get(Feed, feed_id) do
+      %Feed{name: "tfl"} = feed -> run.(feed)
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp timetable_path(feed_id, trip_id) do
     with %Feed{trip_buckets: count} = feed when is_integer(count) <- Repo.get(Feed, feed_id),
          bucket when is_binary(bucket) <- read_bucket(feed, trip_id),
          %{} = trip <- Timetable.trip(bucket, trip_id) do

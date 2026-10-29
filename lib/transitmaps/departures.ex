@@ -102,11 +102,11 @@ defmodule Transitmaps.Departures do
 
   defp feed_departures(feed, stops, now, limit) do
     if Tfl.feed?(feed),
-      do: tfl_departures(stops),
+      do: tfl_departures(feed, stops),
       else: timetable_departures(feed, stops, now, limit)
   end
 
-  defp tfl_departures(stops) do
+  defp tfl_departures(feed, stops) do
     results = Enum.map(stops, fn {stop, _departures} -> {stop, Tfl.arrivals(stop.stop_id)} end)
     fetched = for {stop, {:ok, arrivals, at}} <- results, do: {stop, arrivals, at}
 
@@ -120,7 +120,7 @@ defmodule Transitmaps.Departures do
           destination: arrival.destination,
           platform: arrival.platform,
           line: tfl_line(arrival, stop),
-          service: nil,
+          service: tfl_service(feed, stop, arrival),
           live?: true
         }
       end
@@ -132,6 +132,40 @@ defmodule Transitmaps.Departures do
       timetable: "none"
     }
   end
+
+  # A TfL train's run is built live from TfL (`Transitmaps.Services.Tfl`),
+  # so its service names the line, the stop it leaves from (at an
+  # interchange, the line's own station within it), where the train is
+  # going and which train it is (the DLR names none). A train with no line
+  # or destination has no run to show.
+  defp tfl_service(feed, stop, %{line_id: line_id, destination_id: destination_id} = arrival)
+       when is_binary(line_id) and is_binary(destination_id) do
+    date =
+      arrival.time
+      |> DateTime.from_unix!()
+      |> DateTime.shift_zone!(valid_timezone(feed.timezone))
+      |> DateTime.to_date()
+
+    %{
+      feed: feed.id,
+      trip:
+        Enum.join(
+          [
+            "tfl",
+            line_id,
+            arrival.stop_id || stop.stop_id,
+            destination_id,
+            arrival.vehicle_id || ""
+          ],
+          ":"
+        ),
+      date: Date.to_iso8601(date),
+      seq: nil,
+      at: arrival.time
+    }
+  end
+
+  defp tfl_service(_feed, _stop, _arrival), do: nil
 
   # TfL names the line; the station's own list of lines has its colour.
   defp tfl_line(arrival, stop) do

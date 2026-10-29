@@ -134,6 +134,8 @@ test("drags a station's popup out of the way", async ({page}) => {
   const popup = page.locator(".maplibregl-popup")
   const header = popup.locator(".tm-popup-header")
   await expect(header).toBeVisible()
+  // Measured once the departures are in, so the popup is done growing.
+  await expect(popup.locator(".tm-departure")).toHaveCount(3)
   const before = await popup.boundingBox()
   const grip = await header.boundingBox()
 
@@ -157,4 +159,58 @@ test("drags a station's popup out of the way", async ({page}) => {
   await page.keyboard.press("Escape")
   await expect(popup).toHaveCount(0)
   await expect(map).not.toHaveAttribute("data-popup-moved", "true")
+})
+
+// A station's Photos tab shows pictures taken nearby, from Wikimedia
+// Commons, once it is opened; a "too busy" answer is retried.
+test("shows photos taken near a station", async ({page}) => {
+  let requests = 0
+  await page.route("https://commons.wikimedia.org/w/api.php?*", async (route) => {
+    requests += 1
+    const body =
+      requests === 1
+        ? {error: {code: "cirrussearch-too-busy-error", info: "Search is currently too busy."}}
+        : {
+            query: {
+              pages: [
+                {
+                  pageid: 2,
+                  title: "File:Far away.jpg",
+                  coordinates: [{dist: 90}],
+                  imageinfo: [{thumburl: "/images/logo.svg", descriptionurl: "https://commons.wikimedia.org/wiki/File:Far_away.jpg", mime: "image/jpeg"}],
+                },
+                {
+                  pageid: 1,
+                  title: "File:Station entrance.jpg",
+                  coordinates: [{dist: 12}],
+                  imageinfo: [{thumburl: "/images/logo.svg", descriptionurl: "https://commons.wikimedia.org/wiki/File:Station_entrance.jpg", mime: "image/jpeg"}],
+                },
+                {
+                  pageid: 3,
+                  title: "File:Line diagram.svg",
+                  coordinates: [{dist: 5}],
+                  imageinfo: [{thumburl: "/images/logo.svg", descriptionurl: "https://commons.wikimedia.org/wiki/File:Line_diagram.svg", mime: "image/svg+xml"}],
+                },
+              ],
+            },
+          }
+    await route.fulfill({json: body, headers: {"access-control-allow-origin": "*"}})
+  })
+
+  await setMapZoom(page, 14, [-0.1276, 51.5072])
+  const box = await page.locator("#transit-map canvas").boundingBox()
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  await expect(page.locator("#station-tab-photos")).toBeVisible()
+  // Nothing is fetched until the tab is opened.
+  expect(requests).toBe(0)
+
+  await page.locator("#station-tab-photos").click()
+  const photos = page.locator("#station-panel-photos .tm-photo")
+  // Nearest first, and the diagram left out.
+  await expect(photos).toHaveCount(2)
+  await expect(photos.first()).toHaveAttribute("title", "Station entrance")
+  expect(requests).toBe(2)
+
+  await expect(page.locator("#photos-street-view")).toHaveAttribute("href", /map_action=pano/)
+  await expect(page.locator("#photos-image-search")).toHaveAttribute("href", /tbm=isch&q=/)
 })

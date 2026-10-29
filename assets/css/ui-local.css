@@ -800,6 +800,71 @@ body.playwright-visuals .tm-zoom-readout {
   color: var(--muted-foreground);
 }
 
+/* Photos taken near a station or a place (nearby_photos.js): a grid of
+   thumbnails from Wikimedia Commons, then links out to look closer. */
+.tm-photos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.tm-popup-body + .tm-photos {
+  border-top: 1px solid var(--border);
+}
+
+.tm-photos-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tm-photo {
+  display: block;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: var(--hover-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.tm-photo:hover {
+  border-color: var(--border-strong);
+}
+
+
+.tm-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tm-photos-status,
+.tm-photos-credit {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+}
+
+.tm-photos-retry {
+  padding: 0;
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.tm-photos-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+}
+
 /* A station with departures: tabs under the header, and a little more room
    for a departure board. */
 .maplibregl-popup-content:has(.tm-popup--departures) {

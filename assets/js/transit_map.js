@@ -1689,6 +1689,84 @@ const TransitMap = {
       .setHTML(html)
       .addTo(this.map)
     this.popup.on("close", () => this.closePopup())
+    this.bindPopupDrag(lngLat)
+  },
+
+  // A popup can be dragged by its header out of the way of what it covers
+  // (a service's run, picked out under a station's popup). Once moved it
+  // stays where it was put while the map moves under it, its tip no longer
+  // pointing anywhere, and a ring marks the place it describes instead.
+  bindPopupDrag(lngLat) {
+    const popup = this.popup
+    const element = popup.getElement()
+    const handle = element.querySelector(".tm-popup-header")
+    if (!handle) return
+
+    handle.classList.add("tm-popup-handle")
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest("button, a, input, select, textarea")) return
+      event.preventDefault()
+      event.stopPropagation()
+      handle.setPointerCapture(event.pointerId)
+
+      const start = {x: event.clientX, y: event.clientY}
+      const tip = this.popupPin || this.map.project(popup.getLngLat())
+      const box = element.getBoundingClientRect()
+      const frame = this.map.getContainer().getBoundingClientRect()
+      // Where the popup can go: wholly inside the map, a margin from its edges.
+      const margin = 8
+      const left = tip.x - (box.left - frame.left)
+      const top = tip.y - (box.top - frame.top)
+      const bounds = {
+        minX: margin + left,
+        maxX: Math.max(margin + left, frame.width - margin - (box.width - left)),
+        minY: margin + top,
+        maxY: Math.max(margin + top, frame.height - margin - (box.height - top)),
+      }
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max)
+
+      const move = (moveEvent) => {
+        if (this.popup !== popup) return
+        const x = clamp(tip.x + moveEvent.clientX - start.x, bounds.minX, bounds.maxX)
+        const y = clamp(tip.y + moveEvent.clientY - start.y, bounds.minY, bounds.maxY)
+        this.pinPopup(lngLat, {x, y})
+      }
+      const end = () => {
+        handle.removeEventListener("pointermove", move)
+        handle.removeEventListener("pointerup", end)
+        handle.removeEventListener("pointercancel", end)
+        handle.classList.remove("tm-popup-handle--dragging")
+      }
+
+      handle.classList.add("tm-popup-handle--dragging")
+      handle.addEventListener("pointermove", move)
+      handle.addEventListener("pointerup", end)
+      handle.addEventListener("pointercancel", end)
+    })
+  },
+
+  // Holds the popup at `point` on screen, its place (`lngLat`) ringed.
+  pinPopup(lngLat, point) {
+    const popup = this.popup
+
+    if (!this.popupPin) {
+      const element = popup.getElement()
+      // Keep the side it opened on, so it doesn't flip as it nears an edge.
+      const anchor = [...element.classList].find((name) => name.startsWith("maplibregl-popup-anchor-"))
+      if (anchor) popup.options.anchor = anchor.replace("maplibregl-popup-anchor-", "")
+      element.classList.add("tm-popup--moved")
+      this.el.dataset.popupMoved = "true"
+
+      const ring = document.createElement("div")
+      ring.className = "tm-selected"
+      this.selectedMarker = new maplibregl.Marker({element: ring}).setLngLat(lngLat).addTo(this.map)
+
+      this.popupPinHandler = () => this.popup?.setLngLat(this.map.unproject(this.popupPin))
+      this.map.on("move", this.popupPinHandler)
+    }
+
+    this.popupPin = point
+    popup.setLngLat(this.map.unproject(point))
   },
 
   closePopup() {
@@ -1705,6 +1783,11 @@ const TransitMap = {
 
     this.selectedMarker?.remove()
     this.selectedMarker = null
+
+    if (this.popupPinHandler) this.map.off("move", this.popupPinHandler)
+    this.popupPinHandler = null
+    this.popupPin = null
+    delete this.el.dataset.popupMoved
 
     const panel = this.el.querySelector("[data-map-detail]")
     if (panel && !panel.hidden) {

@@ -123,3 +123,38 @@ test("picks out a departure's run on the map", async ({page}) => {
   await expect(map).toHaveAttribute("data-focus", "")
   await expect(map).toHaveAttribute("data-focus-stops", "0")
 })
+
+// A popup in the way can be dragged aside by its header, and stays there
+// while the map moves under it.
+test("drags a station's popup out of the way", async ({page}) => {
+  await setMapZoom(page, 14, [-0.1276, 51.5072])
+  const box = await page.locator("#transit-map canvas").boundingBox()
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+
+  const popup = page.locator(".maplibregl-popup")
+  const header = popup.locator(".tm-popup-header")
+  await expect(header).toBeVisible()
+  const before = await popup.boundingBox()
+  const grip = await header.boundingBox()
+
+  await page.mouse.move(grip.x + 20, grip.y + 10)
+  await page.mouse.down()
+  await page.mouse.move(grip.x - 180, grip.y + 160, {steps: 6})
+  await page.mouse.up()
+
+  const map = page.locator("#transit-map")
+  await expect(map).toHaveAttribute("data-popup-moved", "true")
+  const moved = await popup.boundingBox()
+  expect(moved.x).toBeLessThan(before.x - 150)
+  expect(moved.y).toBeGreaterThan(before.y + 130)
+
+  // The map moves; the popup doesn't.
+  await setMapZoom(page, 13, [-0.1, 51.52])
+  const after = await popup.boundingBox()
+  expect(Math.abs(after.x - moved.x)).toBeLessThan(2)
+  expect(Math.abs(after.y - moved.y)).toBeLessThan(2)
+
+  await page.keyboard.press("Escape")
+  await expect(popup).toHaveCount(0)
+  await expect(map).not.toHaveAttribute("data-popup-moved", "true")
+})

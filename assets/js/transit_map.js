@@ -10,6 +10,7 @@ import {
   renderPlacePin,
 } from "./map_places"
 import {DARK_LINE, fadedLineColor, readPalette, watchColorScheme, withAlpha} from "./map_palette"
+import {NearbyPhotos, nearbyPhotosHtml} from "./nearby_photos"
 import {DepartureBoard} from "./station_departures"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
@@ -573,6 +574,7 @@ const TransitMap = {
     this.el.removeEventListener("map:set-zoom", this.setZoomHandler)
     if (this.stopWatchingScheme) this.stopWatchingScheme()
     this.departureBoard?.stop()
+    this.nearbyPhotos?.stop()
     if (this.map) this.map.remove()
   },
 
@@ -778,8 +780,55 @@ const TransitMap = {
       `<div class="tm-popup"><div class="tm-popup-header">` +
         `<div class="tm-popup-title">${this.escapeHtml(props.name)}</div>` +
         `<div class="tm-popup-meta">${this.swatchHtml(group?.color, "dot")}<span>${this.escapeHtml(meta)}</span></div>` +
-        `</div></div>`
+        `</div>${nearbyPhotosHtml(lngLat, this.photoSearchQuery(props.name, lngLat))}</div>`
     )
+    this.showNearbyPhotos(lngLat, {radius: 120})
+  },
+
+  // Starts the popup's nearby photos loading; with `lazy`, they wait until
+  // their tab is opened.
+  showNearbyPhotos(lngLat, {radius, lazy = false}) {
+    const el = this.popupElement()?.querySelector("[data-photos]")
+    if (!el) return
+    // Photos make the popup taller after it opened; placed again, it can
+    // flip below its point rather than run off the top of the map. A popup
+    // dragged aside stays where it was put.
+    const replace = () => {
+      if (this.popup && !this.popupPin) this.popup.setLngLat(this.popup.getLngLat())
+    }
+    this.nearbyPhotos = new NearbyPhotos(el, lngLat, {radius, onRender: replace})
+    if (!lazy) this.nearbyPhotos.start()
+  },
+
+  // What to search Google Images for: the name, and the town or district
+  // it is in, so "Victoria" finds the one on the map. The town comes from
+  // the basemap's own place labels, so it costs no request.
+  photoSearchQuery(name, lngLat) {
+    const area = this.areaName(lngLat)
+    return area && !String(name).includes(area) ? `${name} ${area}` : String(name || area || "")
+  },
+
+  // The nearest city, town or village among the basemap's loaded place
+  // labels, else the nearest suburb or neighbourhood.
+  areaName({lng, lat}) {
+    let features = []
+    try {
+      features = this.map.querySourceFeatures("openmaptiles", {sourceLayer: "place"})
+    } catch (_error) {
+      return null
+    }
+
+    const [kx, ky] = kmScale(lat)
+    const nearest = (classes) =>
+      features
+        .filter((feature) => classes.includes(feature.properties.class) && feature.properties.name)
+        .map((feature) => {
+          const [x, y] = feature.geometry.coordinates
+          return {name: feature.properties.name, km: Math.hypot((x - lng) * kx, (y - lat) * ky)}
+        })
+        .sort((a, b) => a.km - b.km)[0]?.name
+
+    return nearest(["city", "town", "village"]) || nearest(["suburb", "quarter", "neighbourhood", "hamlet"])
   },
 
   // Agencies whose service area overlaps the view, padded by `padding` of
@@ -1489,9 +1538,11 @@ const TransitMap = {
   // lines. The departure board runs until the popup closes.
   openStationPopup(lngLat, props) {
     const ids = departureIds(props)
-    this.openPopup(lngLat, this.stationPopupHtml(props, ids.length > 0), () => this.clearFocus())
+    this.openPopup(lngLat, this.stationPopupHtml(props, ids.length > 0, lngLat), () => this.clearFocus())
     this.bindRouteBadges()
     this.bindStationTabs()
+    // With departures, the photos have a tab of their own and wait for it.
+    this.showNearbyPhotos(lngLat, {radius: 250, lazy: ids.length > 0})
 
     const panel = ids.length ? this.popupElement()?.querySelector("[data-departures]") : null
     if (panel) {
@@ -1510,13 +1561,15 @@ const TransitMap = {
     const element = this.popupElement()
     const tabs = [...(element?.querySelectorAll("[role='tab']") || [])]
 
-    const select = (tab) =>
+    const select = (tab) => {
       tabs.forEach((other) => {
         const selected = other === tab
         other.setAttribute("aria-selected", String(selected))
         other.tabIndex = selected ? 0 : -1
         element.querySelector(`#${other.getAttribute("aria-controls")}`).hidden = !selected
       })
+      if (element.querySelector(`#${tab.getAttribute("aria-controls")} [data-photos]`)) this.nearbyPhotos?.start()
+    }
 
     tabs.forEach((tab, index) => {
       tab.addEventListener("click", (event) => {
@@ -1534,7 +1587,7 @@ const TransitMap = {
     })
   },
 
-  stationPopupHtml(props, withDepartures = false) {
+  stationPopupHtml(props, withDepartures = false, lngLat = null) {
     const lines = typeof props.lines === "string" ? JSON.parse(props.lines) : props.lines || []
     const fallback = this.stationFallbackCategory(props)
     const groups = this.stationModeGroups(lines, fallback)
@@ -1583,7 +1636,10 @@ const TransitMap = {
       meta +
       `</div>`
 
-    if (!withDepartures) return `<div class="tm-popup">${header}${body}</div>`
+    const name = props.name || "Stop"
+    const photos = lngLat ? nearbyPhotosHtml(lngLat, this.photoSearchQuery(name, lngLat)) : ""
+
+    if (!withDepartures) return `<div class="tm-popup">${header}${body}${photos}</div>`
 
     return (
       `<div class="tm-popup tm-popup--departures">${header}` +
@@ -1592,10 +1648,17 @@ const TransitMap = {
       ` aria-controls="station-panel-departures">Departures</button>` +
       `<button type="button" class="ui-tab" role="tab" id="station-tab-lines" aria-selected="false" tabindex="-1"` +
       ` aria-controls="station-panel-lines">Lines <span class="ui-tab-count">${lineTotal}</span></button>` +
+      (photos
+        ? `<button type="button" class="ui-tab" role="tab" id="station-tab-photos" aria-selected="false" tabindex="-1"` +
+          ` aria-controls="station-panel-photos">Photos</button>`
+        : "") +
       `</div>` +
       `<div class="tm-popup-body tm-departures-panel" role="tabpanel" id="station-panel-departures"` +
       ` aria-labelledby="station-tab-departures" data-departures></div>` +
       `<div role="tabpanel" id="station-panel-lines" aria-labelledby="station-tab-lines" hidden>${body}</div>` +
+      (photos
+        ? `<div role="tabpanel" id="station-panel-photos" aria-labelledby="station-tab-photos" hidden>${photos}</div>`
+        : "") +
       `</div>`
     )
   },
@@ -1774,6 +1837,8 @@ const TransitMap = {
     this.popupOnClose = null
     this.departureBoard?.stop()
     this.departureBoard = null
+    this.nearbyPhotos?.stop()
+    this.nearbyPhotos = null
 
     if (this.popup) {
       const popup = this.popup

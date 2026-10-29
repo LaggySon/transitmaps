@@ -2,12 +2,13 @@ defmodule Transitmaps.Services.Tfl do
   @moduledoc """
   A TfL train's run, opened from one of its live arrivals. TfL's feed has
   no timetable, so the run is built live from TfL's API
-  (`Transitmaps.Realtime.Tfl`): its stops are the line's stations from the
-  one it was opened at to the train's destination, in the order the line
-  runs them, and its times are TfL's predictions for that train, which
-  reach about half an hour ahead. Stops further on have no time. The DLR
-  names no trains, so its runs show only the time at the station they were
-  opened from.
+  (`Transitmaps.Realtime.Tfl`): its stops are the line's stations in the
+  order it runs them, from as far back as the train's route is certain to
+  its destination, and its times are TfL's predictions for that train,
+  which reach about half an hour ahead. Other stops have no time; those
+  before the first one TfL predicts are behind the train. The DLR names no
+  trains, so its runs show only the time at the station they were opened
+  from.
 
   The service's `trip` is `"tfl:<line>:<station>:<destination>:<train>"`
   (`Transitmaps.Departures`).
@@ -35,11 +36,17 @@ defmodule Transitmaps.Services.Tfl do
       stations = stations(feed, stop_ids, sequences)
       {predictions, live, updated_at} = predictions(run)
 
+      # Where TfL follows the train, the stops before the first it predicts
+      # are behind it.
+      passed_before = Enum.find_index(stop_ids, &Map.has_key?(predictions, &1)) || 0
+
       calls =
-        Enum.map(stop_ids, fn stop_id ->
+        stop_ids
+        |> Enum.with_index()
+        |> Enum.map(fn {stop_id, index} ->
           prediction = Map.get(predictions, stop_id)
           time = (prediction && prediction.time) || (stop_id == run.origin && service[:at]) || nil
-          call(stop_id, Map.get(stations, stop_id), prediction, time)
+          call(stop_id, Map.get(stations, stop_id), prediction, time, index < passed_before)
         end)
 
       {:ok,
@@ -138,21 +145,47 @@ defmodule Transitmaps.Services.Tfl do
     }
   end
 
-  # The stations from `origin` to `destination` on the shortest of the
-  # line's stop orders that runs between them (a branch, or a short
-  # working). Without one, just the two.
+  # The train's whole route. Ahead: the stations from `origin` to
+  # `destination` on the shortest of the line's stop orders that runs
+  # between them (a branch, or a short working). Behind: TfL doesn't say
+  # where a train started, so the stations before `origin` as far back as
+  # every such stop order agrees: to the terminus on a line that doesn't
+  # branch behind it, to the junction on one that does. Without any stop
+  # order, just the two.
   defp stop_ids(%{origin: origin, destination: destination}, %{orders: orders}) do
-    orders
-    |> Enum.flat_map(fn sequence ->
-      with from when is_integer(from) <- Enum.find_index(sequence, &(&1 == origin)),
-           offset when is_integer(offset) <-
-             sequence |> Enum.drop(from + 1) |> Enum.find_index(&(&1 == destination)) do
-        [Enum.slice(sequence, from, offset + 2)]
-      else
-        _ -> []
-      end
+    runs =
+      Enum.flat_map(orders, fn sequence ->
+        with from when is_integer(from) <- Enum.find_index(sequence, &(&1 == origin)),
+             offset when is_integer(offset) <-
+               sequence |> Enum.drop(from + 1) |> Enum.find_index(&(&1 == destination)) do
+          [
+            {sequence |> Enum.take(from) |> Enum.reverse(),
+             Enum.slice(sequence, from, offset + 2)}
+          ]
+        else
+          _ -> []
+        end
+      end)
+
+    case runs do
+      [] ->
+        Enum.uniq([origin, destination])
+
+      _ ->
+        {_behind, ahead} = Enum.min_by(runs, fn {_behind, ahead} -> length(ahead) end)
+        behind = runs |> Enum.map(&elem(&1, 0)) |> common_start() |> Enum.reverse()
+        behind ++ ahead
+    end
+  end
+
+  # The stops every list starts with.
+  defp common_start([first | rest]) do
+    Enum.reduce(rest, first, fn list, common ->
+      common
+      |> Enum.zip(list)
+      |> Enum.take_while(fn {a, b} -> a == b end)
+      |> Enum.map(&elem(&1, 0))
     end)
-    |> Enum.min_by(&length/1, fn -> Enum.uniq([origin, destination]) end)
   end
 
   defp sequences(line) do
@@ -202,7 +235,7 @@ defmodule Transitmaps.Services.Tfl do
         do: {stop_id, row}
   end
 
-  defp call(stop_id, station, prediction, time) do
+  defp call(stop_id, station, prediction, time, passed?) do
     %{
       name: (station && station.name) || (prediction && prediction.name) || stop_id,
       station: station && station.id,
@@ -216,7 +249,8 @@ defmodule Transitmaps.Services.Tfl do
       delay: nil,
       status: if(time, do: "live", else: "scheduled"),
       pickup: true,
-      drop_off: true
+      drop_off: true,
+      passed: passed?
     }
   end
 

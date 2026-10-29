@@ -31,11 +31,6 @@ defmodule Transitmaps.Gtfs.GeoJsonStoreTest do
     assert {^newer, _age_ms} = GeoJsonStore.get(key)
   end
 
-  test "only slow responses are worth keeping" do
-    refute GeoJsonStore.worth_keeping?(20)
-    assert GeoJsonStore.worth_keeping?(2_000)
-  end
-
   # After a restart memory is empty, but the database still has it.
   test "a kept response is served without building it again" do
     key = {:routes, [make_ref()]}

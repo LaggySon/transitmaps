@@ -1,14 +1,15 @@
 defmodule Transitmaps.Gtfs.GeoJsonStore do
   @moduledoc """
-  Keeps the map's slowest GeoJSON responses in the database, so a restart
-  (every deploy) doesn't send the first visitors to each area back to
-  waiting seconds for them to be built (`Transitmaps.Gtfs.GeoJsonCache`
-  keeps responses in memory only).
+  Keeps the map's GeoJSON responses in the database, so a restart (every
+  deploy) doesn't send the first visitors to each area back to waiting
+  seconds for them to be built (`Transitmaps.Gtfs.GeoJsonCache` keeps
+  responses in memory only).
 
-  Only responses that took at least `@min_build_ms` to build are kept: the
-  rest are quicker to build again than they are worth storing. A response
-  is stored gzipped, as most visitors take it. Rows not built again for
-  `@keep_days` (no one has looked there) are pruned.
+  Every response is kept, however quickly it was built: a cell of a city's
+  lines takes milliseconds once the agency's lines are in memory, but
+  after a restart they aren't, and the first cell asked for waits for
+  them. A response is stored gzipped, as most visitors take it. Rows not
+  built again for `@keep_days` (no one has looked there) are pruned.
 
   `@format` is part of every key: change it when the responses change
   shape, so a deploy doesn't serve the old shape to the new map.
@@ -22,11 +23,7 @@ defmodule Transitmaps.Gtfs.GeoJsonStore do
   alias Transitmaps.Repo
 
   @format 1
-  @min_build_ms 200
   @keep_days 14
-
-  @doc "Whether a response that took `build_ms` to build is worth keeping."
-  def worth_keeping?(build_ms), do: build_ms >= @min_build_ms
 
   @doc """
   The stored response for cache key `key`, as `{body, gzipped, etag}` and
@@ -66,6 +63,10 @@ defmodule Transitmaps.Gtfs.GeoJsonStore do
   rescue
     error ->
       Logger.warning("GeoJSON store not written: #{Exception.message(error)}")
+      :error
+  catch
+    :exit, reason ->
+      Logger.warning("GeoJSON store not written: #{inspect(reason, limit: 5)}")
       :error
   end
 

@@ -8,7 +8,7 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   JSON alongside a gzipped variant and a strong ETag, and served straight
   from ETS from then on.
 
-  The slowest responses are also kept in the database
+  Responses are also kept in the database
   (`Transitmaps.Gtfs.GeoJsonStore`), so after a restart they are served
   from there rather than built again while a visitor waits.
 
@@ -201,13 +201,15 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     {body, :zlib.gzip(body), ~s("#{etag}")}
   end
 
-  # Builds the response, and keeps it in the database too if it was slow
-  # to build. Storing runs on its own, so no one waits for it.
+  # Builds the response, and keeps it in the database too. Storing runs on
+  # its own, so no one waits for it (in tests it runs in place, so it
+  # finishes inside the test's database sandbox).
   defp build_and_keep(key, builder) do
-    {micros, entry} = :timer.tc(fn -> build(builder) end)
+    entry = build(builder)
 
-    if GeoJsonStore.worth_keeping?(div(micros, 1000)),
-      do: Task.start(fn -> GeoJsonStore.put(key, entry) end)
+    if Application.get_env(:transitmaps, :geojson_store_async, true),
+      do: Task.start(fn -> GeoJsonStore.put(key, entry) end),
+      else: GeoJsonStore.put(key, entry)
 
     entry
   end

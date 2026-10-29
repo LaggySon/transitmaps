@@ -52,14 +52,12 @@ defmodule TransitmapsWeb.GeoController do
     # Only real feeds are cached, so arbitrary query strings can't grow the
     # cache without bound.
     {body, gzipped, etag} =
-      case feed_id(params["feed"]) do
-        nil ->
-          GeoJsonCache.fetch({kind, :unknown}, fn -> @empty end)
+      case feed_key(kind, params["feed"], categories) do
+        {:ok, feed_id, key} ->
+          GeoJsonCache.fetch(key, fn -> builder.(categories, feed_id) end)
 
-        feed_id ->
-          GeoJsonCache.fetch({kind, feed_id, Enum.sort(categories)}, fn ->
-            builder.(categories, feed_id)
-          end)
+        :error ->
+          GeoJsonCache.fetch({kind, :unknown}, fn -> @empty end)
       end
 
     conn =
@@ -83,16 +81,20 @@ defmodule TransitmapsWeb.GeoController do
     end
   end
 
-  defp feed_id(param) when is_binary(param) do
+  # The cache key for a real feed's response. A page load asks for dozens
+  # at once, so a cached one is served without asking the database whether
+  # its feed exists: that check queued them all behind the connection pool.
+  defp feed_key(kind, param, categories) when is_binary(param) do
     with {id, ""} <- Integer.parse(param),
-         true <- Repo.exists?(from f in Feed, where: f.id == ^id) do
-      id
+         key = {kind, id, Enum.sort(categories)},
+         true <- GeoJsonCache.cached?(key) or Repo.exists?(from f in Feed, where: f.id == ^id) do
+      {:ok, id, key}
     else
-      _ -> nil
+      _ -> :error
     end
   end
 
-  defp feed_id(_param), do: nil
+  defp feed_key(_kind, _param, _categories), do: :error
 
   defp gzip_accepted?(conn) do
     conn

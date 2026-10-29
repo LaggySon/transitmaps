@@ -8,6 +8,10 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   JSON alongside a gzipped variant and a strong ETag, and served straight
   from ETS from then on.
 
+  The slowest responses are also kept in the database
+  (`Transitmaps.Gtfs.GeoJsonStore`), so after a restart they are served
+  from there rather than built again while a visitor waits.
+
   Once a response has been built, no visitor waits for it to be built
   again. When an entry ages out or an import invalidates it, requests keep
   getting the previous body while a rebuild runs in the background. Rebuilds
@@ -16,6 +20,8 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   """
 
   use GenServer
+
+  alias Transitmaps.Gtfs.GeoJsonStore
 
   @table __MODULE__
   @terms Module.concat(__MODULE__, Terms)
@@ -43,6 +49,8 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   """
   def warm do
     if enabled?() do
+      GeoJsonStore.prune()
+
       {west, south, east, north} = @opening_view
 
       for %{id: feed_id, bounds: [[min_lon, min_lat], [max_lon, max_lat]]} <-
@@ -73,14 +81,25 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
           entry
 
         [] ->
-          entry = build(builder)
-          GenServer.call(__MODULE__, {:put, key, entry, builder})
-          entry
+          case GeoJsonStore.get(key) do
+            {entry, age_ms} ->
+              GenServer.call(__MODULE__, {:put, key, entry, builder, age_ms})
+              if age_ms >= @ttl_ms, do: GenServer.cast(__MODULE__, {:refresh, key})
+              entry
+
+            nil ->
+              entry = build_and_keep(key, builder)
+              GenServer.call(__MODULE__, {:put, key, entry, builder, 0})
+              entry
+          end
       end
     else
       build(builder)
     end
   end
+
+  @doc "Whether a response for `key` is cached, fresh or not."
+  def cached?(key), do: enabled?() and :ets.member(@table, key)
 
   @doc """
   Returns the term `builder.()` makes for `key`, kept as it is rather than
@@ -182,6 +201,17 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
     {body, :zlib.gzip(body), ~s("#{etag}")}
   end
 
+  # Builds the response, and keeps it in the database too if it was slow
+  # to build. Storing runs on its own, so no one waits for it.
+  defp build_and_keep(key, builder) do
+    {micros, entry} = :timer.tc(fn -> build(builder) end)
+
+    if GeoJsonStore.worth_keeping?(div(micros, 1000)),
+      do: Task.start(fn -> GeoJsonStore.put(key, entry) end)
+
+    entry
+  end
+
   @impl true
   def init(nil) do
     :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true])
@@ -190,8 +220,10 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
   end
 
   @impl true
-  def handle_call({:put, key, entry, builder}, _from, state) do
-    :ets.insert(@table, {key, entry, System.monotonic_time(:millisecond), builder})
+  # `age_ms` is how long ago the entry was built: 0 unless it was kept in
+  # the database from before.
+  def handle_call({:put, key, entry, builder, age_ms}, _from, state) do
+    :ets.insert(@table, {key, entry, System.monotonic_time(:millisecond) - age_ms, builder})
     {:reply, :ok, state}
   end
 
@@ -236,7 +268,8 @@ defmodule Transitmaps.Gtfs.GeoJsonCache do
       [{^key, _entry, _built_at, builder}] ->
         {_pid, monitor} =
           spawn_monitor(fn ->
-            GenServer.call(__MODULE__, {:put, key, build(builder), builder}, :infinity)
+            entry = build_and_keep(key, builder)
+            GenServer.call(__MODULE__, {:put, key, entry, builder, 0}, :infinity)
           end)
 
         %{state | queue: queue, rebuilding: {key, monitor}}

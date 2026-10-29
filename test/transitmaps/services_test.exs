@@ -5,7 +5,7 @@ defmodule Transitmaps.ServicesTest do
   import Transitmaps.Realtime.GtfsRt, only: [encode: 1]
 
   alias Transitmaps.{Departures, GtfsFixture, Repo, Services}
-  alias Transitmaps.Gtfs.{Feed, Importer, Stop}
+  alias Transitmaps.Gtfs.{Feed, Importer, Route, Stop}
 
   @moduletag :tmp_dir
 
@@ -138,5 +138,42 @@ defmodule Transitmaps.ServicesTest do
              at(~T[08:32:00]),
              at(~T[08:33:00])
            ]
+  end
+
+  describe "path/1" do
+    test "a service's run follows its line's track from its first stop to its last",
+         %{tmp_dir: dir} do
+      {feed, _stops} = import_tiny!(dir)
+
+      assert {:ok, %{type: "FeatureCollection", features: [feature]}} =
+               Services.path(%{feed: feed.id, trip: "T1"})
+
+      assert %{name: "T1", agency: "Tiny Rail", category: "rail", color: "#" <> _} =
+               feature.properties
+
+      # It runs on the traced track, which sways a few metres either side of
+      # the straight line between the stations.
+      assert %{type: "MultiLineString", coordinates: [strand]} = feature.geometry
+      assert near?(hd(strand), [-0.2, 51.5])
+      assert near?(List.last(strand), [0.0, 51.54])
+      assert length(strand) > 3
+    end
+
+    test "a run with no drawn track has no path", %{tmp_dir: dir} do
+      {feed, _stops} = import_tiny!(dir)
+      Repo.update_all(from(r in Route, where: r.feed_id == ^feed.id), set: [geometry: nil])
+
+      assert Services.path(%{feed: feed.id, trip: "T1"}) ==
+               {:ok, %{type: "FeatureCollection", features: []}}
+    end
+
+    test "a trip or feed it can't find is not found", %{tmp_dir: dir} do
+      {feed, _stops} = import_tiny!(dir)
+
+      assert Services.path(%{feed: feed.id, trip: "NOPE"}) == {:error, :not_found}
+      assert Services.path(%{feed: feed.id + 1, trip: "T1"}) == {:error, :not_found}
+    end
+
+    defp near?([lon, lat], [x, y]), do: abs(lon - x) < 0.001 and abs(lat - y) < 0.001
   end
 end

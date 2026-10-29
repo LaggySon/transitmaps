@@ -9,7 +9,7 @@ import {
   placeSubtitle,
   renderPlacePin,
 } from "./map_places"
-import {DARK_LINE, readPalette, watchColorScheme, withAlpha} from "./map_palette"
+import {DARK_LINE, fadedLineColor, readPalette, watchColorScheme, withAlpha} from "./map_palette"
 import {DepartureBoard} from "./station_departures"
 
 const TILE_UPSTREAM = "https://tiles.openfreemap.org"
@@ -236,18 +236,28 @@ const layerIds = (cat) => ({
   labels: `${cat}-station-labels`,
 })
 
-// A clicked line, drawn again above every other line while it has focus.
+// A clicked line (or a service's run), drawn again above every other line
+// while it has focus: wider, ringed in the text colour on a halo of the
+// background, so it stands out on either basemap whatever its own colour.
 const FOCUS_SOURCE_ID = "focus-line"
+const FOCUS_HALO_ID = "focus-line-halo"
 const FOCUS_CASING_ID = "focus-line-casing"
 const FOCUS_LINE_ID = "focus-line"
-// How far the other lines and their names fade back while one has focus.
-const UNFOCUSED_OPACITY = 0.16
+const FOCUS_WIDTH = LINE_WIDTH + 3
+const FOCUS_RING = 1.5
+const FOCUS_HALO = 1.5
+// How far the other lines fade toward the background while one has focus,
+// and how far their names fade. Lines fade by colour, not opacity: a corridor
+// where a dozen lines share track would add a dozen faint copies back up to
+// nearly solid colour.
+const UNFOCUSED_FADE = 0.85
+const UNFOCUSED_OPACITY = 0.1
 
 // Lines first (a focused line above the rest), then their names, then stops
 // and station names on top.
 const desiredLayerOrder = () =>
   MODE_ORDER.flatMap((cat) => [layerIds(cat).casing, layerIds(cat).line]).concat(
-    [FOCUS_CASING_ID, FOCUS_LINE_ID],
+    [FOCUS_HALO_ID, FOCUS_CASING_ID, FOCUS_LINE_ID],
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     MODE_ORDER.map((cat) => layerIds(cat).labels)
@@ -624,7 +634,10 @@ const TransitMap = {
 
     this.applyBasemap()
     this.loaded.forEach((cat) => this.paintCategory(cat))
-    this.setPaint(FOCUS_CASING_ID, "line-color", this.palette.background)
+    this.setPaint(FOCUS_HALO_ID, "line-color", this.palette.background)
+    this.setPaint(FOCUS_CASING_ID, "line-color", this.palette.foreground)
+    // Faded lines are mixed with the background, which just changed.
+    this.applyFocus()
     this.paintPlaces()
   },
 
@@ -1029,10 +1042,42 @@ const TransitMap = {
       .find((focus) => this.featuresMatching(focus).length > 0)
 
     if (!match) return false
+    this.serviceRequest = (this.serviceRequest || 0) + 1
     this.focus = match
-    const features = this.featuresMatching(match)
     this.applyFocus()
+    this.fitFeatures(this.featuresMatching(match))
+    return true
+  },
 
+  // A service's whole run, opened from a station's departures, picks out
+  // the track it runs (/api/service/path) the way a clicked line does. Where
+  // no track was found, its line stands in.
+  async focusService({service, line = {}}) {
+    const request = (this.serviceRequest = (this.serviceRequest || 0) + 1)
+    let features = []
+
+    try {
+      const params = new URLSearchParams({feed: String(service.feed), trip: service.trip})
+      const response = await fetch(`/api/service/path?${params}`, {headers: {accept: "application/json"}})
+      if (response.ok) features = (await response.json()).features || []
+    } catch (_error) {
+      // The line stands in.
+    }
+
+    // The run was closed, or another opened, while its track loaded.
+    if (request !== this.serviceRequest) return
+
+    if (features.length === 0) {
+      if (line.category) this.focusRoute({category: line.category, agency: line.agency, name: line.name, color: line.color})
+      return
+    }
+
+    this.focus = {category: line.category, features}
+    this.applyFocus()
+    this.fitFeatures(features)
+  },
+
+  fitFeatures(features) {
     const bounds = new maplibregl.LngLatBounds()
     features.forEach((feature) =>
       feature.geometry.coordinates.forEach((line) => line.forEach((point) => bounds.extend(point)))
@@ -1041,17 +1086,19 @@ const TransitMap = {
     if (!bounds.isEmpty()) {
       this.map.fitBounds(bounds, {padding: this.mapPadding(), maxZoom: 15, duration: 900})
     }
-    return true
   },
 
   clearFocus() {
+    // A service's track still loading is no longer wanted.
+    this.serviceRequest = (this.serviceRequest || 0) + 1
     if (!this.focus) return
     this.focus = null
     this.applyFocus()
   },
 
   focusedFeatures() {
-    return this.focus ? this.featuresMatching(this.focus) : []
+    if (!this.focus) return []
+    return this.focus.features || this.featuresMatching(this.focus)
   },
 
   // Loaded lines of `category` whose properties equal every one of `fields`.
@@ -1075,32 +1122,45 @@ const TransitMap = {
     } else {
       this.map.addSource(FOCUS_SOURCE_ID, {type: "geojson", data})
       this.addLayerInOrder({
+        id: FOCUS_HALO_ID,
+        type: "line",
+        source: FOCUS_SOURCE_ID,
+        layout: {"line-join": "round", "line-cap": "round"},
+        paint: {"line-color": this.palette.background, "line-width": FOCUS_WIDTH + 2 * (FOCUS_RING + FOCUS_HALO)},
+      })
+      this.addLayerInOrder({
         id: FOCUS_CASING_ID,
         type: "line",
         source: FOCUS_SOURCE_ID,
         layout: {"line-join": "round", "line-cap": "round"},
-        paint: {"line-color": this.palette.background, "line-width": LINE_WIDTH + 5},
+        paint: {"line-color": this.palette.foreground, "line-width": FOCUS_WIDTH + 2 * FOCUS_RING},
       })
       this.addLayerInOrder({
         id: FOCUS_LINE_ID,
         type: "line",
         source: FOCUS_SOURCE_ID,
         layout: {"line-join": "round", "line-cap": "round"},
-        paint: {"line-color": ["get", "color"], "line-width": LINE_WIDTH + 2},
+        paint: {"line-color": ["get", "color"], "line-width": FOCUS_WIDTH},
       })
     }
 
-    const opacity = this.focus ? UNFOCUSED_OPACITY : 1
+    // What has focus, for tests to read: a clicked line or a service's run.
+    this.el.dataset.focus = !this.focus ? "" : this.focus.features ? "service" : "line"
+
+    const color = this.focus ? fadedLineColor(this.palette.background, UNFOCUSED_FADE) : ["get", "color"]
     this.loaded.forEach((cat) => {
       const ids = layerIds(cat)
-      if (this.map.getLayer(ids.line)) this.map.setPaintProperty(ids.line, "line-opacity", opacity)
-      if (this.map.getLayer(ids.casing)) this.map.setPaintProperty(ids.casing, "line-opacity", opacity)
+      if (this.map.getLayer(ids.line)) this.map.setPaintProperty(ids.line, "line-color", color)
+      // A faded line needs no outline to stand out from the basemap.
+      if (this.map.getLayer(ids.casing)) this.map.setPaintProperty(ids.casing, "line-opacity", this.focus ? 0 : 1)
       if (this.map.getLayer(ids.lineLabels)) {
-        // The focused line keeps its name; the rest fade with their lines.
+        // A focused line keeps its name; the rest fade with their lines. A
+        // service's run is drawn from its own track, which has no name on
+        // the map, so every name fades.
         this.map.setPaintProperty(
           ids.lineLabels,
           "text-opacity",
-          this.focus ? ["case", this.focusMatch(), 1, UNFOCUSED_OPACITY] : 1
+          !this.focus ? 1 : this.focus.fields ? ["case", this.focusMatch(), 1, UNFOCUSED_OPACITY] : UNFOCUSED_OPACITY
         )
       }
     })
@@ -1381,7 +1441,11 @@ const TransitMap = {
 
     const panel = ids.length ? this.popupElement()?.querySelector("[data-departures]") : null
     if (panel) {
-      this.departureBoard = new DepartureBoard(panel, ids, {onStation: (station) => this.showStation(station)})
+      this.departureBoard = new DepartureBoard(panel, ids, {
+        onStation: (station) => this.showStation(station),
+        // A service's run picks out its track; back on the board, it lets go.
+        onService: (departure) => (departure ? this.focusService(departure) : this.clearFocus()),
+      })
       this.departureBoard.start()
     }
   },

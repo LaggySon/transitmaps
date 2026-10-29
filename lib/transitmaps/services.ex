@@ -52,6 +52,10 @@ defmodule Transitmaps.Services do
   `category`, `color`) as its properties, or none when no drawn track joins
   its stops (`Transitmaps.Services.Path`). `{:error, :not_found}` when the
   feed has no such trip.
+
+  The collection's `stops` are the stations it calls at, in order, as Point
+  features (`name`, and `terminus` for its first and last), for the map to
+  mark along the track, even where no track was found.
   """
   def path(%{feed: feed_id, trip: trip_id}) do
     with %Feed{trip_buckets: count} = feed when is_integer(count) <- Repo.get(Feed, feed_id),
@@ -82,10 +86,32 @@ defmodule Transitmaps.Services do
             ]
         end
 
-      {:ok, %{type: "FeatureCollection", features: features}}
+      {:ok,
+       %{type: "FeatureCollection", features: features, stops: stop_points(trip.calls, stations)}}
     else
       _ -> {:error, :not_found}
     end
+  end
+
+  # The stations a trip calls at that are on the map, once each.
+  defp stop_points(calls, stations) do
+    points =
+      calls
+      |> Enum.map(&Map.get(stations, &1.station))
+      |> Enum.filter(&match?(%{lng: lng, lat: lat} when is_number(lng) and is_number(lat), &1))
+      |> Enum.uniq_by(& &1.id)
+
+    last = length(points) - 1
+
+    points
+    |> Enum.with_index()
+    |> Enum.map(fn {station, index} ->
+      %{
+        type: "Feature",
+        geometry: %{type: "Point", coordinates: [station.lng, station.lat]},
+        properties: %{name: station.name, terminus: index in [0, last]}
+      }
+    end)
   end
 
   defp read_bucket(feed, trip_id) do

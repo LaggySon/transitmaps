@@ -159,12 +159,27 @@ defmodule Transitmaps.ServicesTest do
       assert length(strand) > 3
     end
 
-    test "a run with no drawn track has no path", %{tmp_dir: dir} do
+    test "a service's run marks the stations it calls at, its ends picked out",
+         %{tmp_dir: dir} do
+      {feed, _stops} = import_tiny!(dir)
+
+      assert {:ok, %{stops: [first | _] = stops}} = Services.path(%{feed: feed.id, trip: "T1"})
+      last = List.last(stops)
+
+      assert %{type: "Point", coordinates: start} = first.geometry
+      assert near?(start, [-0.2, 51.5])
+      assert near?(last.geometry.coordinates, [0.0, 51.54])
+      assert first.properties.terminus and last.properties.terminus
+      assert Enum.all?(stops, &is_binary(&1.properties.name))
+    end
+
+    test "a run with no drawn track has no path, but its stations are marked",
+         %{tmp_dir: dir} do
       {feed, _stops} = import_tiny!(dir)
       Repo.update_all(from(r in Route, where: r.feed_id == ^feed.id), set: [geometry: nil])
 
-      assert Services.path(%{feed: feed.id, trip: "T1"}) ==
-               {:ok, %{type: "FeatureCollection", features: []}}
+      assert {:ok, %{type: "FeatureCollection", features: [], stops: [_, _ | _]}} =
+               Services.path(%{feed: feed.id, trip: "T1"})
     end
 
     test "a trip or feed it can't find is not found", %{tmp_dir: dir} do

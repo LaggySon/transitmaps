@@ -1,7 +1,7 @@
 defmodule Transitmaps.Gtfs.GeoJsonCacheTest do
   # Turns the application-wide cache on, so it cannot run alongside the
   # async tests that rely on it being off.
-  use ExUnit.Case, async: false
+  use Transitmaps.DataCase, async: false
 
   alias Transitmaps.Gtfs.GeoJsonCache
 

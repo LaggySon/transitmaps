@@ -56,6 +56,8 @@ defmodule Transitmaps.Services.TflTest do
   # far as Charlie. A train on another line shares its number.
   defp stub_tfl(soon, opts \\ []) do
     vehicle = Keyword.get(opts, :vehicle, "201")
+    ids = ["940GZZLUAAA", "940GZZLUBBB", "940GZZLUCCC", "940GZZLUDDD"]
+    orders = Keyword.get(opts, :orders, [ids, Enum.reverse(ids)])
 
     Req.Test.stub(Transitmaps.Realtime.Tfl, fn conn ->
       case conn.request_path do
@@ -106,10 +108,8 @@ defmodule Transitmaps.Services.TflTest do
           ])
 
         "/Line/bakerloo/Route/Sequence/all" ->
-          ids = ["940GZZLUAAA", "940GZZLUBBB", "940GZZLUCCC", "940GZZLUDDD"]
-
           Req.Test.json(conn, %{
-            "orderedLineRoutes" => [%{"naptanIds" => ids}, %{"naptanIds" => Enum.reverse(ids)}],
+            "orderedLineRoutes" => Enum.map(orders, &%{"naptanIds" => &1}),
             "stopPointSequences" => [
               %{
                 "stopPoint" =>
@@ -150,13 +150,35 @@ defmodule Transitmaps.Services.TflTest do
              cancelled: false
            } = run
 
-    # From here to the end of the line, on the map's stations; TfL's
-    # predictions stop short of Delta, so it has no time.
-    assert Enum.map(run.calls, &{&1.name, &1.station, &1.time, &1.status, &1.platform}) == [
-             {"Bravo", stops["HUBBBB"], soon, "live", "1"},
-             {"Charlie", stops["940GZZLUCCC"], soon + 120, "live", "2"},
-             {"Delta", stops["940GZZLUDDD"], nil, "scheduled", nil}
+    # The whole route, on the map's stations: Alpha is behind the train
+    # (TfL predicts it from Bravo on), and TfL's predictions stop short of
+    # Delta, so it has no time.
+    assert Enum.map(run.calls, &{&1.name, &1.station, &1.time, &1.status, &1.passed}) == [
+             {"Alpha", stops["940GZZLUAAA"], nil, "scheduled", true},
+             {"Bravo", stops["HUBBBB"], soon, "live", false},
+             {"Charlie", stops["940GZZLUCCC"], soon + 120, "live", false},
+             {"Delta", stops["940GZZLUDDD"], nil, "scheduled", false}
            ]
+
+    assert Enum.map(run.calls, & &1.platform) == [nil, "1", "2", nil]
+  end
+
+  # Trains reach Bravo from Alpha, or from a branch (Echo, off the map):
+  # which one this train came along, TfL doesn't say.
+  test "a run reaches back only as far as its route is certain", %{stops: stops} do
+    soon = System.os_time(:second) + 300
+
+    stub_tfl(soon,
+      vehicle: "",
+      orders: [
+        ["940GZZLUAAA", "940GZZLUBBB", "940GZZLUCCC", "940GZZLUDDD"],
+        ["940GZZLUEEE", "940GZZLUBBB", "940GZZLUCCC", "940GZZLUDDD"]
+      ]
+    )
+
+    %{departures: [departure]} = Departures.list([stops["HUBBBB"]])
+    {:ok, run} = Services.show(Map.update!(departure.service, :date, &Date.from_iso8601!/1))
+    assert Enum.map(run.calls, & &1.name) == ["Bravo", "Charlie", "Delta"]
   end
 
   test "a run's track is picked out along its line", %{stops: stops} do
@@ -167,7 +189,7 @@ defmodule Transitmaps.Services.TflTest do
 
     assert {:ok, %{features: [feature], stops: points}} = Services.path(departure.service)
     assert feature.properties.name == "Bakerloo"
-    assert Enum.map(points, & &1.properties.name) == ["Bravo", "Charlie", "Delta"]
+    assert Enum.map(points, & &1.properties.name) == ["Alpha", "Bravo", "Charlie", "Delta"]
   end
 
   test "a train TfL names no number for shows only its time here", %{stops: stops} do
@@ -179,7 +201,9 @@ defmodule Transitmaps.Services.TflTest do
 
     {:ok, run} = Services.show(Map.update!(departure.service, :date, &Date.from_iso8601!/1))
     assert run.live == "none"
-    assert Enum.map(run.calls, & &1.time) == [soon, nil, nil]
+    assert Enum.map(run.calls, & &1.time) == [nil, soon, nil, nil]
+    # Without TfL following the train, nothing is known to be behind it.
+    refute Enum.any?(run.calls, & &1.passed)
   end
 
   test "a run that isn't TfL's is not found", %{feed: feed} do

@@ -170,7 +170,8 @@ export class ServiceTimetable {
       const shown = call.scheduled ? clock.format(new Date(call.scheduled * 1000)) : "—"
       const expected = call.scheduled && call.time !== call.scheduled ? clock.format(new Date(call.time * 1000)) : null
       const here = call.station != null && this.here.has(call.station)
-      const passed = call.time != null && call.time + PASSED_AFTER_S < now && call.status !== "cancelled"
+      // A stop with no time can still be behind the train (a TfL run says so).
+      const passed = call.status !== "cancelled" && (call.passed === true || (call.time != null && call.time + PASSED_AFTER_S < now))
 
       // A long stop shows when it arrives as well as when it leaves.
       const arrives =

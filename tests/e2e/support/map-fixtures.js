@@ -139,6 +139,14 @@ export const mockTransitApis = async (page) => {
             properties: departuresFixture().departures[0].line,
           },
         ],
+        stops: [
+          ["London Central", ROUTE_COORDINATES[2]],
+          ["Stratford International", ROUTE_COORDINATES[3]],
+        ].map(([name, coordinates]) => ({
+          type: "Feature",
+          geometry: {type: "Point", coordinates},
+          properties: {name, terminus: true},
+        })),
       }),
     })
   })

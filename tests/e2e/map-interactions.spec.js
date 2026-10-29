@@ -116,7 +116,10 @@ test("picks out a departure's run on the map", async ({page}) => {
   await page.locator("#station-panel-departures [data-service]").first().click()
   await expect(page.locator(".tm-service-destination")).toContainText("Stratford International")
   await expect(map).toHaveAttribute("data-focus", "service")
+  // Its stations are marked along it.
+  await expect(map).toHaveAttribute("data-focus-stops", "2")
 
   await page.locator("[data-service-back]").click()
   await expect(map).toHaveAttribute("data-focus", "")
+  await expect(map).toHaveAttribute("data-focus-stops", "0")
 })

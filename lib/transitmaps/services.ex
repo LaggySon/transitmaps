@@ -18,6 +18,7 @@ defmodule Transitmaps.Services do
   alias Transitmaps.Gtfs.{Feed, Stop, Timetable}
   alias Transitmaps.Realtime
   alias Transitmaps.Repo
+  alias Transitmaps.Services.Path
 
   @doc """
   The run of trip `trip` of feed `feed` on service day `date`, as
@@ -40,6 +41,48 @@ defmodule Transitmaps.Services do
          bucket when is_binary(bucket) <- read_bucket(feed, trip_id),
          %{} = trip <- Timetable.trip(bucket, trip_id) do
       {:ok, present(feed, trip, trip_id, date, service)}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  The track trip `trip` of feed `feed` runs, as a GeoJSON feature
+  collection: one MultiLineString with the trip's line (`name`, `agency`,
+  `category`, `color`) as its properties, or none when no drawn track joins
+  its stops (`Transitmaps.Services.Path`). `{:error, :not_found}` when the
+  feed has no such trip.
+  """
+  def path(%{feed: feed_id, trip: trip_id}) do
+    with %Feed{trip_buckets: count} = feed when is_integer(count) <- Repo.get(Feed, feed_id),
+         bucket when is_binary(bucket) <- read_bucket(feed, trip_id),
+         %{} = trip <- Timetable.trip(bucket, trip_id) do
+      stations = stations(feed, trip.calls)
+
+      stops =
+        Enum.map(trip.calls, fn call ->
+          case Map.get(stations, call.station) do
+            %{lng: lng, lat: lat} when is_number(lng) and is_number(lat) -> {lng, lat}
+            _ -> nil
+          end
+        end)
+
+      features =
+        case Path.build(feed.id, trip.line, stops) do
+          [] ->
+            []
+
+          strands ->
+            [
+              %{
+                type: "Feature",
+                geometry: %{type: "MultiLineString", coordinates: strands},
+                properties: Departures.present_line(trip.line)
+              }
+            ]
+        end
+
+      {:ok, %{type: "FeatureCollection", features: features}}
     else
       _ -> {:error, :not_found}
     end

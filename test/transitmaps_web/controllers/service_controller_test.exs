@@ -16,4 +16,17 @@ defmodule TransitmapsWeb.ServiceControllerTest do
     assert %{"error" => "Service T1 not found."} =
              conn |> get("/api/service?feed=1&trip=T1&date=2026-03-02") |> json_response(404)
   end
+
+  describe "path" do
+    test "asks for the feed and trip", %{conn: conn} do
+      for query <- ["", "?feed=1", "?feed=x&trip=T1", "?trip=T1"] do
+        assert %{"error" => _} = conn |> get("/api/service/path" <> query) |> json_response(400)
+      end
+    end
+
+    test "says a service it can't find is not found", %{conn: conn} do
+      assert %{"error" => "Service T1 not found."} =
+               conn |> get("/api/service/path?feed=1&trip=T1") |> json_response(404)
+    end
+  end
 end

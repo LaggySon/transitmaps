@@ -12,11 +12,13 @@ const PAGE = 10
 const MAX_DEPARTURES = 60
 
 export class DepartureBoard {
-  // `onStation` opens a station on the map, from a stop on a service's run.
-  constructor(panel, ids, {onStation} = {}) {
+  // `onStation` opens a station on the map, from a stop on a service's run;
+  // `onService` hears when a departure's run opens, and closes (null).
+  constructor(panel, ids, {onStation, onService} = {}) {
     this.panel = panel
     this.ids = ids
     this.onStation = onStation
+    this.onService = onService
     this.limit = PAGE
     this.result = null
     this.error = null
@@ -57,11 +59,13 @@ export class DepartureBoard {
       onBack: () => this.closeService(departure.service),
     })
     this.serviceView.start()
+    this.onService?.(departure)
   }
 
   closeService(service) {
     this.serviceView?.stop()
     this.serviceView = null
+    this.onService?.(null)
     this.render()
     ;(this.serviceButton(service) || this.panel.querySelector("[data-service]"))?.focus()
     this.load()

@@ -41,6 +41,33 @@ defmodule TransitmapsWeb.ServiceController do
     end
   end
 
+  @doc """
+  `/api/service/path?feed=12&trip=T1`: the track a service runs, as GeoJSON
+  (see `Transitmaps.Services.path/1`), for the map to pick it out.
+  """
+  def path(conn, params) do
+    with {:ok, feed} <- positive_int(params["feed"]),
+         trip when is_binary(trip) and trip != "" <- params["trip"] do
+      case Services.path(%{feed: feed, trip: trip}) do
+        {:ok, collection} ->
+          conn
+          # A trip's track only changes with an import.
+          |> put_resp_header("cache-control", "public, max-age=3600")
+          |> json(collection)
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Service #{trip} not found."})
+      end
+    else
+      _ ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Name the service as feed=12&trip=T1."})
+    end
+  end
+
   defp positive_int(value) do
     case optional_int(value) do
       int when is_integer(int) and int > 0 -> {:ok, int}

@@ -103,3 +103,20 @@ test("shows a station's departures and lines", async ({page}) => {
   await page.keyboard.press("Escape")
   await expect(page.locator("#station-panel-departures")).toHaveCount(0)
 })
+
+// A departure opens to its whole run, and the map picks out the track it
+// runs until the board comes back.
+test("picks out a departure's run on the map", async ({page}) => {
+  await setMapZoom(page, 14, [-0.1276, 51.5072])
+  const canvas = page.locator("#transit-map canvas")
+  const box = await canvas.boundingBox()
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+
+  const map = page.locator("#transit-map")
+  await page.locator("#station-panel-departures [data-service]").first().click()
+  await expect(page.locator(".tm-service-destination")).toContainText("Stratford International")
+  await expect(map).toHaveAttribute("data-focus", "service")
+
+  await page.locator("[data-service-back]").click()
+  await expect(map).toHaveAttribute("data-focus", "")
+})

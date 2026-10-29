@@ -53,17 +53,23 @@ defmodule Transitmaps.Gtfs.Cells do
     {west, south, east, north} = box(cell, Map.fetch!(@line_cells, detail))
     box = {west - @margin, south - @margin, east + @margin, north + @margin}
 
-    lines =
-      GeoJsonCache.fetch_term({{:route_lines, detail}, feed_id, Enum.sort(categories)}, fn ->
-        categories |> Gtfs.route_feature_collection(feed_id, detail) |> pack_lines()
-      end)
-
-    for {properties, strands} <- lines,
+    for {properties, strands} <- lines(categories, feed_id, detail),
         stretches = Enum.flat_map(strands, &stretches(&1, box)),
         stretches != [] do
       line_json(properties, stretches)
     end
     |> collection()
+  end
+
+  @doc """
+  Feed `feed_id`'s whole lines in `categories` at `detail`, in the compact
+  form cells are cut from: per line, `{properties_json, strands}`, each
+  strand `{{west, south, east, north}, packed_coordinates}`.
+  """
+  def lines(categories, feed_id, detail) do
+    GeoJsonCache.fetch_term({{:route_lines, detail}, feed_id, Enum.sort(categories)}, fn ->
+      categories |> Gtfs.route_feature_collection(feed_id, detail) |> pack_lines()
+    end)
   end
 
   @doc "Feed `feed_id`'s stations serving `categories` inside `cell`."
@@ -109,14 +115,17 @@ defmodule Transitmaps.Gtfs.Cells do
 
   # -- cutting ------------------------------------------------------------------
 
-  # The runs of a strand's segments that overlap the box, each as a list of
-  # points. A segment counts when its own bounding box overlaps, which errs
-  # towards keeping a little more.
-  defp stretches({{min_lon, min_lat, max_lon, max_lat}, _points}, {west, south, east, north})
-       when min_lon > east or max_lon < west or min_lat > north or max_lat < south,
-       do: []
+  @doc """
+  The runs of a packed strand's segments that overlap `box`
+  (`{west, south, east, north}`), each as a list of `{lon, lat}` points. A
+  segment counts when its own bounding box overlaps, which errs towards
+  keeping a little more.
+  """
+  def stretches({{min_lon, min_lat, max_lon, max_lat}, _points}, {west, south, east, north})
+      when min_lon > east or max_lon < west or min_lat > north or max_lat < south,
+      do: []
 
-  defp stretches({_bounds, <<lon::float-64, lat::float-64, rest::binary>>}, box) do
+  def stretches({_bounds, <<lon::float-64, lat::float-64, rest::binary>>}, box) do
     walk(rest, {lon, lat}, box, [], [])
   end
 

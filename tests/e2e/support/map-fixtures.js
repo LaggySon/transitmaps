@@ -39,7 +39,16 @@ const departuresFixture = () => {
     timetable: "ok",
     more: true,
     departures: [
-      {time: now + 240, scheduled: now + 240, delay: 0, status: "on_time", destination: "Stratford International", platform: "2", line},
+      {
+        time: now + 240,
+        scheduled: now + 240,
+        delay: 0,
+        status: "on_time",
+        destination: "Stratford International",
+        platform: "2",
+        line,
+        service: {feed: 1, trip: "T1", date: "2026-03-02", seq: 1, at: now + 240},
+      },
       {time: now + 900, scheduled: now + 600, delay: 300, status: "late", destination: "Heathrow", platform: "4", line},
       {time: now + 1200, scheduled: now + 1200, delay: null, status: "cancelled", destination: "Reading", platform: null, line},
     ],
@@ -91,6 +100,47 @@ export const mockTransitApis = async (page) => {
 
   await page.route("**/api/departures?*", async (route) => {
     await route.fulfill({contentType: "application/json", body: JSON.stringify(departuresFixture())})
+  })
+
+  // The first departure's run: London Central to Stratford International.
+  await page.route("**/api/service?*", async (route) => {
+    const now = Math.floor(Date.now() / 1000)
+    const call = (name, [lng, lat], time) => ({
+      name, station: null, lng, lat, platform: null, arrival: time, departure: time,
+      scheduled: time, time, delay: null, status: "scheduled", pickup: true, drop_off: true,
+    })
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        line: departuresFixture().departures[0].line,
+        destination: "Stratford International",
+        date: "2026-03-02",
+        timezone: "Europe/London",
+        live: "none",
+        updated_at: null,
+        cancelled: false,
+        calls: [
+          call("London Central", ROUTE_COORDINATES[2], now + 240),
+          call("Stratford International", ROUTE_COORDINATES[3], now + 840),
+        ],
+      }),
+    })
+  })
+
+  await page.route("**/api/service/path?*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: {type: "MultiLineString", coordinates: [ROUTE_COORDINATES.slice(2, 4)]},
+            properties: departuresFixture().departures[0].line,
+          },
+        ],
+      }),
+    })
   })
 }
 

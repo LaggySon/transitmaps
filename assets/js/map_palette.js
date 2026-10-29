@@ -75,3 +75,16 @@ export const DARK_LINE = [
   ],
   80,
 ]
+
+// A line's own colour mixed `amount` of the way to `background` (an rgb()
+// string), opaque, for lines that step back while another has focus.
+export const fadedLineColor = (background, amount) => {
+  const target = channels(background)
+  const rgba = ["to-rgba", ["to-color", ["get", "color"], "#6e6e73"]]
+  return [
+    "let",
+    "rgba",
+    rgba,
+    ["rgb", ...target.map((value, i) => ["+", ["*", ["at", i, ["var", "rgba"]], 1 - amount], value * amount])],
+  ]
+}

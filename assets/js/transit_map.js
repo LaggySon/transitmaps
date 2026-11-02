@@ -257,7 +257,8 @@ const FOCUS_HALO = 1.5
 // and last stops larger.
 const FOCUS_STOPS_SOURCE_ID = "focus-stops"
 const FOCUS_STOPS_ID = "focus-stops"
-// The run's station names, in place of the map's own while it has focus.
+// The focused line's station names, in place of the map's own.
+const FOCUS_LABELS_SOURCE_ID = "focus-stop-labels"
 const FOCUS_STOP_LABELS_ID = "focus-stop-labels"
 const focusStopSize = (sizes) => [
   "interpolate",
@@ -276,6 +277,113 @@ const focusStopLabelSize = [
     [16, 14],
   ].flatMap(([zoom, size]) => [zoom, ["*", size, ["case", ["get", "terminus"], 1.1, 1]]]),
 ]
+
+// The sides a name can sit on, clockwise from east: the anchor that puts it
+// there and the offset, in ems, that clears the stop's ring.
+const LABEL_SIDES = [
+  ["left", [0.8, 0]],
+  ["top-left", [0.55, 0.55]],
+  ["top", [0, 0.8]],
+  ["top-right", [-0.55, 0.55]],
+  ["right", [-0.8, 0]],
+  ["bottom-right", [-0.55, -0.55]],
+  ["bottom", [0, -0.8]],
+  ["bottom-left", [0.55, -0.55]],
+]
+// Below, above, right, left: for a stop the route's direction isn't known at.
+const ANY_SIDE = [2, 6, 0, 4]
+const labelAnchors = (sides) => sides.flatMap((side) => LABEL_SIDES[(side + 8) % 8])
+
+// A line's track this close to a station gives the line's direction there.
+const TANGENT_KM = 0.4
+
+// Which side of a focused route each stop's name sits on (a LABEL_SIDES
+// index, or null where the route's direction isn't known), so the names
+// read as one column beside the route rather than a scatter around it.
+//
+// A run (`ordered`, stops in calling order) puts every name on the same side
+// of its direction of travel: whichever side faces out of its curves more
+// often, or else above or right of it. A clicked line's stations come in no
+// order, so each name faces out from the line's middle, and where that is
+// unclear (along a straight line) takes the line's own side the same way.
+const routeLabelSides = (points, strands, ordered, bearing) => {
+  if (points.length === 0) return []
+
+  const [kx, ky] = kmScale(points.reduce((sum, [, lat]) => sum + lat, 0) / points.length)
+  const xy = ([lon, lat]) => [lon * kx, lat * ky]
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1]]
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1]
+  const unit = (v) => {
+    const length = Math.hypot(v[0], v[1])
+    return length > 0 ? [v[0] / length, v[1] / length] : null
+  }
+
+  const at = points.map(xy)
+  const segments = ordered ? [] : strands.flatMap((strand) => strand.slice(1).map((end, i) => [xy(strand[i]), xy(end)]))
+  const middle = at.reduce((sum, p) => [sum[0] + p[0] / at.length, sum[1] + p[1] / at.length], [0, 0])
+
+  // The line's long axis, which orders an unordered line's directions.
+  const [sxx, syy, sxy] = at.reduce(
+    ([xx, yy, xy2], p) => {
+      const [dx, dy] = sub(p, middle)
+      return [xx + dx * dx, yy + dy * dy, xy2 + dx * dy]
+    },
+    [0, 0, 0]
+  )
+  const axisAngle = 0.5 * Math.atan2(2 * sxy, sxx - syy)
+  const axis = [Math.cos(axisAngle), Math.sin(axisAngle)]
+
+  const tangentAt = (p) => {
+    let best = TANGENT_KM
+    let tangent = null
+
+    segments.forEach(([a, b]) => {
+      const ab = sub(b, a)
+      const lengthSq = dot(ab, ab)
+      if (lengthSq === 0) return
+      const t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / lengthSq))
+      const distance = Math.hypot(p[0] - a[0] - t * ab[0], p[1] - a[1] - t * ab[1])
+      if (distance < best) [best, tangent] = [distance, ab]
+    })
+
+    return tangent
+  }
+
+  // Each stop's left-hand normal, in kilometres with north up. A run's
+  // direction at a stop is the way from the stop before to the one after,
+  // which rides over the kinks a track makes at a platform; a line's is
+  // its track's there.
+  const normals = at.map((p, i) => {
+    const course = ordered ? sub(at[Math.min(i + 1, at.length - 1)], at[Math.max(i - 1, 0)]) : axis
+    const tangent = unit(ordered ? course : tangentAt(p) || [0, 0])
+    if (!tangent) return null
+    const forward = dot(tangent, course) < 0 ? [-tangent[0], -tangent[1]] : tangent
+    return [-forward[1], forward[0]]
+  })
+
+  const known = normals.filter(Boolean)
+  // Above a level route, right of an upright one.
+  const plainSide = Math.sign(known.reduce((sum, n) => sum + n[1] + 0.5 * n[0], 0)) || 1
+  const outward = (n, p) => {
+    const away = unit(sub(p, middle))
+    return away ? dot(n, away) : 0
+  }
+
+  let routeSide = plainSide
+  if (ordered) {
+    const out = normals.reduce((sum, n, i) => sum + (n ? outward(n, at[i]) : 0), 0)
+    if (Math.abs(out) >= 0.2 * known.length) routeSide = Math.sign(out)
+  }
+
+  return normals.map((n, i) => {
+    if (!n) return null
+    const facing = ordered ? 0 : outward(n, at[i])
+    const sign = Math.abs(facing) > 0.3 ? Math.sign(facing) : routeSide
+    // Screen degrees clockwise from east, with the map's rotation.
+    const angle = -((Math.atan2(sign * n[1], sign * n[0]) * 180) / Math.PI + bearing)
+    return (((Math.round(angle / 45) % 8) + 8) % 8)
+  })
+}
 
 // How far the other lines fade toward the background while one has focus,
 // and how far their names fade. Lines fade by colour, not opacity: a corridor
@@ -365,6 +473,8 @@ const TransitMap = {
     this.map.on("moveend", () => {
       if (this.styleReady) this.syncLayers()
     })
+    // A focused line's names are placed by screen direction.
+    this.map.on("rotateend", () => this.focus && this.applyFocus())
 
     this.handleEvent("categories-changed", ({enabled}) => {
       this.enabled = new Set(enabled)
@@ -1272,18 +1382,25 @@ const TransitMap = {
       })
     }
 
-    if (!this.map.getLayer(FOCUS_STOP_LABELS_ID)) {
+    const labels = {type: "FeatureCollection", features: this.focusLabels(stations.labels)}
+
+    if (this.map.getSource(FOCUS_LABELS_SOURCE_ID)) {
+      this.map.getSource(FOCUS_LABELS_SOURCE_ID).setData(labels)
+    } else {
+      this.map.addSource(FOCUS_LABELS_SOURCE_ID, {type: "geojson", data: labels})
       this.addLayerInOrder({
         id: FOCUS_STOP_LABELS_ID,
         type: "symbol",
-        source: FOCUS_STOPS_SOURCE_ID,
+        source: FOCUS_LABELS_SOURCE_ID,
         layout: {
           "text-field": ["get", "name"],
-          "text-font": ["Noto Sans Regular"],
+          // The ends of a run in bold.
+          "text-font": ["case", ["get", "terminus"], ["literal", ["Noto Sans Bold"]], ["literal", ["Noto Sans Regular"]]],
           "text-size": focusStopLabelSize,
-          // Any side of its ring, so more of a crowded run's names fit.
-          "text-variable-anchor": ["top", "bottom", "right", "left"],
-          "text-radial-offset": 0.75,
+          // Its own side of the route (routeLabelSides), squarely or a
+          // little to either side.
+          "text-variable-anchor-offset": ["get", "anchors"],
+          "text-justify": "auto",
           "text-max-width": 10,
           "text-padding": 2,
           // The ends of the run first, then the busiest interchanges.
@@ -1296,6 +1413,7 @@ const TransitMap = {
     // What has focus, for tests to read: a clicked line or a service's run.
     this.el.dataset.focus = !this.focus ? "" : this.focus.features ? "service" : "line"
     this.el.dataset.focusStops = String(stops.features.length)
+    this.el.dataset.focusLabels = String(labels.features.length)
 
     this.applyStationFocus(stations)
 
@@ -1324,21 +1442,19 @@ const TransitMap = {
   // twice, a little apart; the run's stops take their interchange size, so
   // the busiest keep their names first.
   focusedStations() {
-    const none = {on: [], covered: [], stops: []}
+    const none = {on: [], covered: [], stops: [], labels: []}
     if (!this.focus) return none
 
     const stations = (this.stationFeatures || []).filter((station) => station.properties.station)
 
     if (!this.focus.stops) {
       const entries = Object.entries(this.focus.fields)
-      const on = stations
-        .filter((station) =>
-          (station.properties.lines || []).some(
-            (line) => line.category === this.focus.category && entries.every(([key, value]) => (line[key] ?? null) === (value ?? null))
-          )
+      const onLine = stations.filter((station) =>
+        (station.properties.lines || []).some(
+          (line) => line.category === this.focus.category && entries.every(([key, value]) => (line[key] ?? null) === (value ?? null))
         )
-        .map((station) => station.properties.slot)
-      return {...none, on}
+      )
+      return {...none, on: onLine.map((station) => station.properties.slot), labels: onLine}
     }
 
     const covered = []
@@ -1359,22 +1475,49 @@ const TransitMap = {
       return {...stop, properties: {...stop.properties, interchange: nearest.properties.interchange}}
     })
 
-    return {on: covered, covered, stops}
+    return {on: covered, covered, stops, labels: stops}
   },
 
-  // Fades the stations off the focused line and hides their names. A
-  // service's run names its own stops (FOCUS_STOP_LABELS_ID), so the map's
-  // names all step aside for it.
+  // The focused line's station names, each placed on its side of the route.
+  focusLabels(points) {
+    const strands = this.focusedFeatures().flatMap(({geometry}) =>
+      geometry.type === "LineString" ? [geometry.coordinates] : geometry.type === "MultiLineString" ? geometry.coordinates : []
+    )
+    const sides = routeLabelSides(
+      points.map((point) => point.geometry.coordinates),
+      strands,
+      Boolean(this.focus?.stops),
+      this.map.getBearing()
+    )
+
+    return points.map((point, i) => {
+      const side = sides[i]
+      const terminus = Boolean(point.properties.terminus)
+      // A name keeps to its side of the route, and waits for a closer view
+      // where that side has no room. The ends of a run may cross over.
+      const choices = side === null ? ANY_SIDE : [side, side - 1, side + 1, ...(terminus ? [side + 4] : [])]
+
+      return {
+        type: "Feature",
+        geometry: point.geometry,
+        properties: {
+          name: point.properties.name,
+          terminus,
+          interchange: point.properties.interchange ?? 1,
+          anchors: labelAnchors(choices),
+        },
+      }
+    })
+  },
+
+  // Fades the stations off the focused line and hides the map's names: the
+  // focused line's are drawn on their own (FOCUS_STOP_LABELS_ID).
   applyStationFocus({on, covered}) {
     const inSlots = (slots) => ["in", ["get", "slot"], ["literal", slots]]
     // A clicked line no station lists (or none loaded yet) fades nothing.
     const fading = this.focus && (this.focus.stops || on.length > 0)
     const factor = !fading ? 1 : ["case", inSlots(covered), 0, inSlots(on), 1, UNFOCUSED_STOP_OPACITY]
-    const labelFilter = !fading
-      ? STATION_LABEL_FILTER
-      : this.focus.stops
-        ? ["all", STATION_LABEL_FILTER, inSlots([])]
-        : ["all", STATION_LABEL_FILTER, inSlots(on)]
+    const labelFilter = !fading ? STATION_LABEL_FILTER : ["all", STATION_LABEL_FILTER, inSlots([])]
 
     this.el.dataset.focusStations = String(on.length)
 

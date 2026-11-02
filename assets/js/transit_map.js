@@ -215,19 +215,23 @@ const byZoomAndInterchange = (stops, busy) => [
 
 // Stations fade in as the view reaches neighbourhood level; other stops
 // (bus stops, platforms without a station) follow once streets are legible.
-const stopOpacity = [
+// Scaled by `factor` (an expression), which lets a focused line fade the
+// stations that aren't on it.
+const stopOpacity = (factor = 1) => [
   "interpolate",
   ["linear"],
   ["zoom"],
   10.5,
   0,
   11,
-  ["case", ["get", "station"], 1, 0],
+  ["*", ["case", ["get", "station"], 1, 0], factor],
   12.5,
-  ["case", ["get", "station"], 1, 0],
+  ["*", ["case", ["get", "station"], 1, 0], factor],
   13,
-  1,
+  factor,
 ]
+
+const STATION_LABEL_FILTER = ["==", ["get", "station"], true]
 
 const layerIds = (cat) => ({
   casing: `${cat}-line-casing`,
@@ -253,18 +257,35 @@ const FOCUS_HALO = 1.5
 // and last stops larger.
 const FOCUS_STOPS_SOURCE_ID = "focus-stops"
 const FOCUS_STOPS_ID = "focus-stops"
+// The run's station names, in place of the map's own while it has focus.
+const FOCUS_STOP_LABELS_ID = "focus-stop-labels"
 const focusStopSize = (sizes) => [
   "interpolate",
   ["linear"],
   ["zoom"],
   ...sizes.flatMap(([zoom, size]) => [zoom, ["*", size, ["case", ["get", "terminus"], 1.4, 1]]]),
 ]
+// The run's names, a step up from the map's station names; the ends larger.
+const focusStopLabelSize = [
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  ...[
+    [8, 10.5],
+    [12, 12],
+    [16, 14],
+  ].flatMap(([zoom, size]) => [zoom, ["*", size, ["case", ["get", "terminus"], 1.1, 1]]]),
+]
+
 // How far the other lines fade toward the background while one has focus,
 // and how far their names fade. Lines fade by colour, not opacity: a corridor
 // where a dozen lines share track would add a dozen faint copies back up to
 // nearly solid colour.
 const UNFOCUSED_FADE = 0.85
 const UNFOCUSED_OPACITY = 0.1
+// Stations off a focused line keep a faint marker, so the city's shape
+// stays, and lose their names, so the focused line's can be read.
+const UNFOCUSED_STOP_OPACITY = 0.25
 
 // Lines first (a focused line above the rest), then their names, then stops
 // (a service's above the rest) and station names on top.
@@ -274,7 +295,8 @@ const desiredLayerOrder = () =>
     MODE_ORDER.map((cat) => layerIds(cat).lineLabels),
     MODE_ORDER.map((cat) => layerIds(cat).stops),
     [FOCUS_STOPS_ID],
-    MODE_ORDER.map((cat) => layerIds(cat).labels)
+    MODE_ORDER.map((cat) => layerIds(cat).labels),
+    [FOCUS_STOP_LABELS_ID]
   )
 
 const TransitMap = {
@@ -653,6 +675,9 @@ const TransitMap = {
     this.setPaint(FOCUS_CASING_ID, "line-color", this.palette.foreground)
     this.setPaint(FOCUS_STOPS_ID, "circle-color", this.palette.background)
     this.setPaint(FOCUS_STOPS_ID, "circle-stroke-color", this.palette.foreground)
+    Object.entries(this.focusStopLabelPaint()).forEach(([property, value]) =>
+      this.setPaint(FOCUS_STOP_LABELS_ID, property, value)
+    )
     // Faded lines are mixed with the background, which just changed.
     this.applyFocus()
     this.paintPlaces()
@@ -1219,7 +1244,8 @@ const TransitMap = {
       })
     }
 
-    const stops = {type: "FeatureCollection", features: this.focus?.stops || []}
+    const stations = this.focusedStations()
+    const stops = {type: "FeatureCollection", features: stations.stops}
 
     if (this.map.getSource(FOCUS_STOPS_SOURCE_ID)) {
       this.map.getSource(FOCUS_STOPS_SOURCE_ID).setData(stops)
@@ -1246,9 +1272,32 @@ const TransitMap = {
       })
     }
 
+    if (!this.map.getLayer(FOCUS_STOP_LABELS_ID)) {
+      this.addLayerInOrder({
+        id: FOCUS_STOP_LABELS_ID,
+        type: "symbol",
+        source: FOCUS_STOPS_SOURCE_ID,
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": focusStopLabelSize,
+          // Any side of its ring, so more of a crowded run's names fit.
+          "text-variable-anchor": ["top", "bottom", "right", "left"],
+          "text-radial-offset": 0.75,
+          "text-max-width": 10,
+          "text-padding": 2,
+          // The ends of the run first, then the busiest interchanges.
+          "symbol-sort-key": ["case", ["get", "terminus"], -1000, ["-", 0, ["coalesce", ["get", "interchange"], 1]]],
+        },
+        paint: this.focusStopLabelPaint(),
+      })
+    }
+
     // What has focus, for tests to read: a clicked line or a service's run.
     this.el.dataset.focus = !this.focus ? "" : this.focus.features ? "service" : "line"
     this.el.dataset.focusStops = String(stops.features.length)
+
+    this.applyStationFocus(stations)
 
     const color = this.focus ? fadedLineColor(this.palette.background, UNFOCUSED_FADE) : ["get", "color"]
     this.loaded.forEach((cat) => {
@@ -1267,6 +1316,83 @@ const TransitMap = {
         )
       }
     })
+  },
+
+  // The map's stations on the focused line, by slot. A clicked line's are
+  // the stations that list it. A service's run marks its own stations, so
+  // the map's markers under them (`covered`) step aside rather than show
+  // twice, a little apart; the run's stops take their interchange size, so
+  // the busiest keep their names first.
+  focusedStations() {
+    const none = {on: [], covered: [], stops: []}
+    if (!this.focus) return none
+
+    const stations = (this.stationFeatures || []).filter((station) => station.properties.station)
+
+    if (!this.focus.stops) {
+      const entries = Object.entries(this.focus.fields)
+      const on = stations
+        .filter((station) =>
+          (station.properties.lines || []).some(
+            (line) => line.category === this.focus.category && entries.every(([key, value]) => (line[key] ?? null) === (value ?? null))
+          )
+        )
+        .map((station) => station.properties.slot)
+      return {...none, on}
+    }
+
+    const covered = []
+    const stops = this.focus.stops.map((stop) => {
+      const [lon, lat] = stop.geometry.coordinates
+      const [kx, ky] = kmScale(lat)
+      let nearest = null
+      let best = STATION_MERGE_KM
+
+      stations.forEach((station) => {
+        const [slon, slat] = station.geometry.coordinates
+        const distance = Math.hypot((slon - lon) * kx, (slat - lat) * ky)
+        if (distance <= best) [nearest, best] = [station, distance]
+      })
+
+      if (!nearest) return stop
+      covered.push(nearest.properties.slot)
+      return {...stop, properties: {...stop.properties, interchange: nearest.properties.interchange}}
+    })
+
+    return {on: covered, covered, stops}
+  },
+
+  // Fades the stations off the focused line and hides their names. A
+  // service's run names its own stops (FOCUS_STOP_LABELS_ID), so the map's
+  // names all step aside for it.
+  applyStationFocus({on, covered}) {
+    const inSlots = (slots) => ["in", ["get", "slot"], ["literal", slots]]
+    // A clicked line no station lists (or none loaded yet) fades nothing.
+    const fading = this.focus && (this.focus.stops || on.length > 0)
+    const factor = !fading ? 1 : ["case", inSlots(covered), 0, inSlots(on), 1, UNFOCUSED_STOP_OPACITY]
+    const labelFilter = !fading
+      ? STATION_LABEL_FILTER
+      : this.focus.stops
+        ? ["all", STATION_LABEL_FILTER, inSlots([])]
+        : ["all", STATION_LABEL_FILTER, inSlots(on)]
+
+    this.el.dataset.focusStations = String(on.length)
+
+    this.loaded.forEach((cat) => {
+      const ids = layerIds(cat)
+      this.setPaint(ids.stops, "circle-opacity", stopOpacity(factor))
+      this.setPaint(ids.stops, "circle-stroke-opacity", stopOpacity(factor))
+      if (this.map.getLayer(ids.labels)) this.map.setFilter(ids.labels, labelFilter)
+    })
+  },
+
+  focusStopLabelPaint() {
+    return {
+      "text-color": this.palette.foreground,
+      "text-halo-color": withAlpha(this.palette.background, 0.96),
+      "text-halo-width": 1.7,
+      "text-halo-blur": 0.35,
+    }
   },
 
   focusMatch() {
@@ -1291,7 +1417,9 @@ const TransitMap = {
     })
 
     const byCategory = new Map()
-    mergeColocatedStops([...unique.values()]).forEach((station) => {
+    // Each station is numbered, so a focused line can pick out its own.
+    mergeColocatedStops([...unique.values()]).forEach((merged, slot) => {
+      const station = {...merged, properties: {...merged.properties, slot}}
       ;(station.properties.categories || []).forEach((cat) => {
         if (!byCategory.has(cat)) byCategory.set(cat, [])
         byCategory.get(cat).push(station)
@@ -1411,8 +1539,8 @@ const TransitMap = {
           ].map(([zoom, factor]) => [zoom, ["*", factor, ["case", ["get", "station"], 1.7, 1.05]]]),
           1.35
         ),
-        "circle-opacity": stopOpacity,
-        "circle-stroke-opacity": stopOpacity,
+        "circle-opacity": stopOpacity(),
+        "circle-stroke-opacity": stopOpacity(),
       },
     })
 
@@ -1421,7 +1549,7 @@ const TransitMap = {
       type: "symbol",
       source: `${cat}-stops`,
       minzoom: 11,
-      filter: ["==", ["get", "station"], true],
+      filter: STATION_LABEL_FILTER,
       layout: {
         "text-field": ["get", "name"],
         "text-font": ["Noto Sans Regular"],

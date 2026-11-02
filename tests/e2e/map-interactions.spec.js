@@ -118,10 +118,13 @@ test("picks out a departure's run on the map", async ({page}) => {
   await expect(map).toHaveAttribute("data-focus", "service")
   // Its stations are marked along it.
   await expect(map).toHaveAttribute("data-focus-stops", "2")
+  // The map's own markers under them step aside, and the rest fade.
+  await expect(map).toHaveAttribute("data-focus-stations", "2")
 
   await page.locator("[data-service-back]").click()
   await expect(map).toHaveAttribute("data-focus", "")
   await expect(map).toHaveAttribute("data-focus-stops", "0")
+  await expect(map).toHaveAttribute("data-focus-stations", "0")
 })
 
 // A popup in the way can be dragged aside by its header, and stays there

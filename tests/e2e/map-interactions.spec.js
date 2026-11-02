@@ -120,6 +120,8 @@ test("picks out a departure's run on the map", async ({page}) => {
   await expect(map).toHaveAttribute("data-focus-stops", "2")
   // The map's own markers under them step aside, and the rest fade.
   await expect(map).toHaveAttribute("data-focus-stations", "2")
+  // And named beside it.
+  await expect(map).toHaveAttribute("data-focus-labels", "2")
 
   await page.locator("[data-service-back]").click()
   await expect(map).toHaveAttribute("data-focus", "")

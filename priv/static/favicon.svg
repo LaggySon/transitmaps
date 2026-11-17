@@ -1,7 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <style>
-    rect { fill: #171717; }
-    @media (prefers-color-scheme: dark) { rect { fill: #ededed; } }
+    .mark { fill: #171717; }
+    @media (prefers-color-scheme: dark) { .mark { fill: #ededed; } }
   </style>
-  <rect x="8" y="8" width="48" height="48" rx="2"/>
+  <mask id="glyph">
+    <rect width="64" height="64" fill="#fff"/>
+    <rect y="12" width="64" height="4" fill="#000"/>
+    <path d="M20 48V36H44V24" fill="none" stroke="#000" stroke-width="8" stroke-linecap="square"/>
+  </mask>
+  <rect class="mark" x="4" y="4" width="56" height="56" rx="2" mask="url(#glyph)"/>
 </svg>

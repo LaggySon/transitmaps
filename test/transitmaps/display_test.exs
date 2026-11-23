@@ -203,30 +203,31 @@ defmodule Transitmaps.DisplayTest do
   end
 
   describe "Display.drawn_lines/1" do
-    test "names the lines and hands their source geometry through untouched" do
-      corridor = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4]
-      variant = for i <- 0..100, do: [-1.0 + i * 0.004, 51.4003]
+    test "draws a line's parallel tracks as one, each line on its own source geometry" do
+      corridor = curve(0..100, fn i -> [-1.0 + i * 0.004, 51.4] end)
+      # The other direction's track, about 30 m to the side.
+      other_track = Enum.map(corridor, fn [lon, lat] -> [lon, lat + 0.0003] end)
 
       lines =
         Display.drawn_lines([
           route("gw1", "Great Western Railway", [corridor], short_name: "GW1"),
-          route("gw2", "Great Western Railway", [variant], short_name: "GW2"),
+          route("gw2", "Great Western Railway", [Enum.reverse(other_track)], short_name: "GW2"),
           route("xc1", "CrossCountry", [Enum.reverse(corridor)], short_name: "XC1")
         ])
 
       assert [%{name: "CrossCountry"} = cross_country, %{name: "Great Western Railway"} = gwr] =
                Enum.sort_by(lines, & &1.name)
 
-      # Not a vertex is moved. The two operators sharing this corridor come
+      # Not a vertex is moved: the two operators sharing this corridor come
       # back on the very same coordinates, drawn one on top of the other, and
-      # the operator's two re-tracing shapes both survive as separate strands.
+      # the operator's second track is left out.
       assert cross_country.geometry.coordinates == [Enum.reverse(corridor)]
-      assert gwr.geometry.coordinates == [corridor, variant]
+      assert gwr.geometry.coordinates == [corridor]
     end
 
-    test "serves track that several services re-trace only once" do
-      trunk = for i <- 0..20, do: [-1.0 + i * 0.01, 51.4]
-      branch = for i <- 1..10, do: [-0.8 + i * 0.01, 51.4 + i * 0.01]
+    test "keeps the track a line's branches leave its trunk by" do
+      trunk = curve(0..40, fn i -> [-1.0 + i * 0.005, 51.4] end)
+      branch = curve(1..20, fn i -> [-0.8 + i * 0.005, 51.416 + i * 0.005] end)
 
       [line] =
         Display.drawn_lines([
@@ -234,11 +235,32 @@ defmodule Transitmaps.DisplayTest do
           # The return working runs the same track the other way.
           route("sw2", "South Western Railway", [Enum.reverse(trunk)]),
           # A stopping service covers half the trunk, then takes a branch.
-          route("sw3", "South Western Railway", [Enum.slice(trunk, 10..20) ++ branch])
+          route("sw3", "South Western Railway", [Enum.slice(trunk, 20..40) ++ branch])
         ])
 
-      assert line.geometry.coordinates == [trunk, [List.last(trunk) | branch]]
+      assert [^trunk, [junction | rest]] = line.geometry.coordinates
+      # The branch meets the trunk where it leaves it, and runs on its own
+      # points from there.
+      assert junction == List.last(trunk)
+      assert rest == Enum.drop_while(branch, &(&1 not in rest))
+      assert List.last(rest) == List.last(branch)
     end
+
+    test "draws a line that runs out and back along its track once" do
+      out = curve(0..40, fn i -> [-1.0 + i * 0.005, 51.4] end)
+
+      [line] = Display.drawn_lines([route("cc1", "c2c", [out ++ tl(Enum.reverse(out))])])
+
+      assert line.geometry.coordinates == [out]
+    end
+  end
+
+  # A steady bend, so every point is a vertex the line keeps.
+  defp curve(range, point) do
+    Enum.map(range, fn i ->
+      [lon, lat] = point.(i)
+      [lon, lat + 0.00001 * i * i]
+    end)
   end
 
   # -- helpers ----------------------------------------------------------------

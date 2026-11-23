@@ -259,10 +259,11 @@ per station (see Departures).
   dedupe, fragment stitching, and corner rounding
 - `Transitmaps.Display` — which drawn lines exist, via `Identity` (one
   line per national-rail operator or per TfL-style line, with brand
-  colours). No vertex is moved: every line sits on its own centreline and
-  lines sharing track are drawn on top of one another. Track a line's
-  service patterns re-trace is served once, which keeps Great Britain's
-  rail response about a seventh of its raw size
+  colours). Each line is drawn as one line along its route: a line's
+  strands that run within 150 m of track it already has (the other
+  direction's track, a second tunnel bore, re-traced service patterns)
+  are dropped, so only branches add to it. No vertex is moved, and lines
+  sharing track are drawn on top of one another
 - `Transitmaps.Gtfs` — GeoJSON FeatureCollection queries per category;
   rail-family categories (rail/intercity/metro/tram) are bundled
   together, so serving one loads the family
